@@ -43,7 +43,13 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 
 fn load4(t: texture_2d<f32>, p: vec2<f32>) -> vec4<f32> {
     let d = vec2<i32>(textureDimensions(t));
-    let q = p - 0.5;
+    // `p` is an interpolated varying: at a pixel centre it is off by a few ULP (up to ~8e-6 near 64),
+    // which would mix ~4e-6 of the neighbour into the pixel. Alpha-dividing effects (Invert Alpha)
+    // amplify that into a visible colour on transparent pixels, so a centre hit within 1e-4 of a
+    // pixel snaps to the exact pixel (as the CPU's integer sampling does).
+    var q = p - 0.5;
+    let r = round(q);
+    q = select(q, r, abs(q - r) < vec2(1e-4));
     let i = vec2<i32>(floor(q));
     let f = q - floor(q);
     let a = textureLoad(t, clamp(i, vec2(0), d - 1), 0);

@@ -34,6 +34,8 @@ pub struct PlanLayer {
     pub blend: Blend,
     /// Standard effects to run on the frame before it is placed (None: draw the frame directly).
     pub fx: Option<Arc<LayerFx>>,
+    /// Whether this is an adjustment layer (effects run on the composite below it).
+    pub is_adjustment: bool,
 }
 
 /// The GPU effect stage of a layer: the frame is decoded into a working image of `size` (the
@@ -49,7 +51,13 @@ pub struct LayerFx {
 impl PlanLayer {
     /// A layer drawing `frame` directly.
     pub fn new(frame: Arc<VideoFrame>, matrix: Affine, opacity: f32, blend: Blend) -> Self {
-        Self { frame, matrix, opacity, blend, fx: None }
+        Self { frame, matrix, opacity, blend, fx: None, is_adjustment: false }
+    }
+
+    /// An adjustment layer: runs `fx` on the composite below it and blends the result.
+    pub fn adjustment(matrix: Affine, opacity: f32, blend: Blend, fx: Arc<LayerFx>) -> Self {
+        let dummy = Arc::new(VideoFrame::rgba_f32(1, 1, vec![0.0; 4]));
+        Self { frame: dummy, matrix, opacity, blend, fx: Some(fx), is_adjustment: true }
     }
 
     /// Size of the picture the matrix places: the working image with effects, else the frame.
@@ -75,6 +83,31 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
 
 fn simple_transition(id: &str) -> bool {
     matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white" | "morph_cut")
+}
+
+fn gpu_adjustment_ok(_project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, opts: RenderOptions) -> bool {
+    if !opts.effects {
+        return true;
+    }
+    if item.has_opacity_masks() {
+        return false;
+    }
+    let mt = item.effect_time_at(t);
+    let size = (seq.settings.width, seq.settings.height);
+    let m = motion_matrix(seq, item, size, mt);
+    if !near_identity(&m) {
+        return false;
+    }
+    for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
+        if !e.enabled {
+            continue;
+        }
+        let masked = e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None);
+        if masked || !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
+            return false;
+        }
+    }
+    true
 }
 
 /// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
@@ -122,6 +155,7 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         }
         if let Some(it) = tr.item_at(t)
             && project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. }))
+            && !gpu_adjustment_ok(project, seq, it, t, opts)
         {
             return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
         }
@@ -227,6 +261,34 @@ fn push_item(
         }
         return;
     }
+    // Adjustment layer with GPU effects: operates on the composite below it
+    if let Some(pi) = project.item(item.item)
+        && matches!(pi.kind, ItemKind::AdjustmentLayer { .. })
+    {
+        if !opts.effects {
+            return;
+        }
+        let (w, h) = output_size(seq, opts.scale);
+        let cx = crate::effects::FxCtx {
+            t: mt,
+            px_scale: opts.scale,
+            seconds: (t - item.start).seconds(),
+            timecode: "",
+            clip_name: &item.name,
+            project: Some(project),
+            env: None,
+            working: seq.settings.color.working,
+        };
+        let ops: Option<Vec<FxOp>> =
+            item.effects.iter().filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic)).map(|e| FxOp::eval(e, &cx, w, h).filter(FxOp::gpu_ok)).collect();
+        if let Some(ops) = ops
+            && (!ops.is_empty() || bl != Blend::Normal)
+        {
+            let fx = LayerFx { size: (w as u32, h as u32), decimation: 1, ops };
+            out.push(PlanLayer::adjustment(Affine::IDENTITY, op * extra_opacity, bl, Arc::new(fx)));
+        }
+        return;
+    }
     if let Some(chain) = gpu_chain(project, item, opts) {
         let Some(src) = sources.source(item.item) else { return };
         let Some(size) = crate::source_size(project, item.item) else { return };
@@ -262,7 +324,7 @@ fn push_item(
                     .then_apply(&motion)
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
                 let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, ops };
-                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)) });
+                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), is_adjustment: false });
                 return;
             }
         } else if plain {
@@ -310,12 +372,24 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
         FramePlan::Layers { width, height, layers } => {
             let mut canvas = crate::Image::new(*width, *height);
             for l in layers {
-                let src = match &l.fx {
-                    Some(fx) => effect_image(&l.frame, fx),
-                    None => crate::Image { w: l.frame.width as usize, h: l.frame.height as usize, px: l.frame.to_linear_f32() },
+                let src = if l.is_adjustment {
+                    let mut img = canvas.clone();
+                    if let Some(fx) = &l.fx {
+                        for op in &fx.ops {
+                            op.apply(&mut img);
+                        }
+                    }
+                    img
+                } else {
+                    match &l.fx {
+                        Some(fx) => effect_image(&l.frame, fx),
+                        None => crate::Image { w: l.frame.width as usize, h: l.frame.height as usize, px: l.frame.to_linear_f32() },
+                    }
                 };
                 let placed = if l.matrix == Affine::scale(*width as f64, *height as f64) && src.w == 1 && src.h == 1 {
                     crate::Image::filled(*width, *height, src.get(0, 0))
+                } else if l.matrix == Affine::IDENTITY && src.w == *width && src.h == *height {
+                    src
                 } else {
                     src.transformed(*width, *height, &l.matrix)
                 };

@@ -10,10 +10,18 @@ use super::*;
 use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::plan::execute_cpu;
 
+/// One device for the whole test process: creating several `wgpu` devices at once from parallel
+/// tests crashes some Windows drivers (STATUS_ACCESS_VIOLATION), and `Device` / `Queue` are cheap
+/// to clone.
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    static SHARED: std::sync::OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let instance = wgpu::Instance::default();
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        })
+        .clone()
 }
 
 pub(crate) fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
@@ -162,14 +170,15 @@ fn gpu_blend_modes_match_cpu() {
             layers: vec![
                 // opaque YUV on the left, a partially transparent ramp on the right; the top-right
                 // corner stays empty (destination alpha 0)
-                PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.35, 0.5), opacity: 1.0, blend: Blend::Normal, fx: None },
-                PlanLayer { frame: base.clone(), matrix: Affine::translate(200.0, 40.0), opacity: 0.9, blend: Blend::Normal, fx: None },
+                PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.35, 0.5), opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
+                PlanLayer { frame: base.clone(), matrix: Affine::translate(200.0, 40.0), opacity: 0.9, blend: Blend::Normal, fx: None, is_adjustment: false },
                 PlanLayer {
                     frame: top.clone(),
                     matrix: Affine::motion(Vec2::new(170.0, 95.0), Vec2::new(1.1, 1.1), 17.0, Vec2::new(80.0, 60.0)),
                     opacity: 0.8,
                     blend: mode,
                     fx: None,
+                    is_adjustment: false,
                 },
                 PlanLayer {
                     frame: demo.clone(),
@@ -177,6 +186,7 @@ fn gpu_blend_modes_match_cpu() {
                     opacity: 0.6,
                     blend: mode,
                     fx: None,
+                    is_adjustment: false,
                 },
             ],
         };
@@ -235,8 +245,8 @@ fn gpu_blend_edge_cases_match_cpu() {
                 width: n,
                 height: n,
                 layers: vec![
-                    PlanLayer { frame: back.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None },
-                    PlanLayer { frame: src.clone(), matrix: Affine::IDENTITY, opacity, blend: mode, fx: None },
+                    PlanLayer { frame: back.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
+                    PlanLayer { frame: src.clone(), matrix: Affine::IDENTITY, opacity, blend: mode, fx: None, is_adjustment: false },
                 ],
             };
             let cpu = execute_cpu(&plan);
@@ -276,8 +286,15 @@ fn gpu_dissolve_pattern_is_exact() {
             width: w,
             height: h,
             layers: vec![
-                PlanLayer { frame: red.clone(), matrix: Affine::scale(w as f64, h as f64), opacity: 1.0, blend: Blend::Normal, fx: None },
-                PlanLayer { frame: white.clone(), matrix: Affine::scale(w as f64, h as f64), opacity: op, blend: Blend::Dissolve, fx: None },
+                PlanLayer { frame: red.clone(), matrix: Affine::scale(w as f64, h as f64), opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
+                PlanLayer {
+                    frame: white.clone(),
+                    matrix: Affine::scale(w as f64, h as f64),
+                    opacity: op,
+                    blend: Blend::Dissolve,
+                    fx: None,
+                    is_adjustment: false,
+                },
             ],
         };
         let cpu = execute_cpu(&plan).over_black_rgba8();
@@ -303,7 +320,7 @@ fn normal_fast_path_and_blend_layers_off_output() {
     };
     let mut c = GpuCompositor::new(&dev, &q);
     let grey = Arc::new(VideoFrame::rgba_f32(4, 4, vec![0.2; 64]));
-    let layer = |m: Affine, blend: Blend| PlanLayer { frame: grey.clone(), matrix: m, opacity: 1.0, blend, fx: None };
+    let layer = |m: Affine, blend: Blend| PlanLayer { frame: grey.clone(), matrix: m, opacity: 1.0, blend, fx: None, is_adjustment: false };
     let normal = FramePlan::Layers { width: 32, height: 16, layers: vec![layer(Affine::scale(8.0, 4.0), Blend::Normal)] };
     c.composite(&normal);
     assert!(c.backdrop.is_none());
@@ -329,7 +346,14 @@ fn normal_fast_path_and_blend_layers_off_output() {
 
 #[test]
 fn quad_bounds_clamps_and_handles_non_finite() {
-    let l = |m: Affine| PlanLayer { frame: Arc::new(VideoFrame::rgba_f32(10, 10, vec![0.0; 400])), matrix: m, opacity: 1.0, blend: Blend::Screen, fx: None };
+    let l = |m: Affine| PlanLayer {
+        frame: Arc::new(VideoFrame::rgba_f32(10, 10, vec![0.0; 400])),
+        matrix: m,
+        opacity: 1.0,
+        blend: Blend::Screen,
+        fx: None,
+        is_adjustment: false,
+    };
     assert_eq!(quad_bounds(&l(Affine::translate(5.0, 5.0)), 100, 100), Some((4, 4, 12, 12)));
     assert_eq!(quad_bounds(&l(Affine::translate(-5.0, 95.0)), 100, 100), Some((0, 94, 6, 6)));
     assert_eq!(quad_bounds(&l(Affine::translate(f64::NAN, 0.0)), 100, 100), Some((0, 0, 100, 100)));

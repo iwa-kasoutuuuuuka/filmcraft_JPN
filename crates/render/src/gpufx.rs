@@ -14,7 +14,7 @@ use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, point};
+use crate::effects::{FxCtx, b, choice, color, curve_param, dec, enc, f, gaussian_boxes, is_identity_curve, on, point, text, wheel_rgb};
 use crate::image::Image;
 
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
@@ -161,10 +161,29 @@ pub enum FxOp {
         invert: bool,
         mask_only: bool,
     },
+    Lumetri {
+        temp: f32,
+        tint: f32,
+        exposure: f32,
+        contrast: f32,
+        hl: f32,
+        sh: f32,
+        wh: f32,
+        bl: f32,
+        sat: f32,
+        vib: f32,
+        faded: f32,
+        va: f32,
+        vmid: f32,
+        vround: f32,
+        vfeather: f32,
+        aspect: f32,
+    },
 }
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
 pub const GPU_EFFECTS: &[&str] = &[
+    "lumetri",
     "brightness_contrast",
     "proc_amp",
     "tint",
@@ -415,6 +434,81 @@ impl FxOp {
                 use crate::vfx::{bv, fv};
                 FxOp::AlphaAdjust { opacity: fv(e, "opacity", cx) / 100.0, ignore: bv(e, "ignore"), invert: bv(e, "invert"), mask_only: bv(e, "mask_only") }
             }
+            "lumetri" => {
+                let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
+                let (curves_on, wheels_on, hsl_on) = (on(e, "curves_on"), on(e, "wheels_on"), on(e, "hsl_on"));
+                if (basic_on && !text(e, "input_lut").is_empty()) || (creative_on && (!text(e, "look_lut").is_empty() || choice(e, "look") > 0)) {
+                    return None;
+                }
+                if curves_on {
+                    let has_curve = |id: &str| curve_param(e, id).is_some_and(|c| !is_identity_curve(&c));
+                    let has_hue = |id: &str| curve_param(e, id).is_some_and(|c| !c.is_empty());
+                    if has_curve("curve_luma")
+                        || has_curve("curve_red")
+                        || has_curve("curve_green")
+                        || has_curve("curve_blue")
+                        || has_hue("hue_vs_sat")
+                        || has_hue("hue_vs_hue")
+                        || has_hue("hue_vs_luma")
+                        || has_hue("luma_vs_sat")
+                        || has_hue("sat_vs_sat")
+                    {
+                        return None;
+                    }
+                }
+                if wheels_on {
+                    let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
+                    let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
+                    let (ls, lm, lh) = (f(e, "wheel_shadows_l", cx) / 100.0, f(e, "wheel_midtones_l", cx) / 100.0, f(e, "wheel_highlights_l", cx) / 100.0);
+                    if ws.iter().chain(&wm).chain(&wh).any(|v| v.abs() > 1e-5) || ls.abs() + lm.abs() + lh.abs() > 1e-5 {
+                        return None;
+                    }
+                }
+                if hsl_on && b(e, "hsl_on") {
+                    return None;
+                }
+                if creative_on {
+                    if f(e, "sharpen", cx).abs() > 1e-3 {
+                        return None;
+                    }
+                    let st = color(e, "shadow_tint", cx);
+                    let ht = color(e, "highlight_tint", cx);
+                    if (st[0] - 0.5).abs() > 1e-4
+                        || (st[1] - 0.5).abs() > 1e-4
+                        || (st[2] - 0.5).abs() > 1e-4
+                        || (ht[0] - 0.5).abs() > 1e-4
+                        || (ht[1] - 0.5).abs() > 1e-4
+                        || (ht[2] - 0.5).abs() > 1e-4
+                    {
+                        return None;
+                    }
+                }
+                if cx.working != filmcraft_color::WorkingSpace::Rec709 {
+                    return None;
+                }
+                let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
+                let sat = (if basic_on { f(e, "saturation", cx) / 100.0 } else { 1.0 }) * (if creative_on { f(e, "creative_sat", cx) / 100.0 } else { 1.0 });
+                let va = if vignette_on { f(e, "vignette_amount", cx) } else { 0.0 };
+                let aspect = (w as f32) / (h as f32).max(1.0);
+                FxOp::Lumetri {
+                    temp: bf("temperature") / 100.0,
+                    tint: bf("tint") / 100.0,
+                    exposure: 2f32.powf(bf("exposure")),
+                    contrast: bf("contrast") / 100.0,
+                    hl: bf("highlights") / 100.0,
+                    sh: bf("shadows") / 100.0,
+                    wh: bf("whites") / 100.0,
+                    bl: bf("blacks") / 100.0,
+                    sat,
+                    vib: if creative_on { f(e, "vibrance", cx) / 100.0 } else { 0.0 },
+                    faded: if creative_on { f(e, "faded_film", cx) / 100.0 } else { 0.0 },
+                    va,
+                    vmid: f(e, "vignette_midpoint", cx) / 100.0,
+                    vround: f(e, "vignette_roundness", cx) / 100.0,
+                    vfeather: f(e, "vignette_feather", cx) / 100.0,
+                    aspect,
+                }
+            }
             _ => return None,
         })
     }
@@ -458,6 +552,9 @@ impl FxOp {
             FxOp::ChannelMix { m } => m.iter().all(|r| fin(r)),
             FxOp::ColorReplace { sim, target, replace, replace_hsl, .. } => sim.is_finite() && fin(target) && fin(replace) && fin(replace_hsl),
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
+            FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect } => {
+                fin(&[*temp, *tint, *exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *vib, *faded, *va, *vmid, *vround, *vfeather, *aspect]) && *aspect > 0.0
+            }
         }
     }
 
@@ -707,6 +804,54 @@ impl FxOp {
                     } else {
                         p.copy_from_slice(&[c[0] * a, c[1] * a, c[2] * a, a]);
                     }
+                });
+            }
+            FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect } => {
+                let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
+                let (w, h) = (img.w as f32, img.h as f32);
+                let (exposure, contrast) = (*exposure, *contrast);
+                let (hl, sh, wh, bl) = (*hl, *sh, *wh, *bl);
+                let (sat, vib, faded, va) = (*sat, *vib, *faded, *va);
+                let (vmid, vround, vfeather, aspect) = (*vmid, *vround, *vfeather, *aspect);
+                img.map_rgb(|c, x, y| {
+                    let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
+                    let mut v = enc(lin);
+                    let b0 = -bl * 0.15;
+                    let w0 = 1.0 - wh * 0.15;
+                    v = v.map(|q| (q - b0) / (w0 - b0).max(1e-3));
+                    let l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                    let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
+                    let whl = l.clamp(0.0, 1.0).powi(3);
+                    let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
+                    if l > 1e-5 {
+                        let k = nl / l;
+                        v = v.map(|q| q * k);
+                    }
+                    if contrast.abs() > 1e-4 {
+                        let k = 1.0 + contrast;
+                        v = v.map(|q| {
+                            let q = q.clamp(0.0, 1.0);
+                            let s = q * q * (3.0 - 2.0 * q);
+                            if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
+                        });
+                    }
+                    if faded > 0.0 {
+                        v = v.map(|q| q * (1.0 - 0.25 * faded) + 0.12 * faded);
+                    }
+                    let l3 = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                    let cur_sat = v[0].max(v[1]).max(v[2]) - v[0].min(v[1]).min(v[2]);
+                    let s = sat * (1.0 + vib * (1.0 - cur_sat.clamp(0.0, 1.0)));
+                    v = v.map(|q| l3 + (q - l3) * s);
+                    if va.abs() > 1e-4 {
+                        let nx = (x as f32 / w - 0.5) * 2.0 * if vround < 0.0 { aspect.powf(-vround) } else { 1.0 };
+                        let ny = (y as f32 / h - 0.5) * 2.0;
+                        let d = (nx * nx + ny * ny).sqrt() / std::f32::consts::SQRT_2;
+                        let edge = ((d - vmid * 0.9) / (vfeather.max(0.01) * 0.9)).clamp(0.0, 1.0);
+                        let e2 = edge * edge * (3.0 - 2.0 * edge);
+                        let k = 1.0 + va * 0.2 * e2;
+                        v = v.map(|q| if va < 0.0 { q * k.max(0.0) } else { q + (1.0 - q) * (k - 1.0) });
+                    }
+                    dec(v)
                 });
             }
         }

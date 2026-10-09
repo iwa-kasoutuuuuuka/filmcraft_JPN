@@ -3,11 +3,7 @@ use filmcraft_geom::{Affine, Vec2};
 use filmcraft_render::Blend;
 use filmcraft_render::plan::execute_cpu;
 
-fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::default();
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
-}
+use super::blend_tests::device;
 
 fn yuv_frame(w: u32, h: u32) -> Arc<VideoFrame> {
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
@@ -45,13 +41,14 @@ fn gpu_matches_cpu_plan() {
         width: w,
         height: h,
         layers: vec![
-            PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.5, 0.5), opacity: 1.0, blend: Blend::Normal, fx: None },
+            PlanLayer { frame: yuv_frame(640, 360), matrix: Affine::scale(0.5, 0.5), opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
             PlanLayer {
                 frame: rgba,
                 matrix: Affine::motion(Vec2::new(200.0, 100.0), Vec2::new(0.4, 0.4), 12.0, Vec2::new(160.0, 90.0)),
                 opacity: 0.7,
                 blend: Blend::Normal,
                 fx: None,
+                is_adjustment: false,
             },
         ],
     };
@@ -115,8 +112,8 @@ fn prepared_upload_matches_inline_conversion() {
         width: w as usize,
         height: h as usize,
         layers: vec![
-            PlanLayer { frame: yuv16, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None },
-            PlanLayer { frame: rgbaf, matrix: Affine::scale(0.5, 0.5), opacity: 0.8, blend: Blend::Normal, fx: None },
+            PlanLayer { frame: yuv16, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
+            PlanLayer { frame: rgbaf, matrix: Affine::scale(0.5, 0.5), opacity: 0.8, blend: Blend::Normal, fx: None, is_adjustment: false },
         ],
     };
     let image = FramePlan::Image(filmcraft_render::Image { w: w as usize, h: h as usize, px: f32_layer });
@@ -145,8 +142,11 @@ fn upload_cache_keeps_buffers_alive() {
     let mut c = GpuCompositor::new(&dev, &q);
     let px = Arc::new(vec![200u8; 16 * 8 * 4]);
     let frame = Arc::new(VideoFrame { width: 16, height: 8, data: PixelData::Rgba8(px.clone()), ..(*yuv_frame(16, 8)).clone() });
-    let plan =
-        FramePlan::Layers { width: 16, height: 8, layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None }] };
+    let plan = FramePlan::Layers {
+        width: 16,
+        height: 8,
+        layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false }],
+    };
     c.composite(&plan);
     drop(plan);
     assert!(Arc::strong_count(&px) > 1, "cached upload must own its pixel buffer");
@@ -246,4 +246,100 @@ fn gpu_masked_mix_matches_cpu() {
     let worst = cpu.px.iter().zip(&gpu).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
     eprintln!("masked mix: max |cpu − gpu| = {worst:e}");
     assert!(worst < 2e-4, "{worst}");
+}
+
+#[test]
+fn texture_pool_recycles_textures() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert_eq!(c.pool_texture_count(), 0);
+    // Render 30 frames with unique buffers to exceed the LRU cache limit (24)
+    for _ in 0..30 {
+        let frame = yuv_frame(64, 36);
+        let plan = FramePlan::Layers {
+            width: 64,
+            height: 36,
+            layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false }],
+        };
+        c.composite(&plan);
+    }
+    // Evicted textures from earlier frames (each with 3 YUV planes) should be returned to the pool
+    assert!(c.pool_texture_count() > 0, "texture pool should contain recycled textures, found 0");
+}
+
+#[test]
+fn uniform_pool_recycles_buffers() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    assert_eq!(c.pool_uniform_count(), 0);
+    let frame1 = yuv_frame(64, 36);
+    let frame2 = yuv_frame(64, 36);
+    let plan = FramePlan::Layers {
+        width: 64,
+        height: 36,
+        layers: vec![
+            PlanLayer { frame: frame1, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
+            PlanLayer { frame: frame2, matrix: Affine::IDENTITY, opacity: 0.5, blend: Blend::Normal, fx: None, is_adjustment: false },
+        ],
+    };
+    c.composite(&plan);
+    // After composite submission, both layer uniform buffers are returned to the pool
+    assert_eq!(c.pool_uniform_count(), 2, "uniform pool should contain 2 recycled buffers");
+    // Rendering a subsequent frame should reuse the pooled buffers without growing indefinitely
+    c.composite(&plan);
+    assert_eq!(c.pool_uniform_count(), 2, "uniform pool count should remain stable at 2");
+}
+
+#[test]
+fn active_frame_textures_are_not_evicted() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    // Create 26 layers in a single frame (exceeding LRU capacity 24)
+    let layers: Vec<PlanLayer> = (0..26)
+        .map(|_| PlanLayer { frame: yuv_frame(64, 36), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false })
+        .collect();
+    let plan = FramePlan::Layers { width: 64, height: 36, layers };
+    c.composite(&plan);
+    // Since all 26 frames were used in the active frame, none should be evicted to pool during this frame
+    assert_eq!(c.pool_texture_count(), 0, "active frame textures must not be evicted to pool");
+}
+
+#[test]
+fn gpu_adjustment_layer_matches_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (160usize, 90usize);
+    let bg = yuv_frame(w as u32, h as u32);
+    let op = filmcraft_render::gpufx::FxOp::BrightnessContrast { br: 0.2, co: 1.3 };
+    let fx = Arc::new(filmcraft_render::plan::LayerFx { size: (w as u32, h as u32), decimation: 1, ops: vec![op] });
+    let plan = FramePlan::Layers {
+        width: w,
+        height: h,
+        layers: vec![
+            PlanLayer { frame: bg, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
+            PlanLayer::adjustment(Affine::IDENTITY, 0.8, Blend::Normal, fx),
+        ],
+    };
+    let cpu = execute_cpu(&plan).over_black_rgba8();
+    c.composite(&plan);
+    let (gw, gh, gpu) = c.read_output().expect("readback");
+    assert_eq!((gw as usize, gh as usize), (w, h));
+    let mut diffs: Vec<u32> =
+        cpu.chunks(4).zip(gpu.chunks(4)).map(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).unsigned_abs()).max().unwrap_or(0)).collect();
+    diffs.sort_unstable();
+    let p99 = diffs[diffs.len() * 99 / 100];
+    let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
+    assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}");
 }

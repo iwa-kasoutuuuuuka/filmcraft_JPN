@@ -49,6 +49,7 @@ const OP_HFLIP: u32 = 26;
 const OP_VFLIP: u32 = 27;
 const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
+const OP_LUMETRI: u32 = 30;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -174,6 +175,13 @@ fn steps(op: &FxOp) -> Vec<Step> {
         }
         FxOp::AlphaAdjust { opacity, ignore, invert, mask_only } => {
             out.push(step(OP_ALPHA_ADJUST, [*ignore as u32, *invert as u32, *mask_only as u32, 0], &[*opacity]));
+        }
+        FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect } => {
+            out.push(step(
+                OP_LUMETRI,
+                [0; 4],
+                &[*temp, *tint, *exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *vib, *faded, *va, *vmid, *vround, *vfeather, *aspect],
+            ));
         }
     }
     out

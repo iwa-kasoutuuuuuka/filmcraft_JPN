@@ -45,6 +45,7 @@ const OP_HFLIP: u32 = 26u;
 const OP_VFLIP: u32 = 27u;
 const OP_MIRROR: u32 = 28u;
 const OP_OFFSET: u32 = 29u;
+const OP_LUMETRI: u32 = 30u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -466,6 +467,94 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let q = sample_clamped(uu, vv);
             let o = ld(p);
             return q + (o - q) * u.p0.z;
+        }
+        case OP_LUMETRI: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let c = o.rgb / a;
+            let temp = u.p0.x;
+            let tint = u.p0.y;
+            let exposure = u.p0.z;
+            let contrast = u.p0.w;
+
+            let hl = u.p1.x;
+            let sh = u.p1.y;
+            let wh = u.p1.z;
+            let bl = u.p1.w;
+
+            let sat = u.p2.x;
+            let vib = u.p2.y;
+            let faded = u.p2.z;
+            let va = u.p2.w;
+
+            let vmid = u.p3.x;
+            let vround = u.p3.y;
+            let vfeather = u.p3.z;
+            let aspect = u.p3.w;
+
+            let gains = vec3<f32>(1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp);
+            let lin = vec3<f32>(c.x * gains.x * exposure, c.y * gains.y * exposure, c.z * gains.z * exposure);
+            var v = enc(lin);
+
+            let b0 = -bl * 0.15;
+            let w0 = 1.0 - wh * 0.15;
+            let denom = max(w0 - b0, 1e-3);
+            v = (v - vec3<f32>(b0)) / denom;
+
+            let l = 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
+            let ws = powf(clamp(1.0 - l, 0.0, 1.0), 3.0);
+            let whl = powf(clamp(l, 0.0, 1.0), 3.0);
+            let nl = max(l + sh * 0.35 * ws + hl * 0.35 * whl, 0.0);
+            if l > 1e-5 {
+                let k = nl / l;
+                v = v * k;
+            }
+
+            if abs(contrast) > 1e-4 {
+                let k = 1.0 + contrast;
+                let q = clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
+                let s = q * q * (vec3<f32>(3.0) - 2.0 * q);
+                if k >= 1.0 {
+                    v = q + (s - q) * (k - 1.0);
+                } else {
+                    v = vec3<f32>(0.5) + (q - vec3<f32>(0.5)) * k;
+                }
+            }
+
+            if faded > 0.0 {
+                v = v * (1.0 - 0.25 * faded) + vec3<f32>(0.12 * faded);
+            }
+
+            let l3 = 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
+            let max_c = max(v.x, max(v.y, v.z));
+            let min_c = min(v.x, min(v.y, v.z));
+            let cur_sat = max_c - min_c;
+            let s_factor = sat * (1.0 + vib * (1.0 - clamp(cur_sat, 0.0, 1.0)));
+            v = vec3<f32>(l3) + (v - vec3<f32>(l3)) * s_factor;
+
+            if abs(va) > 1e-4 {
+                var round_scale = 1.0;
+                if vround < 0.0 {
+                    round_scale = powf(aspect, -vround);
+                }
+                let s = size();
+                let nx = (f32(p.x) / f32(s.x) - 0.5) * 2.0 * round_scale;
+                let ny = (f32(p.y) / f32(s.y) - 0.5) * 2.0;
+                let d = sqrt(nx * nx + ny * ny) / 1.41421356;
+                let edge = clamp((d - vmid * 0.9) / (max(vfeather, 0.01) * 0.9), 0.0, 1.0);
+                let e2 = edge * edge * (3.0 - 2.0 * edge);
+                let k = 1.0 + va * 0.2 * e2;
+                if va < 0.0 {
+                    v = v * max(k, 0.0);
+                } else {
+                    v = v + (vec3<f32>(1.0) - v) * (k - 1.0);
+                }
+            }
+
+            return vec4(dec(v) * a, a);
         }
         default: {
             let o = ld(p);
