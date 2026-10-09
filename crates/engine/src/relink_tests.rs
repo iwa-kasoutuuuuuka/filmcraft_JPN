@@ -76,7 +76,9 @@ fn moved_media_opens_offline_and_relinks_others_by_folder() {
     assert!(!s.offline.prompt);
     assert_eq!(frame_rgba(&mut s, 3, 1.0).2, online, "relinked media renders as before the move");
     let b_path = s.project.item(items[1]).unwrap().as_media().unwrap().media.clone();
-    assert_eq!(b_path, filmcraft_project::MediaRef::File { path: moved.join("b.mov").to_string_lossy().into_owned() });
+    let norm = |p: &str| p.replace('\\', "/");
+    let filmcraft_project::MediaRef::File { path: b_path } = b_path else { panic!("b is file media") };
+    assert_eq!(norm(&b_path), norm(&moved.join("b.mov").to_string_lossy()));
     // undo brings the old (missing) paths back, and the slate with them
     s.execute("edit.undo", json!({})).unwrap();
     assert!(psnr(&frame_rgba(&mut s, 3, 1.0).2, &slate) > 40.0);

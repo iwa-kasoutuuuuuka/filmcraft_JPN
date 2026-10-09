@@ -322,7 +322,12 @@ fn expand_home(p: &str) -> String {
 fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, suffix: Option<usize>) -> String {
     let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
     let base = match str_p(p, "path").map(expand_home) {
-        Some(x) if x.ends_with('/') || x.ends_with('\\') || Path::new(&x).is_dir() => Path::new(&x).join(file_safe(&name)).to_string_lossy().to_string(),
+        // trailing separators are dropped first: on a Windows verbatim path (`\\?\C:\dir`) a `/` is
+        // a literal character, so `dir/` + `\name` would be an invalid file name
+        Some(x) if x.ends_with('/') || x.ends_with('\\') || Path::new(&x).is_dir() => {
+            let dir = x.trim_end_matches(['/', '\\']);
+            Path::new(if dir.is_empty() { x.as_str() } else { dir }).join(file_safe(&name)).to_string_lossy().to_string()
+        }
         Some(x) => x,
         None => default_export_dir(s).join(file_safe(&name)).to_string_lossy().to_string(),
     };

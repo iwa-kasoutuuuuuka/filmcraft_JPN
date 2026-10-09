@@ -176,7 +176,8 @@ fn mxf_formats_and_presets() {
     assert!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).format.contains("MXF OP1a (Apple ProRes)"));
     let names: Vec<String> = builtin_presets().into_iter().filter(|p| p.settings.format.is_mxf()).map(|p| p.name).collect();
     assert_eq!(names.len(), 4, "{names:?}");
-    assert_eq!(opatom_audio_paths("/a/b/clip.mxf", 2), vec!["/a/b/clip_A1.mxf".to_string(), "/a/b/clip_A2.mxf".to_string()]);
+    let paths: Vec<String> = opatom_audio_paths("/a/b/clip.mxf", 2).into_iter().map(|p| p.replace(std::path::MAIN_SEPARATOR, "/")).collect();
+    assert_eq!(paths, vec!["/a/b/clip_A1.mxf".to_string(), "/a/b/clip_A2.mxf".to_string()]);
 }
 
 /// ffprobe identifies our files (operational pattern, codec, frame count, duration, timecode);

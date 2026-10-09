@@ -354,6 +354,58 @@ pub fn normalize(s: &str) -> std::result::Result<String, String> {
     Chord::parse(s).map(|c| c.canonical())
 }
 
+/// Off macOS `Ctrl` and `Cmd` are one key (`Chord::effective`), so a preset written for the Mac can
+/// bind the same key twice (`Cmd+9` and `Ctrl+9`). The `Cmd` binding keeps the key; each colliding
+/// `Ctrl` binding moves to `Ctrl+Alt+<key>` (then `Ctrl+Alt+Shift+<key>`) when that is free in its
+/// context, and is left unassigned otherwise (the command stays in the menus and the command
+/// search). On the Mac nothing changes. Deterministic, and the user can still rebind everything.
+pub(crate) fn resolve_platform_conflicts(bindings: &mut Vec<Binding>, p: Platform) {
+    if p.is_mac() {
+        return;
+    }
+    let eff = |b: &Binding| b.chord().map(|c| (b.context().to_string(), c.effective(p).canonical()));
+    let mut taken: std::collections::BTreeSet<(String, String)> = bindings.iter().filter_map(eff).collect();
+    let mut groups: BTreeMap<(String, String), Vec<usize>> = BTreeMap::new();
+    for (i, b) in bindings.iter().enumerate() {
+        if let Some(k) = eff(b) {
+            groups.entry(k).or_default().push(i);
+        }
+    }
+    let is_ctrl = |i: &usize| bindings.get(*i).and_then(Binding::chord).is_some_and(|c| c.mods.ctrl && !c.mods.cmd);
+    // (binding index, its new keys, or None to unassign)
+    let mut plan: Vec<(usize, Option<String>)> = Vec::new();
+    for ((ctx, _), idxs) in &groups {
+        let commands: std::collections::BTreeSet<&str> = idxs.iter().filter_map(|i| bindings.get(*i)).map(|b| b.command.as_str()).collect();
+        if commands.len() < 2 || idxs.iter().all(is_ctrl) {
+            continue;
+        }
+        for i in idxs.iter().filter(|i| is_ctrl(i)) {
+            let Some(c) = bindings.get(*i).and_then(Binding::chord) else { continue };
+            let free = [false, true]
+                .into_iter()
+                .filter(|shift| *shift || !c.mods.shift)
+                .map(|shift| Chord { mods: Mods { alt: true, shift: shift || c.mods.shift, ..c.mods }, key: c.key })
+                .find(|cand| !taken.contains(&(ctx.clone(), cand.effective(p).canonical())));
+            if let Some(cand) = &free {
+                taken.insert((ctx.clone(), cand.effective(p).canonical()));
+            }
+            plan.push((*i, free.map(|f| f.canonical())));
+        }
+    }
+    let mut remove = Vec::new();
+    for (i, keys) in plan {
+        match (keys, bindings.get_mut(i)) {
+            (Some(k), Some(b)) => b.keys = k,
+            (None, Some(_)) => remove.push(i),
+            _ => {}
+        }
+    }
+    remove.sort_unstable_by(|a, b| b.cmp(a));
+    for i in remove {
+        bindings.remove(i);
+    }
+}
+
 /// One key binding. `panel: None` = application-wide.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Binding {
@@ -465,7 +517,7 @@ pub struct PresetFile {
 
 #[derive(Clone, Debug)]
 struct Snapshot {
-    bindings: Vec<Binding>,
+    pub(crate) bindings: Vec<Binding>,
     preset: String,
     modified: bool,
 }
@@ -593,6 +645,7 @@ impl Shortcuts {
             _ => return None,
         };
         self.apply_table(&mut b, &table);
+        resolve_platform_conflicts(&mut b, Platform::current());
         Some(b)
     }
 

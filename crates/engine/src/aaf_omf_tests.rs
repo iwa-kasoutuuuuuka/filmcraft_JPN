@@ -46,7 +46,7 @@ fn imported_seq(r: &serde_json::Value) -> ItemId {
 fn path_of(s: &Session, item: ItemId) -> String {
     match &s.project.item(item).unwrap().kind {
         ItemKind::Media(m) => match &m.media {
-            MediaRef::File { path } => path.clone(),
+            MediaRef::File { path } => path.replace('\\', "/"),
             _ => String::new(),
         },
         _ => String::new(),
@@ -159,7 +159,7 @@ fn aaf_video_mixdown() {
     assert_eq!(q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>(), 1);
     let v = &q.video_tracks[0].items[0];
     assert_eq!(v.duration, FrameRate::FPS_24.tick_of(48));
-    assert_eq!(path_of(&s, v.item), mov);
+    assert_eq!(path_of(&s, v.item), mov.replace('\\', "/"));
     let m = s.project.item(v.item).unwrap().as_media().unwrap();
     assert!(!m.offline);
     assert_eq!(m.info.video.as_ref().map(|v| (v.width, v.height)), Some((64, 36)));
