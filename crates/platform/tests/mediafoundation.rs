@@ -243,3 +243,24 @@ fn cpu_time() -> f64 {
         .output();
     out.ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().replace(',', ".").parse().ok()).unwrap_or(0.0)
 }
+
+/// Decode the MP4 / MOV named by `FILMCRAFT_HW_FILE` with both decoders and compare them: a tool
+/// for looking into a file the hardware path mishandles (run with `--ignored --nocapture`).
+#[test]
+#[ignore = "needs FILMCRAFT_HW_FILE"]
+fn a_file_decodes_like_the_software_decoder() {
+    let Some(path) = std::env::var_os("FILMCRAFT_HW_FILE") else { return };
+    let s = read_stream(std::path::Path::new(&path));
+    eprintln!("entry: {:?} {:?}, {} samples", s.entry.format, s.entry.video.as_ref().map(|v| (v.width, v.height)), s.samples.len());
+    match NalStreamInfo::from_entry(&s.entry) {
+        None => panic!("not an avcC / hvcC stream"),
+        Some(Err(e)) => panic!("stream info: {e}"),
+        Some(Ok(i)) => eprintln!(
+            "coded {:?} crop {:?} chroma {} bits {} interlaced {} reorder {}",
+            i.coded, i.crop, i.chroma_format_idc, i.bit_depth_luma, i.interlaced, i.reorder
+        ),
+    }
+    let mut hw = MfDecoder::new(info(&s)).unwrap_or_else(|why| panic!("declined: {why}"));
+    assert!(filmcraft_platform::mediafoundation_factory(&s.entry).is_some(), "the factory takes it");
+    assert_same("file", &decode_all(&mut hw, &s.samples), &decode_all(software(&s).as_mut(), &s.samples));
+}
