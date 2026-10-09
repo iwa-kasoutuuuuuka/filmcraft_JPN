@@ -84,7 +84,7 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.label(RichText::new(log.count(l).to_string()).color(t.text_dim));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let r = ui.button("Clear All");
+            let r = ui.button(crate::i18n::t("Clear All", "すべて消去"));
             elems.push(("events.clearAll".into(), r.rect, "Clear All".into()));
             clear = r.clicked();
         });
@@ -94,7 +94,7 @@ pub fn events(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let list_h = (ui.available_height() - details_h).max(20.0);
     egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
         if entries.is_empty() {
-            ui.label(RichText::new("No events.").color(t.text_faint));
+            ui.label(RichText::new(crate::i18n::t("No events.", "イベントはありません。")).color(t.text_faint));
         }
         for (n, e) in entries.iter().enumerate() {
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
@@ -153,7 +153,7 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut elems: Vec<(String, Rect, String)> = Vec::new();
     let mut cancel = None;
     let mut finished = show_finished;
-    let r = ui.checkbox(&mut finished, "Show finished jobs");
+    let r = ui.checkbox(&mut finished, crate::i18n::t("Show finished jobs", "完了したジョブを表示"));
     elems.push(("progress.showFinished".into(), r.rect, "Show finished jobs".into()));
     ui.add_space(4.0);
     let active = jobs.iter().filter(|j| j["finished"] != json!(true)).count();
@@ -174,7 +174,7 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let err = j["result"]["error"].as_str();
             let status = match (done, err) {
                 (true, Some(e)) if e.to_ascii_lowercase().contains("cancel") => "Cancelled".to_string(),
-                (true, Some(e)) => format!("Failed: {e}"),
+                (true, Some(e)) => crate::tf!("Failed: {e}", "失敗: {e}"),
                 (true, None) => "Done".to_string(),
                 (false, _) => {
                     let s = j["status"].as_str().unwrap_or("");
@@ -203,13 +203,15 @@ pub fn progress(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.painter().line_segment([cr.center() + vec2(-5.0, -5.0), cr.center() + vec2(5.0, 5.0)], s);
                 ui.painter().line_segment([cr.center() + vec2(5.0, -5.0), cr.center() + vec2(-5.0, 5.0)], s);
                 elems.push((format!("progress.cancel.{id}"), cr, format!("Cancel {label}")));
-                if resp.on_hover_text("Cancel").clicked() {
+                if resp.on_hover_text(crate::i18n::t("Cancel", "キャンセル")).clicked() {
                     cancel = Some(id);
                 }
             }
         }
         if shown == 0 {
-            ui.label(RichText::new(if active == 0 { "No background jobs." } else { "" }).color(t.text_faint));
+            ui.label(
+                RichText::new(if active == 0 { crate::i18n::t("No background jobs.", "バックグラウンドジョブはありません。") } else { "" }).color(t.text_faint),
+            );
         }
     });
     for (id, r, l) in elems {

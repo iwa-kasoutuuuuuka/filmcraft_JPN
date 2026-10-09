@@ -120,7 +120,7 @@ pub fn apply_preset(app: &mut FilmcraftApp, name: &str) -> bool {
             true
         }
         None => {
-            app.ui.status = format!("No export preset named `{name}`");
+            app.ui.status = crate::tf!("No export preset named `{name}`", "`{name}` という書き出しプリセットはありません");
             false
         }
     }
@@ -165,7 +165,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.painter().rect_filled(r, t.radius, t.panel_bg);
     }
     let Some(seq_id) = app.session.state.active_sequence else {
-        crate::dock::placeholder(ui, mid, &t, "Open a sequence to export");
+        crate::dock::placeholder(ui, mid, &t, crate::i18n::t("Open a sequence to export", "書き出すシーケンスを開いてください"));
         queue_column(app, ui, left);
         return;
     };
@@ -195,21 +195,28 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let mut reg = Reg::default();
     let p = ui.painter();
-    p.text(rect.min + vec2(14.0, 20.0), Align2::LEFT_CENTER, "Destinations", Tokens::semibold(13.0), t.text);
+    p.text(rect.min + vec2(14.0, 20.0), Align2::LEFT_CENTER, crate::i18n::t("Destinations", "書き出し先"), Tokens::semibold(13.0), t.text);
     let mf = Rect::from_min_size(rect.min + vec2(8.0, 38.0), vec2(rect.width() - 16.0, 26.0));
     p.rect_filled(mf, 4.0, t.row_selected);
-    p.text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, "Media File", Tokens::ui(12.5), t.text);
+    p.text(pos2(mf.min.x + 10.0, mf.center().y), Align2::LEFT_CENTER, crate::i18n::t("Media File", "メディアファイル"), Tokens::ui(12.5), t.text);
     reg.add("export.destination.mediaFile", mf, "Media File");
     let qtop = mf.max.y + 18.0;
     let n = app.session.export_queue.items.len();
-    p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, format!("Queue ({n})"), Tokens::semibold(13.0), t.text);
+    p.text(pos2(rect.min.x + 14.0, qtop), Align2::LEFT_CENTER, crate::tf!("Queue ({n})", "キュー ({n})"), Tokens::semibold(13.0), t.text);
     let body = Rect::from_min_max(pos2(rect.min.x + 8.0, qtop + 14.0), pos2(rect.max.x - 8.0, rect.max.y - 40.0));
     let items: Vec<Value> = app.session.execute("export.queue.list", json!({})).ok().and_then(|v| v["items"].as_array().cloned()).unwrap_or_default();
     let mut action: Option<(&'static str, Value)> = None;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("export-queue"));
     egui::ScrollArea::vertical().id_salt("export-queue-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
         if items.is_empty() {
-            ui.label(egui::RichText::new("Send exports here with Send to Queue, then start the queue.").color(t.text_dim).size(11.5));
+            ui.label(
+                egui::RichText::new(crate::i18n::t(
+                    "Send exports here with Send to Queue, then start the queue.",
+                    "「キューに送信」で書き出しをここに追加し、キューを開始します。",
+                ))
+                .color(t.text_dim)
+                .size(11.5),
+            );
         }
         for (i, it) in items.iter().enumerate() {
             let id = it["id"].as_u64().unwrap_or(0);
@@ -223,9 +230,9 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let preset = it["preset"].as_str().filter(|s| !s.is_empty()).unwrap_or(CUSTOM);
                     let (label, col) = match status {
                         "ready" => ("Ready".to_string(), t.text_dim),
-                        "encoding" => (format!("Encoding {:.0}%", it["progress"].as_f64().unwrap_or(0.0) * 100.0), t.accent),
+                        "encoding" => (crate::tf!("Encoding {:.0}%", "エンコード中 {:.0}%", it["progress"].as_f64().unwrap_or(0.0) * 100.0), t.accent),
                         "done" => ("Done".to_string(), t.render_green),
-                        "failed" => (format!("Failed: {}", it["error"].as_str().unwrap_or("")), t.danger),
+                        "failed" => (crate::tf!("Failed: {}", "失敗: {}", it["error"].as_str().unwrap_or("")), t.danger),
                         _ => ("Cancelled".to_string(), t.text_faint),
                     };
                     ui.label(egui::RichText::new(format!("{preset} · {label}")).size(11.0).color(col));
@@ -259,17 +266,20 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let has_ready = items.iter().any(|i| i["status"] == "ready");
     let foot = Rect::from_min_max(pos2(rect.min.x + 8.0, rect.max.y - 34.0), pos2(rect.max.x - 8.0, rect.max.y - 6.0));
     let mut f = ui.new_child(egui::UiBuilder::new().max_rect(foot).layout(egui::Layout::left_to_right(egui::Align::Center)));
-    let r = f.add_enabled(!running && has_ready, egui::Button::new("Start Queue"));
+    let r = f.add_enabled(!running && has_ready, egui::Button::new(crate::i18n::t("Start Queue", "キューを開始")));
     reg.add("export.queue.start", r.rect, "Start Queue");
     if r.clicked() {
         action = Some(("export.queue.start", json!({})));
     }
-    let r = f.add_enabled(running, egui::Button::new("Stop"));
+    let r = f.add_enabled(running, egui::Button::new(crate::i18n::t("Stop", "停止")));
     reg.add("export.queue.stop", r.rect, "Stop");
     if r.clicked() {
         action = Some(("export.queue.stop", json!({})));
     }
-    let r = f.add_enabled(items.iter().any(|i| matches!(i["status"].as_str(), Some("done" | "failed" | "cancelled"))), egui::Button::new("Clear Finished"));
+    let r = f.add_enabled(
+        items.iter().any(|i| matches!(i["status"].as_str(), Some("done" | "failed" | "cancelled"))),
+        egui::Button::new(crate::i18n::t("Clear Finished", "完了分をクリア")),
+    );
     reg.add("export.queue.clear", r.rect, "Clear Finished");
     if r.clicked() {
         action = Some(("export.queue.clear", json!({})));
@@ -291,7 +301,7 @@ const LABEL_W: f32 = 132.0;
 /// A labelled settings row.
 fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(LABEL_W, 20.0), egui::Label::new(egui::RichText::new(label).color(t.text_dim).size(12.0)).truncate());
+        ui.add_sized(vec2(LABEL_W, 20.0), egui::Label::new(egui::RichText::new(crate::i18n::tr_export(label)).color(t.text_dim).size(12.0)).truncate());
         add(ui)
     })
     .inner
@@ -300,10 +310,10 @@ fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui
 /// A combo box over `options` (label, enabled); returns the chosen index.
 fn combo(ui: &mut egui::Ui, reg: &mut Reg, id: &str, selected: &str, options: &[(String, bool)], width: f32) -> Option<usize> {
     let mut chosen = None;
-    let r = egui::ComboBox::from_id_salt(id).selected_text(selected).width(width).show_ui(ui, |ui| {
+    let r = egui::ComboBox::from_id_salt(id).selected_text(crate::i18n::tr_export(selected)).width(width).show_ui(ui, |ui| {
         for (i, (label, enabled)) in options.iter().enumerate() {
-            let resp = ui.add_enabled(*enabled, egui::Button::selectable(label == selected, label));
-            let resp = if *enabled { resp } else { resp.on_disabled_hover_text("Not supported by FilmCraft's encoders yet") };
+            let resp = ui.add_enabled(*enabled, egui::Button::selectable(label == selected, crate::i18n::tr_export(label)));
+            let resp = if *enabled { resp } else { resp.on_disabled_hover_text(crate::i18n::tr_export("Not supported by FilmCraft's encoders yet")) };
             reg.add(format!("{id}.option.{i}"), resp.rect, label.clone());
             if resp.clicked() {
                 chosen = Some(i);
@@ -339,13 +349,13 @@ fn drag(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut f64, range: std::ops
 }
 
 fn check(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut bool, label: &str) -> bool {
-    let r = ui.checkbox(v, label);
+    let r = ui.checkbox(v, crate::i18n::tr_export(label));
     reg.add(id, r.rect, label);
     r.changed()
 }
 
 fn text(ui: &mut egui::Ui, reg: &mut Reg, id: &str, v: &mut String, hint: &str) {
-    let r = ui.add(egui::TextEdit::singleline(v).hint_text(hint).desired_width(f32::INFINITY));
+    let r = ui.add(egui::TextEdit::singleline(v).hint_text(crate::i18n::tr_ui(hint)).desired_width(f32::INFINITY));
     reg.add(id, r.rect, hint);
 }
 
@@ -390,20 +400,22 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(14.0, 10.0))).id_salt("export-settings"));
     let ex = &mut app.ui.export;
     egui::ScrollArea::vertical().id_salt("export-settings-scroll").auto_shrink([false, false]).show(&mut child, |ui| {
-        ui.label(egui::RichText::new("Media File").strong().size(14.0));
+        ui.label(egui::RichText::new(crate::i18n::t("Media File", "メディアファイル")).strong().size(14.0));
         ui.add_space(6.0);
-        row(ui, &t, "File Name", |ui| text(ui, &mut reg, "export.fileName", &mut ex.file_name, "Sequence name"));
-        row(ui, &t, "Location", |ui| {
+        row(ui, &t, crate::i18n::t("File Name", "ファイル名"), |ui| {
+            text(ui, &mut reg, "export.fileName", &mut ex.file_name, crate::i18n::t("Sequence name", "シーケンス名"))
+        });
+        row(ui, &t, crate::i18n::t("Location", "保存先"), |ui| {
             let r = ui.small_button("…");
             reg.add("export.location.browse", r.rect, "Choose folder");
             pick_folder = r.clicked();
-            text(ui, &mut reg, "export.location", &mut ex.location, "Folder");
+            text(ui, &mut reg, "export.location", &mut ex.location, crate::i18n::t("Folder", "フォルダー"));
         });
         // Preset: favourites, then every preset by category, then More presets…
-        row(ui, &t, "Preset", |ui| {
+        row(ui, &t, crate::i18n::t("Preset", "プリセット"), |ui| {
             let r = egui::ComboBox::from_id_salt("export.preset").selected_text(&ex.preset).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
                 if !favs.is_empty() {
-                    ui.label(egui::RichText::new("Favorites").color(t.text_dim).size(11.0));
+                    ui.label(egui::RichText::new(crate::i18n::t("Favorites", "お気に入り")).color(t.text_dim).size(11.0));
                     for f in &favs {
                         if ui.selectable_label(*f == ex.preset, f).clicked() {
                             chosen_preset = Some(f.clone());
@@ -422,7 +434,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
                 ui.separator();
-                if ui.button("More presets…").clicked() {
+                if ui.button(crate::i18n::t("More presets…", "その他のプリセット…")).clicked() {
                     open_manager = true;
                 }
             });
@@ -430,13 +442,13 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
         ui.horizontal(|ui| {
             ui.add_space(LABEL_W + 8.0);
-            let r = ui.link("More presets…");
+            let r = ui.link(crate::i18n::t("More presets…", "その他のプリセット…"));
             reg.add("export.preset.more", r.rect, "More presets…");
             if r.clicked() {
                 open_manager = true;
             }
         });
-        row(ui, &t, "Format", |ui| {
+        row(ui, &t, crate::i18n::t("Format", "形式"), |ui| {
             let labels: Vec<(String, bool)> = Format::ALL.iter().map(|f| (f.label().to_string(), filmcraft_engine::export::available(*f))).collect();
             if let Some(i) = combo(ui, &mut reg, "export.format", ex.settings.format.label(), &labels, ui.available_width() - 4.0) {
                 let f = Format::ALL[i];
@@ -456,7 +468,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
         ui.add_space(8.0);
         let s = &mut ex.settings;
-        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", "Video", &t) {
+        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", crate::i18n::t("Video", "ビデオ"), &t) {
             video_section(ui, &mut reg, s, &t, seq_w, seq_h);
         }
         if (s.has_audio()
@@ -466,37 +478,47 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             || s.format.is_mxf())
             && !s.is_image_sequence()
             && s.format != Format::Gif
-            && section(ui, &mut reg, &mut ex.open_sections, "audio", "Audio", &t)
+            && section(ui, &mut reg, &mut ex.open_sections, "audio", crate::i18n::t("Audio", "オーディオ"), &t)
         {
             audio_section(ui, &mut reg, s, &t, seq_sr);
         }
-        if s.format == Format::H264 && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", "Multiplexer", &t) {
-            row(ui, &t, "Multiplexer", |ui| {
+        if s.format == Format::H264 && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", crate::i18n::t("Multiplexer", "マルチプレクサー"), &t)
+        {
+            row(ui, &t, crate::i18n::t("Multiplexer", "多重化"), |ui| {
                 let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
                 if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
                     s.multiplexer = if i == 0 { Multiplexer::Mp4 } else { Multiplexer::Mov };
                 }
             });
         }
-        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "captions", "Captions", &t) {
+        if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "captions", crate::i18n::t("Captions", "キャプション"), &t) {
             if !has_captions {
-                ui.label(egui::RichText::new("The sequence has no caption track.").color(t.text_dim).size(11.5));
+                ui.label(
+                    egui::RichText::new(crate::i18n::t("The sequence has no caption track.", "シーケンスにキャプショントラックがありません。"))
+                        .color(t.text_dim)
+                        .size(11.5),
+                );
             }
-            row(ui, &t, "Export Options", |ui| {
+            row(ui, &t, crate::i18n::t("Export Options", "書き出しオプション"), |ui| {
+                let modes = [
+                    crate::i18n::t("None", "なし"),
+                    crate::i18n::t("Burn Captions Into Video", "ビデオにキャプションを焼き付け"),
+                    crate::i18n::t("Create Sidecar File", "サイドカーファイルを作成"),
+                ];
                 let cur = if s.burn_captions {
-                    "Burn Captions Into Video"
+                    modes[1]
                 } else if s.caption_sidecar.is_some() {
-                    "Create Sidecar File"
+                    modes[2]
                 } else {
-                    "None"
+                    modes[0]
                 };
-                if let Some(i) = combo(ui, &mut reg, "export.captions.mode", cur, &opts(&["None", "Burn Captions Into Video", "Create Sidecar File"]), 220.0) {
+                if let Some(i) = combo(ui, &mut reg, "export.captions.mode", cur, &opts(&modes), 220.0) {
                     s.burn_captions = i == 1;
                     s.caption_sidecar = (i == 2).then(|| s.caption_sidecar.clone().unwrap_or_else(|| "srt".into()));
                 }
             });
             if let Some(kind) = s.caption_sidecar.clone() {
-                row(ui, &t, "File Format", |ui| {
+                row(ui, &t, crate::i18n::t("File Format", "ファイル形式"), |ui| {
                     let cur = if kind == "vtt" { "WebVTT (.vtt)" } else { "SubRip Subtitle (.srt)" };
                     if let Some(i) = combo(ui, &mut reg, "export.captions.format", cur, &opts(&["SubRip Subtitle (.srt)", "WebVTT (.vtt)"]), 220.0) {
                         s.caption_sidecar = Some(if i == 0 { "srt" } else { "vtt" }.into());
@@ -504,19 +526,19 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 });
             }
         }
-        if section(ui, &mut reg, &mut ex.open_sections, "effects", "Effects", &t) {
+        if section(ui, &mut reg, &mut ex.open_sections, "effects", crate::i18n::t("Effects", "エフェクト"), &t) {
             pick_overlay = effects_section(ui, &mut reg, s, &t);
         }
         if matches!(s.format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg)
-            && section(ui, &mut reg, &mut ex.open_sections, "metadata", "Metadata", &t)
+            && section(ui, &mut reg, &mut ex.open_sections, "metadata", crate::i18n::t("Metadata", "メタデータ"), &t)
         {
             let m = &mut s.metadata;
             for (key, label, v) in [
-                ("title", "Title", &mut m.title),
-                ("creator", "Creator", &mut m.creator),
-                ("copyright", "Copyright", &mut m.copyright),
-                ("description", "Description", &mut m.description),
-                ("comment", "Comment", &mut m.comment),
+                ("title", crate::i18n::t("Title", "タイトル"), &mut m.title),
+                ("creator", crate::i18n::t("Creator", "作成者"), &mut m.creator),
+                ("copyright", crate::i18n::t("Copyright", "著作権"), &mut m.copyright),
+                ("description", crate::i18n::t("Description", "説明"), &mut m.description),
+                ("comment", crate::i18n::t("Comment", "コメント"), &mut m.comment),
             ] {
                 row(ui, &t, label, |ui| text(ui, &mut reg, &format!("export.metadata.{key}"), v, ""));
             }
@@ -619,8 +641,8 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             });
             if let Some(bpp) = s.adaptive_bitrate {
                 row(ui, t, "Target Bitrate", |ui| {
-                    ui.label(egui::RichText::new(format!("Adaptive ({bpp} bits per pixel)")).size(12.0));
-                    let r = ui.small_button("Set");
+                    ui.label(egui::RichText::new(crate::tf!("Adaptive ({bpp} bits per pixel)", "アダプティブ({bpp} ビット/ピクセル)")).size(12.0));
+                    let r = ui.small_button(crate::i18n::t("Set", "設定"));
                     reg.add("export.video.fixedBitrate", r.rect, "Set a fixed bitrate");
                     if r.clicked() {
                         s.adaptive_bitrate = None;
@@ -774,7 +796,7 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
         if fx.image_overlay.enabled {
             let o = &mut fx.image_overlay;
             row(ui, t, "Image", |ui| {
-                let r = ui.small_button("Browse…");
+                let r = ui.small_button(crate::i18n::t("Browse…", "参照…"));
                 reg.add("export.effects.imageOverlay.browse", r.rect, "Browse…");
                 browse = r.clicked();
                 text(ui, reg, "export.effects.imageOverlay.path", &mut o.path, "PNG or JPEG file");
@@ -823,7 +845,14 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
 // right: preview, range, summary, buttons
 // ---------------------------------------------------------------------------------------------
 
-const RANGES: [(&str, &str); 4] = [("entire", "Entire Source"), ("inOut", "Source In/Out"), ("workArea", "Work Area"), ("custom", "Custom")];
+fn ranges() -> [(&'static str, &'static str); 4] {
+    [
+        ("entire", crate::i18n::t("Entire Source", "ソース全体")),
+        ("inOut", crate::i18n::t("Source In/Out", "ソースのイン/アウト")),
+        ("workArea", crate::i18n::t("Work Area", "ワークエリア")),
+        ("custom", crate::i18n::t("Custom", "カスタム")),
+    ]
+}
 
 fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id: filmcraft_engine::project::ItemId) {
     let t = app.tokens;
@@ -854,7 +883,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
             ui.painter().with_clip_rect(pic).image(tex, inner, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
         }
     } else {
-        ui.painter().text(pic.center(), Align2::CENTER_CENTER, "Audio only", Tokens::ui(13.0), t.text_dim);
+        ui.painter().text(pic.center(), Align2::CENTER_CENTER, crate::i18n::t("Audio only", "オーディオのみ"), Tokens::ui(13.0), t.text_dim);
     }
     reg.add("export.preview", pic, "Preview");
     // range + scaling
@@ -866,11 +895,11 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     let ex = &mut app.ui.export;
     let has_work_area = q.work_area.is_some();
     child.horizontal(|ui| {
-        ui.label(egui::RichText::new("Range").color(t.text_dim));
-        let cur = RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or("Entire Source");
-        let labels: Vec<(String, bool)> = RANGES.iter().map(|(k, l)| (l.to_string(), *k != "workArea" || has_work_area)).collect();
+        ui.label(egui::RichText::new(crate::i18n::t("Range", "範囲")).color(t.text_dim));
+        let cur = ranges().iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or(crate::i18n::t("Entire Source", "ソース全体"));
+        let labels: Vec<(String, bool)> = ranges().iter().map(|(k, l)| (l.to_string(), *k != "workArea" || has_work_area)).collect();
         if let Some(i) = combo(ui, &mut reg, "export.range", cur, &labels, 140.0) {
-            ex.range = RANGES[i].0.into();
+            ex.range = ranges()[i].0.into();
         }
         if ex.range == "custom" {
             drag(ui, &mut reg, "export.range.start", &mut ex.custom_start, 0.0..=86_400.0, 0.04, " s", 2);
@@ -879,9 +908,13 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
     });
     if ex.settings.has_video() {
         child.horizontal(|ui| {
-            ui.label(egui::RichText::new("Scaling").color(t.text_dim));
-            let o = [(Scaling::ScaleToFit, "Scale To Fit"), (Scaling::ScaleToFill, "Scale To Fill"), (Scaling::StretchToFill, "Stretch To Fill")];
-            let cur = o.iter().find(|(x, _)| *x == ex.settings.scaling).map(|x| x.1).unwrap_or("Scale To Fit");
+            ui.label(egui::RichText::new(crate::i18n::t("Scaling", "スケーリング")).color(t.text_dim));
+            let o = [
+                (Scaling::ScaleToFit, crate::i18n::t("Scale To Fit", "全体に合わせて拡大/縮小")),
+                (Scaling::ScaleToFill, crate::i18n::t("Scale To Fill", "フレームに合わせて拡大/縮小")),
+                (Scaling::StretchToFill, crate::i18n::t("Stretch To Fill", "フレームサイズに合わせて伸縮")),
+            ];
+            let cur = o.iter().find(|(x, _)| *x == ex.settings.scaling).map(|x| x.1).unwrap_or(crate::i18n::t("Scale To Fit", "全体に合わせて拡大/縮小"));
             let labels: Vec<(String, bool)> = o.iter().map(|(_, l)| (l.to_string(), true)).collect();
             if let Some(i) = combo(ui, &mut reg, "export.scaling", cur, &labels, 140.0) {
                 ex.settings.scaling = o[i].0;
@@ -898,46 +931,58 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
         .inner_margin(egui::Margin::same(10))
         .show(&mut child, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new("Summary").strong());
+            ui.label(egui::RichText::new(crate::i18n::t("Summary", "概要")).strong());
             egui::Grid::new("export-summary-grid").num_columns(2).spacing(vec2(10.0, 3.0)).show(ui, |ui| {
                 let line = |ui: &mut egui::Ui, k: &str, v: &str| {
                     ui.label(egui::RichText::new(k).color(t.text_dim).size(11.5));
                     ui.add(egui::Label::new(egui::RichText::new(v).size(11.5)).wrap_mode(egui::TextWrapMode::Wrap).halign(egui::Align::Min));
                     ui.end_row();
                 };
-                line(ui, "Output", &output_path(ex));
+                line(ui, crate::i18n::t("Output", "出力"), &output_path(ex));
                 line(ui, "", &sum.format);
                 line(ui, "", &sum.video);
                 line(ui, "", &sum.audio);
-                line(ui, "Source", &format!("Sequence, {}x{}, {} fps, {} Hz", q.settings.width, q.settings.height, rate.label(), q.settings.sample_rate));
                 line(
                     ui,
-                    "Range",
-                    &format!("{} ({:.2} s)", RANGES.iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or(""), (range.1 - range.0).seconds()),
+                    crate::i18n::t("Source", "ソース"),
+                    &crate::tf!(
+                        "Sequence, {}x{}, {} fps, {} Hz",
+                        "シーケンス, {}x{}, {} fps, {} Hz",
+                        q.settings.width,
+                        q.settings.height,
+                        rate.label(),
+                        q.settings.sample_rate
+                    ),
+                );
+                line(
+                    ui,
+                    crate::i18n::t("Range", "範囲"),
+                    &format!("{} ({:.2} s)", ranges().iter().find(|(k, _)| *k == ex.range).map(|x| x.1).unwrap_or(""), (range.1 - range.0).seconds()),
                 );
             });
         })
         .response;
     reg.add("export.summary", resp.rect, sum.video.clone());
     child.add_space(4.0);
-    let est = child.label(egui::RichText::new(format!("Estimated file size: {}", format_bytes(sum.estimated_bytes))).color(t.text_dim));
+    let est =
+        child.label(egui::RichText::new(crate::tf!("Estimated file size: {}", "予測ファイルサイズ: {}", format_bytes(sum.estimated_bytes))).color(t.text_dim));
     reg.add("export.estimate", est.rect, sum.estimated_size.clone());
     // buttons
     let go = Rect::from_min_size(pos2(rect.max.x - 120.0, rect.max.y - 44.0), vec2(104.0, 30.0));
     let queue = Rect::from_min_size(pos2(go.min.x - 132.0, go.min.y), vec2(122.0, 30.0));
     let qresp = ui.interact(queue, egui::Id::new("export-queue-send"), Sense::click());
     ui.painter().rect_stroke(queue, 15.0, egui::Stroke::new(1.0, if qresp.hovered() { t.text } else { t.text_dim }), egui::StrokeKind::Inside);
-    ui.painter().text(queue.center(), Align2::CENTER_CENTER, "Send to Queue", Tokens::semibold(12.5), t.text);
+    ui.painter().text(queue.center(), Align2::CENTER_CENTER, crate::i18n::t("Send to Queue", "キューに送信"), Tokens::semibold(12.5), t.text);
     reg.add("export.sendToQueue", queue, "Send to Queue");
     let resp = ui.interact(go, egui::Id::new("export-go"), Sense::click());
     ui.painter().rect_filled(go, 15.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(go.center(), Align2::CENTER_CENTER, "Export", Tokens::semibold(13.0), Color32::WHITE);
+    ui.painter().text(go.center(), Align2::CENTER_CENTER, crate::i18n::t("Export", "書き出し"), Tokens::semibold(13.0), Color32::WHITE);
     reg.add("export.button", go, "Export");
     reg.flush(app);
     if resp.clicked() {
         let r = app.session.execute("file.exportMedia", export_params(app));
         match r {
-            Ok(v) => app.ui.status = format!("Exporting {}", v["path"].as_str().unwrap_or("")),
+            Ok(v) => app.ui.status = crate::tf!("Exporting {}", "書き出し中: {}", v["path"].as_str().unwrap_or("")),
             Err(e) => app.ui.status = e.to_string(),
         }
     }
@@ -948,7 +993,7 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
             p["preset"] = json!(app.ui.export.preset);
         }
         match app.session.execute("export.queue.add", p) {
-            Ok(_) => app.ui.status = "Added to the export queue".into(),
+            Ok(_) => app.ui.status = crate::i18n::t("Added to the export queue", "書き出しキューに追加しました").into(),
             Err(e) => app.ui.status = e.to_string(),
         }
     }
@@ -985,7 +1030,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let all = app.session.export_presets.all();
     let favorite = |n: &str| app.session.export_presets.is_favorite(n);
     let q = m.query.to_ascii_lowercase();
-    egui::Window::new("Preset Manager")
+    egui::Window::new(crate::i18n::t("Preset Manager", "プリセットマネージャー"))
         .id(egui::Id::new("preset-manager"))
         .open(&mut open)
         .collapsible(false)
@@ -1019,7 +1064,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         let (sr, sresp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
                         paint_star(ui.painter(), sr.shrink(2.0), fav, if fav { Color32::from_rgb(0xf5, 0xc2, 0x42) } else { t.text_faint });
                         reg.add(format!("presetManager.favorite.{}", p.name), sr, if fav { "Remove from favorites" } else { "Add to favorites" });
-                        if sresp.on_hover_text("Show in the Preset menu").clicked() {
+                        if sresp.on_hover_text(crate::i18n::t("Show in the Preset menu", "プリセットメニューに表示")).clicked() {
                             cmd = Some(("export.presets.favorite", json!({"name": p.name})));
                         }
                         let sel = preset_key(&m.selected) == preset_key(&p.name);
@@ -1035,7 +1080,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         let _ = r;
                         ui.label(egui::RichText::new(p.settings.format.label()).color(t.text_dim).size(11.0));
                         if !p.builtin {
-                            ui.label(egui::RichText::new("User").color(t.accent).size(10.5));
+                            ui.label(egui::RichText::new(crate::i18n::t("User", "ユーザー")).color(t.accent).size(10.5));
                         }
                     });
                 }
@@ -1046,10 +1091,10 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.label(egui::RichText::new(&p.description).color(t.text_dim).size(11.5));
             }
             ui.horizontal(|ui| {
-                ui.label("Save current settings as:");
-                let r = ui.add(egui::TextEdit::singleline(&mut m.save_name).hint_text("Preset name").desired_width(200.0));
+                ui.label(crate::i18n::t("Save current settings as:", "現在の設定を次の名前で保存:"));
+                let r = ui.add(egui::TextEdit::singleline(&mut m.save_name).hint_text(crate::i18n::t("Preset name", "プリセット名")).desired_width(200.0));
                 reg.add("presetManager.saveName", r.rect, "Preset name");
-                let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new("Save"));
+                let r = ui.add_enabled(!m.save_name.trim().is_empty(), egui::Button::new(crate::i18n::t("Save", "保存")));
                 reg.add("presetManager.save", r.rect, "Save");
                 if r.clicked() {
                     cmd = Some(("export.presets.save", json!({"name": m.save_name.trim(), "settings": settings_json(&app.ui.export.settings)})));
@@ -1057,17 +1102,17 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
             });
             ui.horizontal(|ui| {
-                let r = ui.button("Import…");
+                let r = ui.button(crate::i18n::t("Import…", "読み込み…"));
                 reg.add("presetManager.import", r.rect, "Import…");
                 if r.clicked() {
                     pick = Some("import");
                 }
-                let r = ui.add_enabled(sel.is_some(), egui::Button::new("Export…"));
+                let r = ui.add_enabled(sel.is_some(), egui::Button::new(crate::i18n::t("Export…", "書き出し…")));
                 reg.add("presetManager.export", r.rect, "Export…");
                 if r.clicked() {
                     pick = Some("export");
                 }
-                let r = ui.add_enabled(sel.as_ref().is_some_and(|p| !p.builtin), egui::Button::new("Delete"));
+                let r = ui.add_enabled(sel.as_ref().is_some_and(|p| !p.builtin), egui::Button::new(crate::i18n::t("Delete", "削除")));
                 reg.add("presetManager.delete", r.rect, "Delete");
                 if r.clicked() {
                     cmd = Some(("export.presets.delete", json!({"name": m.selected})));
@@ -1078,7 +1123,7 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     if r.clicked() {
                         apply = Some(m.selected.clone());
                     }
-                    let r = ui.button("Cancel");
+                    let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
                     reg.add("presetManager.cancel", r.rect, "Cancel");
                     close |= r.clicked();
                 });
@@ -1097,7 +1142,13 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     app.ui.status = e.to_string();
                 }
             }
-            None => app.ui.status = "Import: no file chosen (agents: export.presets.import {path})".into(),
+            None => {
+                app.ui.status = crate::i18n::t(
+                    "Import: no file chosen (agents: export.presets.import {path})",
+                    "読み込み: ファイルが選択されていません(エージェント: export.presets.import {path})",
+                )
+                .into()
+            }
         },
         Some(_) => match app.hooks.pick_save_as.as_mut().and_then(|f| f("Export presets", &["json"], &format!("{}.json", m.selected))) {
             Some(path) => {
@@ -1105,7 +1156,13 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     app.ui.status = e.to_string();
                 }
             }
-            None => app.ui.status = "Export: no file chosen (agents: export.presets.export {path, names})".into(),
+            None => {
+                app.ui.status = crate::i18n::t(
+                    "Export: no file chosen (agents: export.presets.export {path, names})",
+                    "書き出し: ファイルが選択されていません(エージェント: export.presets.export {path, names})",
+                )
+                .into()
+            }
         },
         None => {}
     }
@@ -1161,7 +1218,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     let t = app.tokens;
     let Some(seq) = app.session.state.active_sequence else {
         app.ui.export.quick_open = false;
-        app.ui.status = "Quick Export: open a sequence first".into();
+        app.ui.status = crate::i18n::t("Quick Export: open a sequence first", "クイック書き出し: 先にシーケンスを開いてください").into();
         return;
     };
     if app.ui.export.quick_preset.is_empty() {
@@ -1191,18 +1248,18 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_width(340.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Quick Export").strong().size(14.0));
+                ui.label(egui::RichText::new(crate::i18n::t("Quick Export", "クイック書き出し")).strong().size(14.0));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.small_button("Close");
+                    let r = ui.small_button(crate::i18n::t("Close", "閉じる"));
                     reg.add("quickExport.close", r.rect, "Close");
                     close = r.clicked();
                 });
             });
-            ui.label(egui::RichText::new("File Name & Location").color(t.text_dim).size(11.5));
+            ui.label(egui::RichText::new(crate::i18n::t("File Name & Location", "ファイル名と場所")).color(t.text_dim).size(11.5));
             let r = ui.add(egui::TextEdit::singleline(&mut q.quick_path).desired_width(f32::INFINITY));
             reg.add("quickExport.path", r.rect, "File Name & Location");
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Preset").color(t.text_dim).size(11.5));
+            ui.label(egui::RichText::new(crate::i18n::t("Preset", "プリセット")).color(t.text_dim).size(11.5));
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                 for name in &presets {
                     let r = list_row(ui, &t, preset_key(name) == preset_key(&q.quick_preset), name, 320.0);
@@ -1213,10 +1270,18 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
                 }
             });
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(format!("Estimated file size: {}", est.as_deref().unwrap_or("–"))).color(t.text_dim).size(11.5));
+            ui.label(
+                egui::RichText::new(crate::tf!("Estimated file size: {}", "予測ファイルサイズ: {}", est.as_deref().unwrap_or("–")))
+                    .color(t.text_dim)
+                    .size(11.5),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui
-                    .add(egui::Button::new(egui::RichText::new("Export").color(Color32::WHITE)).fill(t.accent).corner_radius(12.0).min_size(vec2(90.0, 26.0)));
+                let r = ui.add(
+                    egui::Button::new(egui::RichText::new(crate::i18n::t("Export", "書き出し")).color(Color32::WHITE))
+                        .fill(t.accent)
+                        .corner_radius(12.0)
+                        .min_size(vec2(90.0, 26.0)),
+                );
                 reg.add("quickExport.go", r.rect, "Export");
                 go = r.clicked();
             });
@@ -1229,7 +1294,7 @@ pub fn quick_export(app: &mut FilmcraftApp, ctx: &egui::Context, anchor: egui::P
     if go {
         let p = json!({"preset": app.ui.export.quick_preset, "path": app.ui.export.quick_path});
         match app.session.execute("export.quick", p) {
-            Ok(v) => app.ui.status = format!("Quick Export: {}", v["path"].as_str().unwrap_or("")),
+            Ok(v) => app.ui.status = crate::tf!("Quick Export: {}", "クイック書き出し: {}", v["path"].as_str().unwrap_or("")),
             Err(e) => app.ui.status = e.to_string(),
         }
         close = true;

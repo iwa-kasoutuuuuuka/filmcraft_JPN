@@ -363,7 +363,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // master track
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));
     painter.rect_filled(master, 0.0, t.tl_header_bg);
-    painter.text(pos2(rect.min.x + 44.0, master.center().y), Align2::LEFT_CENTER, "Mix", Tokens::ui(11.5), t.text);
+    painter.text(pos2(rect.min.x + 44.0, master.center().y), Align2::LEFT_CENTER, crate::i18n::t("Mix", "ミックス"), Tokens::ui(11.5), t.text);
     painter.text(
         pos2(rect.min.x + header_w - 12.0, master.center().y),
         Align2::RIGHT_CENTER,
@@ -437,12 +437,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
 fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    ui.painter().text(rect.center() - vec2(0.0, 12.0), Align2::CENTER_CENTER, "Drop media here to create sequence.", Tokens::ui(13.0), t.text_dim);
+    ui.painter().text(
+        rect.center() - vec2(0.0, 12.0),
+        Align2::CENTER_CENTER,
+        crate::i18n::t("Drop media here to create sequence.", "ここにメディアをドロップしてシーケンスを作成します。"),
+        Tokens::ui(13.0),
+        t.text_dim,
+    );
     let b = Rect::from_center_size(rect.center() + vec2(0.0, 20.0), vec2(170.0, 26.0));
     let resp = ui.interact(b, egui::Id::new("tl-open-demo"), Sense::click());
     app.auto.add("timeline.openDemo", b, "Open Demo Project");
     ui.painter().rect_filled(b, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(b.center(), Align2::CENTER_CENTER, "Open Demo Project", Tokens::semibold(12.0), Color32::WHITE);
+    ui.painter().text(b.center(), Align2::CENTER_CENTER, crate::i18n::t("Open Demo Project", "デモプロジェクトを開く"), Tokens::semibold(12.0), Color32::WHITE);
     if resp.clicked() {
         let _ = app.session.execute("file.openDemoProject", json!({}));
     }
@@ -893,7 +899,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         }
         // 5. name on the lower line (or inline when short)
         if hrect.height() >= 40.0 {
-            p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
+            p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, crate::i18n::tr_track_name(&tr.name), Tokens::ui(11.0), t.text_dim);
         }
         // resize track height by dragging the header's bottom edge
         let edge = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0)).intersect(visible);
@@ -946,12 +952,18 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     let mut x = rect.min.x + 12.0;
     let y = rect.min.y + 26.0;
     let toggles: [(Icon, &str, bool, bool, &str); 6] = [
-        (Icon::Nest, "nest", true, true, "Insert and overwrite sequences as nests or individual clips"),
-        (Icon::Magnet, "snap", app.session.state.snapping, true, "Snap in Timeline (S)"),
-        (Icon::Link, "linked", app.session.state.linked_selection, true, "Linked Selection"),
-        (Icon::Captions, "captions", false, false, "Caption track options"),
-        (Icon::Marker, "marker", false, false, "Add Marker (M)"),
-        (Icon::Wrench, "settings", false, false, "Timeline Display Settings"),
+        (
+            Icon::Nest,
+            "nest",
+            true,
+            true,
+            crate::i18n::t("Insert and overwrite sequences as nests or individual clips", "シーケンスをネストまたは個別のクリップとして挿入および上書き"),
+        ),
+        (Icon::Magnet, "snap", app.session.state.snapping, true, crate::i18n::t("Snap in Timeline (S)", "タイムラインにスナップ (S)")),
+        (Icon::Link, "linked", app.session.state.linked_selection, true, crate::i18n::t("Linked Selection", "連結された選択")),
+        (Icon::Captions, "captions", false, false, crate::i18n::t("Caption track options", "キャプショントラックのオプション")),
+        (Icon::Marker, "marker", false, false, crate::i18n::t("Add Marker (M)", "マーカーを追加 (M)")),
+        (Icon::Wrench, "settings", false, false, crate::i18n::t("Timeline Display Settings", "タイムライン表示設定")),
     ];
     for (icon, key, on, toggle, tip) in toggles {
         let r = Rect::from_min_size(pos2(x, y), vec2(28.0, 28.0));
@@ -973,21 +985,21 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         }
         if key == "settings" {
             egui::Popup::menu(&resp).show(|ui| {
-                ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Show Video Thumbnails");
-                ui.checkbox(&mut app.ui.timeline.show_waveforms, "Show Audio Waveform");
+                ui.checkbox(&mut app.ui.timeline.show_thumbnails, crate::i18n::t("Show Video Thumbnails", "ビデオサムネイルを表示"));
+                ui.checkbox(&mut app.ui.timeline.show_waveforms, crate::i18n::t("Show Audio Waveform", "オーディオ波形を表示"));
                 ui.separator();
                 let mut te = app.session.state.show_through_edits;
-                let c = ui.checkbox(&mut te, "Show Through Edits");
+                let c = ui.checkbox(&mut te, crate::i18n::t("Show Through Edits", "フロースルー編集を表示"));
                 app.auto.add("timeline.settings.showThroughEdits", c.rect, "Show Through Edits");
                 if c.changed() {
                     let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
                 }
                 ui.separator();
-                if ui.button("Expand All Tracks").clicked() {
+                if ui.button(crate::i18n::t("Expand All Tracks", "すべてのトラックを展開")).clicked() {
                     app.ui.timeline.video_track_h = 64.0;
                     app.ui.timeline.audio_track_h = 64.0;
                 }
-                if ui.button("Minimize All Tracks").clicked() {
+                if ui.button(crate::i18n::t("Minimize All Tracks", "すべてのトラックを最小化")).clicked() {
                     app.ui.timeline.video_track_h = 26.0;
                     app.ui.timeline.audio_track_h = 26.0;
                 }
@@ -1070,9 +1082,11 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         use filmcraft_engine::previews::BarState;
         let (c, what) = match span.state {
             BarState::None => continue,
-            BarState::Yellow => (t.render_yellow, "Unrendered: should play back in real time"),
-            BarState::Red => (t.render_red, "Unrendered: render to play back in real time"),
-            BarState::Green => (t.render_green, "Rendered preview"),
+            BarState::Yellow => (t.render_yellow, crate::i18n::t("Unrendered: should play back in real time", "未レンダリング: リアルタイムで再生可能")),
+            BarState::Red => {
+                (t.render_red, crate::i18n::t("Unrendered: render to play back in real time", "未レンダリング: リアルタイム再生にはレンダリングが必要"))
+            }
+            BarState::Green => (t.render_green, crate::i18n::t("Rendered preview", "レンダリング済みプレビュー")),
         };
         let r = Rect::from_min_max(pos2(layout.x_of(span.start), rb.min.y), pos2(layout.x_of(span.end), rb.max.y)).intersect(ruler);
         if r.width() <= 0.0 {
@@ -1721,17 +1735,17 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         ui.set_min_width(200.0);
         let sel_n = app.session.state.selection.len();
         let items: [(&str, &str); 11] = [
-            ("Cut", "edit.cut"),
-            ("Copy", "edit.copy"),
-            ("Clear", "edit.clear"),
-            ("Ripple Delete", "edit.rippleDelete"),
-            ("Enable", "clip.enable"),
-            ("Unlink", "clip.link"),
-            ("Group", "clip.group"),
-            ("Speed/Duration…", "clip.speedDuration"),
-            ("Nest…", "clip.nest"),
-            ("Scale to Frame Size", "clip.scaleToFrameSize"),
-            ("Join Through Edits", "sequence.joinThroughEdits"),
+            (crate::i18n::t("Cut", "カット"), "edit.cut"),
+            (crate::i18n::t("Copy", "コピー"), "edit.copy"),
+            (crate::i18n::t("Clear", "消去"), "edit.clear"),
+            (crate::i18n::t("Ripple Delete", "リップル削除"), "edit.rippleDelete"),
+            (crate::i18n::t("Enable", "有効化"), "clip.enable"),
+            (crate::i18n::t("Unlink", "リンク解除"), "clip.link"),
+            (crate::i18n::t("Group", "グループ化"), "clip.group"),
+            (crate::i18n::t("Speed/Duration…", "速度・デュレーション…"), "clip.speedDuration"),
+            (crate::i18n::t("Nest…", "ネスト…"), "clip.nest"),
+            (crate::i18n::t("Scale to Frame Size", "フレームサイズに合わせてスケール"), "clip.scaleToFrameSize"),
+            (crate::i18n::t("Join Through Edits", "フロースルー編集を結合"), "sequence.joinThroughEdits"),
         ];
         for (label, cmd) in items {
             if ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label)).clicked() {
@@ -1745,7 +1759,7 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
         }
         ui.separator();
-        ui.menu_button("Label", |ui| {
+        ui.menu_button(crate::i18n::t("Label", "ラベル"), |ui| {
             for l in filmcraft_project::Label::ALL {
                 if ui.button(l.name()).clicked() {
                     let _ = app.session.execute("edit.label", json!({"label": l.name()}));
@@ -1770,7 +1784,13 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));
             ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
             if mods.command {
-                ui.painter().text(r.left_top() + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, "Insert", Tokens::ui(10.0), Color32::WHITE);
+                ui.painter().text(
+                    r.left_top() + vec2(4.0, -2.0),
+                    Align2::LEFT_BOTTOM,
+                    crate::i18n::t("Insert", "インサート"),
+                    Tokens::ui(10.0),
+                    Color32::WHITE,
+                );
             }
         }
         if ctx.input(|i| i.pointer.any_released())

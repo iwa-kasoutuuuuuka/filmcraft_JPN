@@ -127,7 +127,7 @@ fn tab_button(ui: &mut egui::Ui, r: Rect, label: &str, on: bool, t: &Tokens) -> 
     if on {
         ui.painter().line_segment([pos2(r.min.x + 6.0, r.max.y - 1.5), pos2(r.max.x - 6.0, r.max.y - 1.5)], Stroke::new(2.0, t.accent));
     }
-    ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(12.0), if on { t.text } else { t.text_dim });
+    ui.painter().text(r.center(), Align2::CENTER_CENTER, crate::i18n::tr_ui(label), Tokens::semibold(12.0), if on { t.text } else { t.text_dim });
     resp
 }
 
@@ -175,17 +175,23 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     b.set_clip_rect(rect);
     let st = &mut app.ui.gfx_templates;
     b.horizontal(|ui| {
-        let r = ui.add(egui::TextEdit::singleline(&mut st.query).hint_text("Search templates").desired_width((ui.available_width() - 230.0).max(110.0)));
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut st.query)
+                .hint_text(crate::i18n::t("Search templates", "テンプレートを検索"))
+                .desired_width((ui.available_width() - 230.0).max(110.0)),
+        );
         elems.push(("gfxTemplates.search".into(), r.rect, "Search".into()));
-        let cur = if st.category.is_empty() { "All Categories".to_string() } else { st.category.clone() };
+        let cur = if st.category.is_empty() { crate::i18n::t("All Categories", "すべてのカテゴリ").to_string() } else { st.category.clone() };
         let r = egui::ComboBox::from_id_salt("gfx-cat").selected_text(cur).width(130.0).show_ui(ui, |ui| {
-            ui.selectable_value(&mut st.category, String::new(), "All Categories");
+            ui.selectable_value(&mut st.category, String::new(), crate::i18n::t("All Categories", "すべてのカテゴリ"));
             for c in &cats {
                 ui.selectable_value(&mut st.category, c.clone(), c);
             }
         });
         elems.push(("gfxTemplates.category".into(), r.response.rect, "Category".into()));
-        let r = ui.button("Install…").on_hover_text("Install Motion Graphics Template (.fcgt)");
+        let r = ui
+            .button(crate::i18n::t("Install…", "インストール…"))
+            .on_hover_text(crate::i18n::t("Install Motion Graphics Template (.fcgt)", "モーショングラフィックステンプレート (.fcgt) をインストール"));
         elems.push(("gfxTemplates.install".into(), r.rect, "Install".into()));
         install = r.clicked();
     });
@@ -213,7 +219,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         &mut b,
         |ui| {
             if shown.is_empty() {
-                ui.label(egui::RichText::new("No templates match.").color(t.text_faint));
+                ui.label(egui::RichText::new(crate::i18n::t("No templates match.", "一致するテンプレートはありません。")).color(t.text_faint));
             }
             for row in shown.chunks(cols) {
                 ui.horizontal(|ui| {
@@ -264,13 +270,13 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     b.add_space(4.0);
     let sel_entry = selected.as_ref().and_then(|s| lib.iter().find(|e| &e.template.id == s));
     b.horizontal(|ui| {
-        let r = ui.add_enabled(sel_entry.is_some(), egui::Button::new("Apply"));
+        let r = ui.add_enabled(sel_entry.is_some(), egui::Button::new(crate::i18n::t("Apply", "適用")));
         elems.push(("gfxTemplates.apply".into(), r.rect, "Apply".into()));
         if r.clicked() {
             apply = selected.clone();
         }
         let user = sel_entry.is_some_and(|e| e.path.is_some());
-        let r = ui.add_enabled(user, egui::Button::new("Remove"));
+        let r = ui.add_enabled(user, egui::Button::new(crate::i18n::t("Remove", "削除")));
         elems.push(("gfxTemplates.remove".into(), r.rect, "Remove".into()));
         if r.clicked()
             && let Some(id) = &selected
@@ -278,7 +284,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             actions.push(("graphics.template.remove".into(), json!({"template": id})));
         }
         if let Some(e) = sel_entry {
-            ui.label(egui::RichText::new(format!("{} editable properties", e.template.controls.len())).color(t.text_faint));
+            ui.label(egui::RichText::new(crate::tf!("{} editable properties", "編集可能なプロパティ {} 個", e.template.controls.len())).color(t.text_faint));
         }
     });
     if let Some(s) = new_sel {
@@ -320,7 +326,7 @@ fn hex(c: [f32; 4]) -> String {
 
 fn row_label(ui: &mut egui::Ui, label: &str, t: &Tokens) -> egui::Ui {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
-    ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text_dim);
+    ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(label), Tokens::ui(12.0), t.text_dim);
     ui.new_child(
         egui::UiBuilder::new()
             .max_rect(Rect::from_min_max(pos2(r.min.x + 130.0, r.min.y + 3.0), pos2(r.max.x - 6.0, r.max.y - 3.0)))
@@ -341,7 +347,7 @@ pub fn template_controls(
 ) -> bool {
     let t = app.tokens;
     let Some(link) = it.graphic.as_ref().and_then(|m| m.template.as_ref()) else { return false };
-    ui.label(egui::RichText::new(format!("   Template: {}", link.name)).color(t.text_faint).size(11.0));
+    ui.label(egui::RichText::new(crate::tf!("   Template: {}", "   テンプレート: {}", link.name)).color(t.text_faint).size(11.0));
     for c in &link.controls {
         let Some(e) = it.effects.iter().find(|e| graphic::is_layer(e) && filmcraft_project::gtemplate::layer_uid(e) == c.layer) else { continue };
         let id = format!("gfxTemplates.control.{}", c.id);
@@ -527,8 +533,8 @@ pub fn responsive_position(
     let Some(&ei) = idx.get(layer) else { return };
     let pin = it.effects[ei].layer.as_ref().and_then(|x| x.pin.clone());
     let target_name = match pin.as_ref().map(|p| p.to) {
-        None => "None".to_string(),
-        Some(filmcraft_project::PinTarget::Frame) => "Video Frame".to_string(),
+        None => crate::i18n::t("None", "なし").to_string(),
+        Some(filmcraft_project::PinTarget::Frame) => crate::i18n::t("Video Frame", "ビデオフレーム").to_string(),
         Some(filmcraft_project::PinTarget::Layer(uid)) => (0..idx.len())
             .find(|&i| filmcraft_project::gtemplate::layer_uid(&it.effects[idx[i]]) == uid)
             .map(|i| layer_display_name(&it.effects[idx[i]], i))
@@ -536,10 +542,11 @@ pub fn responsive_position(
     };
     let mut vui = row_label(ui, "Pin To", &t);
     let r = egui::ComboBox::from_id_salt(("gfx-pin", clip.0, layer)).selected_text(&target_name).width(150.0).show_ui(&mut vui, |ui| {
-        if ui.selectable_label(pin.is_none(), "None").clicked() {
+        if ui.selectable_label(pin.is_none(), crate::i18n::t("None", "なし")).clicked() {
             actions.push(("graphics.pin".into(), json!({"clip": clip.0, "layer": layer, "to": "none"})));
         }
-        if ui.selectable_label(target_name == "Video Frame", "Video Frame").clicked() {
+        if ui.selectable_label(target_name == crate::i18n::t("Video Frame", "ビデオフレーム"), crate::i18n::t("Video Frame", "ビデオフレーム")).clicked()
+        {
             actions.push(("graphics.pin".into(), json!({"clip": clip.0, "layer": layer, "to": "frame"})));
         }
         for (i, &e) in idx.iter().enumerate() {
@@ -633,28 +640,28 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.gfx_templates.export.clone() else { return };
     let mut elems: Elems = Vec::new();
     let mut action: Option<bool> = None;
-    egui::Window::new("Export As Motion Graphics Template")
+    egui::Window::new(crate::i18n::t("Export As Motion Graphics Template", "モーショングラフィックステンプレートとして書き出し"))
         .collapsible(false)
         .resizable(false)
         .default_width(420.0)
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             egui::Grid::new("gfx-export-grid").num_columns(2).show(ui, |ui| {
-                ui.label("Name:");
+                ui.label(crate::i18n::t("Name:", "名前:"));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(260.0));
                 elems.push(("exportTemplate.name".into(), r.rect, "Name".into()));
                 ui.end_row();
-                ui.label("Category:");
+                ui.label(crate::i18n::t("Category:", "カテゴリ:"));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.category).desired_width(260.0));
                 elems.push(("exportTemplate.category".into(), r.rect, "Category".into()));
                 ui.end_row();
-                ui.label("Description:");
+                ui.label(crate::i18n::t("Description:", "説明:"));
                 let r = ui.add(egui::TextEdit::singleline(&mut d.description).desired_width(260.0));
                 elems.push(("exportTemplate.description".into(), r.rect, "Description".into()));
                 ui.end_row();
             });
             ui.separator();
-            ui.label("Editable properties:");
+            ui.label(crate::i18n::t("Editable properties:", "編集可能なプロパティ:"));
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                 for (n, c) in d.controls.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
@@ -665,14 +672,21 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     });
                 }
             });
-            ui.label(egui::RichText::new("Saved as a FilmCraft graphics template (.fcgt) in your templates folder.").weak().size(11.0));
+            ui.label(
+                egui::RichText::new(crate::i18n::t(
+                    "Saved as a FilmCraft graphics template (.fcgt) in your templates folder.",
+                    "FilmCraft グラフィックテンプレート (.fcgt) として、テンプレートフォルダーに保存されます。",
+                ))
+                .weak()
+                .size(11.0),
+            );
             if !d.error.is_empty() {
                 ui.colored_label(Color32::from_rgb(0xff, 0x80, 0x80), &d.error);
             }
             ui.horizontal(|ui| {
-                let ok = ui.button("Export");
+                let ok = ui.button(crate::i18n::t("Export", "書き出し"));
                 elems.push(("exportTemplate.ok".into(), ok.rect, "Export".into()));
-                let cancel = ui.button("Cancel");
+                let cancel = ui.button(crate::i18n::t("Cancel", "キャンセル"));
                 elems.push(("exportTemplate.cancel".into(), cancel.rect, "Cancel".into()));
                 if ok.clicked() {
                     action = Some(true);
@@ -692,7 +706,11 @@ fn export_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             match app.session.execute("graphics.template.export", p) {
                 Ok(v) => {
                     app.ui.gfx_templates.export = None;
-                    app.ui.status = format!("Exported graphics template to {}", v["path"].as_str().unwrap_or_default());
+                    app.ui.status = crate::tf!(
+                        "Exported graphics template to {}",
+                        "グラフィックテンプレートを {} に書き出しました",
+                        v["path"].as_str().unwrap_or_default()
+                    );
                     invalidate(ctx);
                 }
                 Err(e) => {
@@ -711,15 +729,18 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let used = filmcraft_engine::graphic_templates::fonts_used(&app.session);
     let mut elems: Elems = Vec::new();
     let mut action: Option<bool> = None;
-    egui::Window::new("Replace Fonts in Projects").collapsible(false).resizable(false).default_width(440.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
-        ctx,
-        |ui| {
-            ui.label("Fonts used in the project:");
+    egui::Window::new(crate::i18n::t("Replace Fonts in Projects", "プロジェクト内のフォントを置換"))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(440.0)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(crate::i18n::t("Fonts used in the project:", "プロジェクトで使用中のフォント:"));
             egui::Grid::new("gfx-fonts-used").striped(true).num_columns(3).show(ui, |ui| {
                 for (f, st, n) in &used {
                     let missing = filmcraft_text::resolve(f, st).missing;
                     ui.label(if missing {
-                        egui::RichText::new(format!("{f} (missing)")).color(Color32::from_rgb(0xff, 0xa0, 0x60))
+                        egui::RichText::new(crate::tf!("{f} (missing)", "{f}(見つかりません)")).color(Color32::from_rgb(0xff, 0xa0, 0x60))
                     } else {
                         egui::RichText::new(f)
                     });
@@ -732,7 +753,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             let mut fams: Vec<String> = used.iter().map(|u| u.0.clone()).collect();
             fams.dedup();
             ui.horizontal(|ui| {
-                ui.label("Replace:");
+                ui.label(crate::i18n::t("Replace:", "置換:"));
                 let r = egui::ComboBox::from_id_salt("gfx-rf-from").selected_text(&d.from).width(160.0).show_ui(ui, |ui| {
                     for f in &fams {
                         ui.selectable_value(&mut d.from, f.clone(), f);
@@ -753,7 +774,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 let ok = ui.button("OK");
                 elems.push(("replaceFonts.ok".into(), ok.rect, "OK".into()));
-                let cancel = ui.button("Cancel");
+                let cancel = ui.button(crate::i18n::t("Cancel", "キャンセル"));
                 elems.push(("replaceFonts.cancel".into(), cancel.rect, "Cancel".into()));
                 if ok.clicked() {
                     action = Some(true);
@@ -762,8 +783,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     action = Some(false);
                 }
             });
-        },
-    );
+        });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -771,7 +791,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         Some(true) => match app.session.execute("file.replaceFonts", json!({"from": d.from, "to": d.to})) {
             Ok(v) => {
                 app.ui.gfx_templates.replace = None;
-                app.ui.status = format!("Replaced {} font uses", v["replaced"]);
+                app.ui.status = crate::tf!("Replaced {} font uses", "{} か所のフォントを置換しました", v["replaced"]);
             }
             Err(e) => {
                 d.error = e.to_string();

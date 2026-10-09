@@ -96,18 +96,18 @@ pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, 
     let showing = app.ui.timeline.track_lanes.get(&r.track.0).cloned();
     let resp =
         crate::widgets::icon_toggle(ui, rect.intersect(visible), Icon::Keyframe, showing.is_some(), t, egui::Id::new(("lanebtn", r.track.0)), Some(LANE_COL))
-            .on_hover_text("Show Keyframes");
+            .on_hover_text(crate::i18n::t("Show Keyframes", "キーフレームを表示"));
     app.auto.add(&format!("timeline.track.{label}.keyframes"), rect, "Show Keyframes");
     let opts = lane_options(tr);
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(170.0);
-        let c = ui.selectable_label(showing.is_none(), "Clip Keyframes");
+        let c = ui.selectable_label(showing.is_none(), crate::i18n::t("Clip Keyframes", "クリップキーフレーム"));
         app.auto.add(&format!("timeline.track.{label}.keyframes.clip"), c.rect, "Clip Keyframes");
         if c.clicked() {
             app.ui.timeline.track_lanes.remove(&r.track.0);
         }
         ui.separator();
-        ui.label(egui::RichText::new("Track Keyframes").small());
+        ui.label(egui::RichText::new(crate::i18n::t("Track Keyframes", "トラックキーフレーム")).small());
         for (k, l) in &opts {
             let e = ui.selectable_label(showing.as_deref() == Some(k.as_str()), l);
             app.auto.add(&format!("timeline.track.{label}.keyframes.{k}"), e.rect, l);
@@ -222,7 +222,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             let time = k.time;
             let key2 = key.clone();
             resp.context_menu(|ui| {
-                if ui.button("Delete").clicked() {
+                if ui.button(crate::i18n::t("Delete", "削除")).clicked() {
                     acts.push(("mixer.deleteKeyframe", json!({"strip": r.track.0, "lane": key2, "time": time.0})));
                     ui.close();
                 }

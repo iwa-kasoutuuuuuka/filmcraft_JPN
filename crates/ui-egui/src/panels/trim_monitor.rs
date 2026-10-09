@@ -174,7 +174,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // headers: clip names
     for (side, r, key) in [(&info["outgoing"], left, "outgoing"), (&info["incoming"], right, "incoming")] {
         let name = side["name"].as_str().map(|n| format!("{} ({})", n, side["track"].as_str().unwrap_or(""))).unwrap_or_else(|| "(gap)".into());
-        let label = if key == "outgoing" { format!("Out: {name}") } else { format!("In: {name}") };
+        let label = if key == "outgoing" { crate::tf!("Out: {name}", "アウト: {name}") } else { crate::tf!("In: {name}", "イン: {name}") };
         ui.painter().text(pos2(r.min.x + 2.0, rect.min.y + 4.0 + header_h / 2.0), Align2::LEFT_CENTER, label, Tokens::ui(11.5), t.text_dim);
     }
     let mut pics = [left, right];
@@ -182,7 +182,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if side.is_null() {
             let p = fit(r, 16.0, 9.0);
             ui.painter().rect_filled(p, 0.0, Color32::BLACK);
-            ui.painter().text(p.center(), Align2::CENTER_CENTER, "(gap)", Tokens::ui(12.0), t.text_faint);
+            ui.painter().text(p.center(), Align2::CENTER_CENTER, crate::i18n::t("(gap)", "(ギャップ)"), Tokens::ui(12.0), t.text_faint);
             pics[i] = p;
         } else {
             pics[i] = picture(app, ui, r, side, if i == 0 { "trim-outgoing" } else { "trim-incoming" });
@@ -304,7 +304,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     // exit trim mode
     let r = Rect::from_min_size(pos2(rect.max.x - 30.0, bar.min.y + 3.0), vec2(22.0, 22.0));
-    let resp = ui.interact(r, egui::Id::new("trimMonitor.exit"), Sense::click()).on_hover_text("Exit Trim Mode");
+    let resp = ui.interact(r, egui::Id::new("trimMonitor.exit"), Sense::click()).on_hover_text(crate::i18n::t("Exit Trim Mode", "トリムモードを終了"));
     let c = if resp.hovered() { t.tab_text_active } else { t.text_dim };
     ui.painter().line_segment([r.min + vec2(6.0, 6.0), r.max - vec2(6.0, 6.0)], Stroke::new(1.5, c));
     ui.painter().line_segment([pos2(r.max.x - 6.0, r.min.y + 6.0), pos2(r.min.x + 6.0, r.max.y - 6.0)], Stroke::new(1.5, c));

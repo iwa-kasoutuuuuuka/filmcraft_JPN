@@ -230,17 +230,32 @@ impl Tokens {
     }
 }
 
-/// Install fonts (Inter, Inter SemiBold, JetBrains Mono) and egui visuals.
+/// Install fonts (Inter, Inter SemiBold, JetBrains Mono, plus Japanese fallback) and egui visuals.
 pub fn install(ctx: &egui::Context, t: &Tokens) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert("inter".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_REGULAR)));
     fonts.font_data.insert("inter-medium".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_MEDIUM)));
     fonts.font_data.insert("inter-semibold".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::INTER_SEMIBOLD)));
     fonts.font_data.insert("jbmono".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::JETBRAINS_MONO_REGULAR)));
+
+    // Japanese is the last fallback of every family: the Japanese UI, and file, clip and project
+    // names in any language
+    fonts.font_data.insert("japanese".into(), Arc::new(FontData::from_static(filmcraft_text::fonts::BIZ_UDPGOTHIC_REGULAR)));
+
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "inter".into());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "jbmono".into());
     fonts.families.insert(FontFamily::Name("semibold".into()), vec!["inter-semibold".into(), "inter".into()]);
     fonts.families.insert(FontFamily::Name("medium".into()), vec!["inter-medium".into(), "inter".into()]);
+
+    fonts.families.entry(FontFamily::Proportional).or_default().push("japanese".into());
+    fonts.families.entry(FontFamily::Monospace).or_default().push("japanese".into());
+    if let Some(list) = fonts.families.get_mut(&FontFamily::Name("semibold".into())) {
+        list.push("japanese".into());
+    }
+    if let Some(list) = fonts.families.get_mut(&FontFamily::Name("medium".into())) {
+        list.push("japanese".into());
+    }
+
     ctx.set_fonts(fonts);
     apply_visuals(ctx, t);
 }

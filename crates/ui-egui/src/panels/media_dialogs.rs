@@ -62,7 +62,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             if let Ok(v) = &r
                 && v["missing"].as_array().is_some_and(|a| a.is_empty())
             {
-                app.ui.status = "All media is online.".into();
+                app.ui.status = crate::i18n::t("All media is online.", "すべてのメディアがオンラインです。").into();
                 return Some(r);
             }
             app.ui.link_media = Some(LinkMediaDraft::default());
@@ -79,7 +79,9 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         })),
         "media.attachProxies" | "media.reconnectFullRes" => {
             let item = app.session.state.project_selection.first().copied();
-            let Some(item) = item else { return Some(Err("select a clip in the Project panel".into())) };
+            let Some(item) = item else {
+                return Some(Err(crate::i18n::t("select a clip in the Project panel", "プロジェクトパネルでクリップを選択してください").into()));
+            };
             let exts: Vec<&str> = filmcraft_media::VIDEO_EXTENSIONS.to_vec();
             let path = app.hooks.pick_files.as_mut().and_then(|f| f(&exts).into_iter().next());
             let Some(path) = path else { return Some(Ok(Value::Null)) };
@@ -154,124 +156,156 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let accent = app.tokens.accent;
     let sel_path = d.candidate.and_then(|c| d.candidates.get(c)).map(|c| c.0.clone());
     let preview = sel_path.as_deref().and_then(|p| preview_texture(app, ctx, p));
-    egui::Window::new("Link Media").collapsible(false).resizable(false).default_width(760.0).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.label(format!("{} clip(s) can't find their media. Locate them, search a folder, or leave them offline.", rows.len()));
-        ui.add_space(6.0);
-        egui::Grid::new("link-media-rows").num_columns(4).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-            for h in ["Clip Name", "File Name", "File Path", "Status"] {
-                ui.label(RichText::new(h).strong());
-            }
-            ui.end_row();
-            for (k, (_, name, fname, path, status)) in rows.iter().enumerate() {
-                let r = ui.selectable_label(d.row == k, name);
-                push(&mut elems, format!("linkMedia.row.{k}"), &r, name.clone());
-                if r.clicked() && d.row != k {
-                    d.row = k;
-                    d.candidates.clear();
-                    d.candidate = None;
+    egui::Window::new(crate::i18n::t("Link Media", "メディアにリンク"))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(760.0)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(crate::tf!(
+                "{} clip(s) can't find their media. Locate them, search a folder, or leave them offline.",
+                "{} 個のクリップのメディアが見つかりません。検索して再リンクするか、オフラインのままにします。",
+                rows.len()
+            ));
+            ui.add_space(6.0);
+            egui::Grid::new("link-media-rows").num_columns(4).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+                for h in [
+                    crate::i18n::t("Clip Name", "クリップ名"),
+                    crate::i18n::t("File Name", "ファイル名"),
+                    crate::i18n::t("File Path", "ファイルパス"),
+                    crate::i18n::t("Status", "状態"),
+                ] {
+                    ui.label(RichText::new(h).strong());
                 }
-                ui.label(fname);
-                ui.label(RichText::new(path).small());
-                ui.label(RichText::new(*status).color(Color32::from_rgb(0xe0, 0x5a, 0x5a)));
                 ui.end_row();
-            }
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Match file properties:");
-            for (id, label, v) in [
-                ("fileName", "File Name", &mut d.file_name),
-                ("extension", "File Extension", &mut d.extension),
-                ("clipId", "Clip ID (fingerprint)", &mut d.clip_id),
-                ("duration", "Duration", &mut d.duration),
-                ("mediaStart", "Media Start", &mut d.media_start),
-                ("metadata", "Frame Size / Rate", &mut d.metadata),
-            ] {
-                let r = ui.checkbox(v, label);
-                push(&mut elems, format!("linkMedia.match.{id}"), &r, label);
-            }
-        });
-        ui.horizontal(|ui| {
-            let r = ui.checkbox(&mut d.align_timecode, "Align Timecode");
-            push(&mut elems, "linkMedia.alignTimecode", &r, "Align Timecode");
-            let r = ui.checkbox(&mut d.relink_others, "Relink others automatically");
-            push(&mut elems, "linkMedia.relinkOthers", &r, "Relink others automatically");
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Search in:");
-            let r = ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width(360.0).hint_text("folder"));
-            push(&mut elems, "linkMedia.folder", &r, "folder");
-            let r = ui.button("Browse…");
-            push(&mut elems, "linkMedia.browse", &r, "Browse…");
-            if r.clicked() {
-                action = Some("browse");
-            }
-            let r = ui.checkbox(&mut d.exact_name, "Exact name matches only");
-            push(&mut elems, "linkMedia.exactName", &r, "Exact name matches only");
-            let r = ui.button("Search");
-            push(&mut elems, "linkMedia.search", &r, "Search");
-            if r.clicked() {
-                action = Some("search");
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(520.0);
-                if d.candidates.is_empty() {
-                    ui.label(RichText::new("No candidates yet — Search a folder or Locate the file.").weak());
-                }
-                for (k, (path, ok, idm, problems)) in d.candidates.iter().enumerate() {
-                    let mark = match (ok, idm) {
-                        (true, Some(true)) => "✔ same file",
-                        (true, _) => "✔ matches",
-                        (false, Some(false)) => "✖ different file",
-                        _ => "✖",
-                    };
-                    let text = format!("{mark}  {path}");
-                    let r = ui.selectable_label(
-                        d.candidate == Some(k),
-                        RichText::new(&text).color(if *ok { Color32::LIGHT_GREEN } else { Color32::from_rgb(0xe0, 0x8a, 0x6a) }),
-                    );
-                    let r = if problems.is_empty() { r } else { r.on_hover_text(problems) };
-                    push(&mut elems, format!("linkMedia.candidate.{k}"), &r, text);
-                    if r.clicked() {
-                        d.candidate = Some(k);
+                for (k, (_, name, fname, path, status)) in rows.iter().enumerate() {
+                    let r = ui.selectable_label(d.row == k, name);
+                    push(&mut elems, format!("linkMedia.row.{k}"), &r, name.clone());
+                    if r.clicked() && d.row != k {
+                        d.row = k;
+                        d.candidates.clear();
+                        d.candidate = None;
                     }
+                    ui.label(fname);
+                    ui.label(RichText::new(path).small());
+                    ui.label(RichText::new(*status).color(Color32::from_rgb(0xe0, 0x5a, 0x5a)));
+                    ui.end_row();
                 }
             });
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(192.0, 108.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(12, 12, 12));
-            match &preview {
-                Some(t) => {
-                    let fitted = crate::panels::monitor::fit(rect, t.size()[0] as f32, t.size()[1] as f32);
-                    ui.painter().image(t.id(), fitted, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::t("Match file properties:", "一致させるプロパティ:"));
+                for (id, label, v) in [
+                    ("fileName", crate::i18n::t("File Name", "ファイル名"), &mut d.file_name),
+                    ("extension", crate::i18n::t("File Extension", "ファイル拡張子"), &mut d.extension),
+                    ("clipId", crate::i18n::t("Clip ID (fingerprint)", "クリップID (フィンガープリント)"), &mut d.clip_id),
+                    ("duration", crate::i18n::t("Duration", "デュレーション"), &mut d.duration),
+                    ("mediaStart", crate::i18n::t("Media Start", "メディアの開始位置"), &mut d.media_start),
+                    ("metadata", crate::i18n::t("Frame Size / Rate", "フレームサイズ / レート"), &mut d.metadata),
+                ] {
+                    let r = ui.checkbox(v, label);
+                    push(&mut elems, format!("linkMedia.match.{id}"), &r, label);
                 }
-                None => {
-                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Preview", crate::theme::Tokens::ui(11.0), Color32::GRAY);
-                }
-            }
-            elems.push(("linkMedia.preview".into(), rect, "preview".into()));
-        });
-        if !d.message.is_empty() {
-            ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            for (id, label) in [("offlineAll", "Offline All"), ("offline", "Offline"), ("cancel", "Cancel"), ("locate", "Locate…")] {
-                let r = ui.button(label);
-                push(&mut elems, format!("linkMedia.{id}"), &r, label);
+            });
+            ui.horizontal(|ui| {
+                let r = ui.checkbox(&mut d.align_timecode, crate::i18n::t("Align Timecode", "タイムコードを整列"));
+                push(&mut elems, "linkMedia.alignTimecode", &r, "Align Timecode");
+                let r = ui.checkbox(&mut d.relink_others, crate::i18n::t("Relink others automatically", "他のクリップを自動的に再リンク"));
+                push(&mut elems, "linkMedia.relinkOthers", &r, "Relink others automatically");
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::t("Search in:", "検索フォルダー:"));
+                let r = ui.add(egui::TextEdit::singleline(&mut d.folder).desired_width(360.0).hint_text(crate::i18n::t("folder", "フォルダー")));
+                push(&mut elems, "linkMedia.folder", &r, "folder");
+                let r = ui.button(crate::i18n::t("Browse…", "参照…"));
+                push(&mut elems, "linkMedia.browse", &r, "Browse…");
                 if r.clicked() {
-                    action = Some(id);
+                    action = Some("browse");
                 }
+                let r = ui.checkbox(&mut d.exact_name, crate::i18n::t("Exact name matches only", "完全一致する名前のみ"));
+                push(&mut elems, "linkMedia.exactName", &r, "Exact name matches only");
+                let r = ui.button(crate::i18n::t("Search", "検索"));
+                push(&mut elems, "linkMedia.search", &r, "Search");
+                if r.clicked() {
+                    action = Some("search");
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(520.0);
+                    if d.candidates.is_empty() {
+                        ui.label(
+                            RichText::new(crate::i18n::t(
+                                "No candidates yet — Search a folder or Locate the file.",
+                                "一致する候補がまだありません — フォルダーを検索するか、ファイルを手動指定（検索…）してください。",
+                            ))
+                            .weak(),
+                        );
+                    }
+                    for (k, (path, ok, idm, problems)) in d.candidates.iter().enumerate() {
+                        let mark = match (ok, idm) {
+                            (true, Some(true)) => "✔ same file",
+                            (true, _) => "✔ matches",
+                            (false, Some(false)) => "✖ different file",
+                            _ => "✖",
+                        };
+                        let text = format!("{mark}  {path}");
+                        let r = ui.selectable_label(
+                            d.candidate == Some(k),
+                            RichText::new(&text).color(if *ok { Color32::LIGHT_GREEN } else { Color32::from_rgb(0xe0, 0x8a, 0x6a) }),
+                        );
+                        let r = if problems.is_empty() { r } else { r.on_hover_text(problems) };
+                        push(&mut elems, format!("linkMedia.candidate.{k}"), &r, text);
+                        if r.clicked() {
+                            d.candidate = Some(k);
+                        }
+                    }
+                });
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(192.0, 108.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(12, 12, 12));
+                match &preview {
+                    Some(t) => {
+                        let fitted = crate::panels::monitor::fit(rect, t.size()[0] as f32, t.size()[1] as f32);
+                        ui.painter().image(t.id(), fitted, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                    }
+                    None => {
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            crate::i18n::t("Preview", "プレビュー"),
+                            crate::theme::Tokens::ui(11.0),
+                            Color32::GRAY,
+                        );
+                    }
+                }
+                elems.push(("linkMedia.preview".into(), rect, "preview".into()));
+            });
+            if !d.message.is_empty() {
+                ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
             }
-            let r = ui.add_enabled(d.candidate.is_some(), egui::Button::new(RichText::new("Link").color(Color32::WHITE)).fill(accent));
-            push(&mut elems, "linkMedia.link", &r, "Link");
-            if r.clicked() {
-                action = Some("link");
-            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                for (id, en, ja) in [
+                    ("offlineAll", "Offline All", "すべてオフライン"),
+                    ("offline", "Offline", "オフライン"),
+                    ("cancel", "Cancel", "キャンセル"),
+                    ("locate", "Locate…", "手動検索…"),
+                ] {
+                    let r = ui.button(crate::i18n::t(en, ja));
+                    push(&mut elems, format!("linkMedia.{id}"), &r, en);
+                    if r.clicked() {
+                        action = Some(id);
+                    }
+                }
+                let r = ui
+                    .add_enabled(d.candidate.is_some(), egui::Button::new(RichText::new(crate::i18n::t("Link", "リンク")).color(Color32::WHITE)).fill(accent));
+                push(&mut elems, "linkMedia.link", &r, "Link");
+                if r.clicked() {
+                    action = Some("link");
+                }
+            });
         });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -288,7 +322,7 @@ fn link_media(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 d.message.clear();
                 d.candidates.clear();
                 d.candidate = None;
-                app.ui.status = format!("Linked {} clip(s)", v["relinked"].as_array().map_or(0, Vec::len));
+                app.ui.status = crate::tf!("Linked {} clip(s)", "{} 個のクリップをリンクしました", v["relinked"].as_array().map_or(0, Vec::len));
             }
             Err(e) => d.message = e.to_string(),
         }
@@ -356,27 +390,34 @@ fn make_offline(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut keep = true;
     let mut ok = false;
     let n = app.session.state.project_selection.len();
-    egui::Window::new("Make Offline").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.label(format!("Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again."));
-        let r = ui.radio(!delete, "Media files remain on disk");
-        push(&mut elems, "makeOffline.keep", &r, "Media files remain on disk");
-        if r.clicked() {
-            delete = false;
-        }
-        let r = ui.radio(delete, "Media files are deleted");
-        push(&mut elems, "makeOffline.delete", &r, "Media files are deleted");
-        if r.clicked() {
-            delete = true;
-        }
-        ui.horizontal(|ui| {
-            let r = ui.button("Cancel");
-            push(&mut elems, "makeOffline.cancel", &r, "Cancel");
-            keep &= !r.clicked();
-            let r = ui.button("OK");
-            push(&mut elems, "makeOffline.ok", &r, "OK");
-            ok = r.clicked();
+    egui::Window::new(crate::i18n::t("Make Offline", "オフラインにする"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(crate::tf!(
+                "Make {n} selected clip(s) offline. Their clips show the offline slate until you link them again.",
+                "選択した {n} 個のクリップをオフラインにします。再リンクするまでオフライン画面が表示されます。"
+            ));
+            let r = ui.radio(!delete, crate::i18n::t("Media files remain on disk", "メディアファイルをディスクに残す"));
+            push(&mut elems, "makeOffline.keep", &r, "Media files remain on disk");
+            if r.clicked() {
+                delete = false;
+            }
+            let r = ui.radio(delete, crate::i18n::t("Media files are deleted", "メディアファイルをディスクから削除する"));
+            push(&mut elems, "makeOffline.delete", &r, "Media files are deleted");
+            if r.clicked() {
+                delete = true;
+            }
+            ui.horizontal(|ui| {
+                let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
+                push(&mut elems, "makeOffline.cancel", &r, "Cancel");
+                keep &= !r.clicked();
+                let r = ui.button("OK");
+                push(&mut elems, "makeOffline.ok", &r, "OK");
+                ok = r.clicked();
+            });
         });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -395,36 +436,50 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut keep = true;
     let mut ok = false;
     let mut browse = false;
-    egui::Window::new("Create Proxies").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.label(format!("{} clip(s) selected.", d.items.len()));
-        ui.add_space(4.0);
-        ui.label(RichText::new("Format and size").strong());
-        for p in filmcraft_engine::proxies::PRESETS.iter().filter(|p| p.proxy) {
-            let r = ui.radio(d.preset == p.id, p.label);
-            push(&mut elems, format!("proxies.preset.{}", p.id), &r, p.label);
-            if r.clicked() {
-                d.preset = p.id.into();
+    egui::Window::new(crate::i18n::t("Create Proxies", "プロキシを作成"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(crate::tf!("{} clip(s) selected.", "{} 個のクリップが選択されています。", d.items.len()));
+            ui.add_space(4.0);
+            ui.label(RichText::new(crate::i18n::t("Format and size", "フォーマットとサイズ")).strong());
+            for p in filmcraft_engine::proxies::PRESETS.iter().filter(|p| p.proxy) {
+                let r = ui.radio(d.preset == p.id, p.label);
+                push(&mut elems, format!("proxies.preset.{}", p.id), &r, p.label);
+                if r.clicked() {
+                    d.preset = p.id.into();
+                }
             }
-        }
-        ui.add_space(4.0);
-        ui.label(RichText::new("Destination").strong());
-        ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut d.destination).desired_width(320.0).hint_text("Next to the original media, in a Proxies folder"));
-            push(&mut elems, "proxies.destination", &r, "destination");
-            let r = ui.button("Browse…");
-            push(&mut elems, "proxies.browse", &r, "Browse…");
-            browse = r.clicked();
+            ui.add_space(4.0);
+            ui.label(RichText::new(crate::i18n::t("Destination", "保存先")).strong());
+            ui.horizontal(|ui| {
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut d.destination)
+                        .desired_width(320.0)
+                        .hint_text(crate::i18n::t("Next to the original media, in a Proxies folder", "元のメディアと同じ場所の「Proxies」フォルダー")),
+                );
+                push(&mut elems, "proxies.destination", &r, "destination");
+                let r = ui.button(crate::i18n::t("Browse…", "参照…"));
+                push(&mut elems, "proxies.browse", &r, "Browse…");
+                browse = r.clicked();
+            });
+            ui.label(
+                RichText::new(crate::i18n::t(
+                    "Proxies are made in the background and attached when done. Export always uses full-resolution media.",
+                    "プロキシはバックグラウンドで作成され、完了後に自動でアタッチされます。書き出し時は常にフル解像度メディアが使用されます。",
+                ))
+                .weak(),
+            );
+            ui.horizontal(|ui| {
+                let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
+                push(&mut elems, "proxies.cancel", &r, "Cancel");
+                keep &= !r.clicked();
+                let r = ui.add(egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(app.tokens.accent));
+                push(&mut elems, "proxies.ok", &r, "OK");
+                ok = r.clicked();
+            });
         });
-        ui.label(RichText::new("Proxies are made in the background and attached when done. Export always uses full-resolution media.").weak());
-        ui.horizontal(|ui| {
-            let r = ui.button("Cancel");
-            push(&mut elems, "proxies.cancel", &r, "Cancel");
-            keep &= !r.clicked();
-            let r = ui.add(egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(app.tokens.accent));
-            push(&mut elems, "proxies.ok", &r, "OK");
-            ok = r.clicked();
-        });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -434,7 +489,7 @@ fn create_proxies(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if ok {
         let p = json!({"items": d.items, "preset": d.preset, "destination": if d.destination.is_empty() { Value::Null } else { json!(d.destination) }});
         match app.session.execute("media.createProxies", p) {
-            Ok(v) => app.ui.status = format!("Creating {} proxy file(s)…", v["outputs"].as_array().map_or(0, Vec::len)),
+            Ok(v) => app.ui.status = crate::tf!("Creating {} proxy file(s)…", "{} 個のプロキシファイルを作成中…", v["outputs"].as_array().map_or(0, Vec::len)),
             Err(e) => app.ui.status = e.to_string(),
         }
         keep = false;
@@ -463,92 +518,101 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut keep = true;
     let (mut ok, mut calc, mut browse) = (false, false, false);
     let seqs: Vec<(u64, String)> = app.session.project.sequences().map(|i| (i.id.0, i.name.clone())).collect();
-    egui::Window::new("Project Manager").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.label(RichText::new("Sequences").strong());
-        for (id, name) in &seqs {
-            let mut on = d.sequences.contains(id);
-            let r = ui.checkbox(&mut on, name);
-            push(&mut elems, format!("pm.seq.{id}"), &r, name.clone());
-            if r.changed() {
-                if on {
-                    d.sequences.push(*id);
-                } else {
-                    d.sequences.retain(|s| s != id);
-                }
-            }
-        }
-        ui.separator();
-        ui.label(RichText::new("Resulting Project").strong());
-        for (id, label) in [("collect", "Collect Files and Copy to New Location"), ("consolidate", "Consolidate and Transcode")] {
-            let r = ui.radio(d.mode == id, label);
-            push(&mut elems, format!("pm.mode.{id}"), &r, label);
-            if r.clicked() {
-                d.mode = id.into();
-            }
-        }
-        if d.mode == "consolidate" {
-            ui.indent("pm-presets", |ui| {
-                for p in filmcraft_engine::proxies::PRESETS.iter().filter(|p| !p.proxy) {
-                    let r = ui.radio(d.preset == p.id, p.label);
-                    push(&mut elems, format!("pm.preset.{}", p.id), &r, p.label);
-                    if r.clicked() {
-                        d.preset = p.id.into();
+    egui::Window::new(crate::i18n::t("Project Manager", "プロジェクトマネージャー"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(RichText::new(crate::i18n::t("Sequences", "シーケンス")).strong());
+            for (id, name) in &seqs {
+                let mut on = d.sequences.contains(id);
+                let r = ui.checkbox(&mut on, name);
+                push(&mut elems, format!("pm.seq.{id}"), &r, name.clone());
+                if r.changed() {
+                    if on {
+                        d.sequences.push(*id);
+                    } else {
+                        d.sequences.retain(|s| s != id);
                     }
                 }
+            }
+            ui.separator();
+            ui.label(RichText::new(crate::i18n::t("Resulting Project", "出力先プロジェクト")).strong());
+            for (id, label) in [
+                ("collect", crate::i18n::t("Collect Files and Copy to New Location", "ファイルを収集して新しい場所にコピー")),
+                ("consolidate", crate::i18n::t("Consolidate and Transcode", "統合してトランスコード")),
+            ] {
+                let r = ui.radio(d.mode == id, label);
+                push(&mut elems, format!("pm.mode.{id}"), &r, label);
+                if r.clicked() {
+                    d.mode = id.into();
+                }
+            }
+            if d.mode == "consolidate" {
+                ui.indent("pm-presets", |ui| {
+                    for p in filmcraft_engine::proxies::PRESETS.iter().filter(|p| !p.proxy) {
+                        let r = ui.radio(d.preset == p.id, p.label);
+                        push(&mut elems, format!("pm.preset.{}", p.id), &r, p.label);
+                        if r.clicked() {
+                            d.preset = p.id.into();
+                        }
+                    }
+                });
+            }
+            ui.separator();
+            ui.label(RichText::new(crate::i18n::t("Options", "オプション")).strong());
+            let r = ui.checkbox(&mut d.exclude_unused, crate::i18n::t("Exclude Unused Clips", "未使用のクリップを除外"));
+            push(&mut elems, "pm.excludeUnused", &r, "Exclude Unused Clips");
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(d.mode == "consolidate", |ui| {
+                    ui.label(crate::i18n::t("Include Handles:", "ハンドルを含める:"));
+                    let r = ui.add(egui::DragValue::new(&mut d.handles).range(0..=600).suffix(crate::i18n::t(" frames", " フレーム")));
+                    push(&mut elems, "pm.handles", &r, format!("{} frames", d.handles));
+                });
             });
-        }
-        ui.separator();
-        ui.label(RichText::new("Options").strong());
-        let r = ui.checkbox(&mut d.exclude_unused, "Exclude Unused Clips");
-        push(&mut elems, "pm.excludeUnused", &r, "Exclude Unused Clips");
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(d.mode == "consolidate", |ui| {
-                ui.label("Include Handles:");
-                let r = ui.add(egui::DragValue::new(&mut d.handles).range(0..=600).suffix(" frames"));
-                push(&mut elems, "pm.handles", &r, format!("{} frames", d.handles));
+            ui.add_enabled_ui(d.mode == "collect", |ui| {
+                let r = ui.checkbox(&mut d.include_proxies, crate::i18n::t("Include Proxies", "プロキシを含める"));
+                push(&mut elems, "pm.includeProxies", &r, "Include Proxies");
+            });
+            let r = ui.checkbox(&mut d.include_previews, crate::i18n::t("Include Preview Files", "プレビューファイルを含める"));
+            push(&mut elems, "pm.includePreviews", &r, "Include Preview Files");
+            ui.separator();
+            ui.label(RichText::new(crate::i18n::t("Destination Path", "保存先パス")).strong());
+            ui.horizontal(|ui| {
+                let r = ui.add(egui::TextEdit::singleline(&mut d.destination).desired_width(360.0));
+                push(&mut elems, "pm.destination", &r, "destination");
+                let r = ui.button(crate::i18n::t("Browse…", "参照…"));
+                push(&mut elems, "pm.browse", &r, "Browse…");
+                browse = r.clicked();
+            });
+            ui.horizontal(|ui| {
+                let text = match d.estimate {
+                    Some((a, b, n)) => {
+                        crate::tf!("Disk space: original {} · resulting {} ({n} files)", "ディスク容量: 元 {} · 出力 {} ({n} ファイル)", mb(a), mb(b))
+                    }
+                    None => crate::i18n::t("Disk space: —", "ディスク容量: —").into(),
+                };
+                let r = ui.label(&text);
+                push(&mut elems, "pm.sizes", &r, text);
+                let r = ui.button(crate::i18n::t("Calculate", "ディスク容量を計算"));
+                push(&mut elems, "pm.calculate", &r, "Calculate");
+                calc = r.clicked();
+            });
+            if !d.message.is_empty() {
+                ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
+            }
+            ui.horizontal(|ui| {
+                let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
+                push(&mut elems, "pm.cancel", &r, "Cancel");
+                keep &= !r.clicked();
+                let r = ui.add_enabled(
+                    !d.destination.is_empty() && !d.sequences.is_empty(),
+                    egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(app.tokens.accent),
+                );
+                push(&mut elems, "pm.ok", &r, "OK");
+                ok = r.clicked();
             });
         });
-        ui.add_enabled_ui(d.mode == "collect", |ui| {
-            let r = ui.checkbox(&mut d.include_proxies, "Include Proxies");
-            push(&mut elems, "pm.includeProxies", &r, "Include Proxies");
-        });
-        let r = ui.checkbox(&mut d.include_previews, "Include Preview Files");
-        push(&mut elems, "pm.includePreviews", &r, "Include Preview Files");
-        ui.separator();
-        ui.label(RichText::new("Destination Path").strong());
-        ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut d.destination).desired_width(360.0));
-            push(&mut elems, "pm.destination", &r, "destination");
-            let r = ui.button("Browse…");
-            push(&mut elems, "pm.browse", &r, "Browse…");
-            browse = r.clicked();
-        });
-        ui.horizontal(|ui| {
-            let text = match d.estimate {
-                Some((a, b, n)) => format!("Disk space: original {} · resulting {} ({n} files)", mb(a), mb(b)),
-                None => "Disk space: —".into(),
-            };
-            let r = ui.label(&text);
-            push(&mut elems, "pm.sizes", &r, text);
-            let r = ui.button("Calculate");
-            push(&mut elems, "pm.calculate", &r, "Calculate");
-            calc = r.clicked();
-        });
-        if !d.message.is_empty() {
-            ui.colored_label(Color32::from_rgb(0xe0, 0x8a, 0x6a), &d.message);
-        }
-        ui.horizontal(|ui| {
-            let r = ui.button("Cancel");
-            push(&mut elems, "pm.cancel", &r, "Cancel");
-            keep &= !r.clicked();
-            let r = ui.add_enabled(
-                !d.destination.is_empty() && !d.sequences.is_empty(),
-                egui::Button::new(RichText::new("OK").color(Color32::WHITE)).fill(app.tokens.accent),
-            );
-            push(&mut elems, "pm.ok", &r, "OK");
-            ok = r.clicked();
-        });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -578,7 +642,8 @@ fn project_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if ok {
         match app.session.execute("file.projectManager", pm_params(&d, false)) {
             Ok(v) => {
-                app.ui.status = format!("Project Manager: writing {}", v["project"].as_str().unwrap_or_default());
+                app.ui.status =
+                    crate::tf!("Project Manager: writing {}", "プロジェクトマネージャー: {} を書き込み中", v["project"].as_str().unwrap_or_default());
                 keep = false;
             }
             Err(e) => d.message = e.to_string(),

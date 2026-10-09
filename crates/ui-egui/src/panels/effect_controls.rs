@@ -31,11 +31,11 @@ fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, filmcraft_pro
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it, kind)) = selected_clip(app) else {
-        crate::dock::placeholder(ui, rect, &t, "(no clip selected)");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("(no clip selected)", "（クリップが選択されていません）"));
         return;
     };
     let Some(seq) = app.session.active_sequence().cloned() else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequences)");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("(no sequences)", "（シーケンスがありません）"));
         return;
     };
     let split = rect.min.x + (rect.width() * 0.58).max(260.0).min(rect.width() - 60.0);
@@ -50,7 +50,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         cp.text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, text, Tokens::ui(11.5), if active { t.text } else { t.text_dim });
     };
     let half = (head.width() - 6.0) / 2.0;
-    pill(ui, Rect::from_min_size(head.min, vec2(half, 24.0)), &format!("Source · {}", it.name), false);
+    pill(ui, Rect::from_min_size(head.min, vec2(half, 24.0)), &crate::tf!("Source · {}", "ソース · {}", it.name), false);
     pill(ui, Rect::from_min_size(head.min + vec2(half + 6.0, 0.0), vec2(half, 24.0)), &format!("{} · {}", seq_name(app), it.name), true);
     // keyframe lane header: mini ruler over the clip's duration
     let lane = Rect::from_min_max(pos2(split + 4.0, rect.min.y + 4.0), pos2(rect.max.x - 6.0, rect.max.y - 26.0));
@@ -76,7 +76,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
     let mt_now = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
-    let heading = if kind == filmcraft_project::TrackKind::Video { "Video" } else { "Audio" };
+    let heading = if kind == filmcraft_project::TrackKind::Video { crate::i18n::t("Video", "ビデオ") } else { crate::i18n::t("Audio", "オーディオ") };
     bui.painter().text(pos2(body.min.x + 8.0, body.min.y + 8.0), Align2::LEFT_CENTER, heading, Tokens::semibold(11.5), t.text_dim);
     bui.add_space(18.0);
     // Premiere lists the fixed effects (Motion, Opacity, Time Remapping / Volume…) first.
@@ -108,15 +108,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if fxresp.clicked() {
                 actions.push(("effects.toggleEnabled".into(), json!({"clip": clip.0, "index": idx})));
             }
-            bui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, def.name, Tokens::ui(12.0), t.text);
+            let display_name = effect_def_display_name(&e.effect, def.name);
+            bui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, display_name, Tokens::ui(12.0), t.text);
             // reset button
             let rr = Rect::from_center_size(pos2(r.max.x - 14.0, r.center().y), vec2(16.0, 16.0));
-            let rresp = bui.interact(rr, egui::Id::new(("fxreset", clip.0, idx)), Sense::click()).on_hover_text("Reset Effect");
+            let rresp =
+                bui.interact(rr, egui::Id::new(("fxreset", clip.0, idx)), Sense::click()).on_hover_text(crate::i18n::t("Reset Effect", "エフェクトをリセット"));
             icons::paint(bui.painter(), rr.shrink(2.0), Icon::Reset, if rresp.hovered() { t.text } else { t.text_dim });
             if rresp.clicked() {
                 actions.push(("effects.reset".into(), json!({"clip": clip.0, "index": idx})));
             }
-            app.auto.add(&format!("effectControls.effect.{}", e.effect), r, def.name);
+            app.auto.add(&format!("effectControls.effect.{}", e.effect), r, display_name);
             if resp.clicked() && !fxresp.clicked() && !rresp.clicked() {
                 if open {
                     app.ui.collapsed_fx.push(key.clone());
@@ -127,13 +129,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let mut save_preset = false;
             let fx_id = e.effect.clone();
             resp.context_menu(|ui| {
-                let sp = ui.button("Save Preset…");
+                let sp = ui.button(crate::i18n::t("Save Preset…", "プリセットの保存…"));
                 app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
                 if sp.clicked() {
                     save_preset = true;
                     ui.close();
                 }
-                if !def.intrinsic && ui.button("Clear").clicked() {
+                if !def.intrinsic && ui.button(crate::i18n::t("Clear", "削除")).clicked() {
                     actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
                     ui.close();
                 }
@@ -180,12 +182,18 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 fn custom_setup_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, body: Rect, clip: ClipId, idx: usize, effect: &str) {
     let t = app.tokens;
     let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
-    ui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, "Custom Setup", Tokens::ui(12.0), t.text_dim);
+    ui.painter().text(
+        pos2(r.min.x + 42.0, r.center().y),
+        Align2::LEFT_CENTER,
+        crate::i18n::t("Custom Setup", "カスタムセットアップ"),
+        Tokens::ui(12.0),
+        t.text_dim,
+    );
     let br = Rect::from_min_size(pos2(r.min.x + 160.0, r.min.y + 2.0), vec2(60.0, ROW_H - 4.0));
     let resp = ui.interact(br, egui::Id::new(("fx-custom-setup", clip.0, idx)), Sense::click());
     ui.painter().rect_filled(br, 3.0, if resp.hovered() { t.hover } else { t.field_bg });
     ui.painter().rect_stroke(br, 3.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-    ui.painter().text(br.center(), Align2::CENTER_CENTER, "Edit…", Tokens::ui(11.5), t.text);
+    ui.painter().text(br.center(), Align2::CENTER_CENTER, crate::i18n::t("Edit…", "編集…"), Tokens::ui(11.5), t.text);
     app.auto.add(&format!("effectControls.effect.{effect}.edit"), br, "Edit…");
     if resp.clicked() {
         crate::panels::audio_fx_editor::open(app, crate::panels::audio_fx_editor::FxTarget::Clip { clip: clip.0, index: idx });
@@ -238,7 +246,9 @@ pub(crate) fn param_row(
         let key = graph_key(clip, idx, pkey);
         let open = app.ui.expanded_fx.contains(&key);
         let tw = Rect::from_center_size(pos2(r.min.x + 12.0, r.center().y), vec2(12.0, 12.0));
-        let tresp = ui.interact(tw.expand(2.0), egui::Id::new(("twirl", clip.0, idx, pkey)), Sense::click()).on_hover_text("Show graphs");
+        let tresp = ui
+            .interact(tw.expand(2.0), egui::Id::new(("twirl", clip.0, idx, pkey)), Sense::click())
+            .on_hover_text(crate::i18n::t("Show graphs", "グラフを表示"));
         icons::paint(ui.painter(), tw, if open { Icon::ChevronDown } else { Icon::ChevronRight }, t.text_dim);
         app.auto.add(&format!("effectControls.{}.{}.graphs", e.effect, pkey), tw, "Show graphs");
         if tresp.clicked() {
@@ -251,7 +261,9 @@ pub(crate) fn param_row(
     }
     if pd.animatable {
         let sw = Rect::from_center_size(pos2(x, r.center().y), vec2(14.0, 14.0));
-        let resp = ui.interact(sw, egui::Id::new(("sw", clip.0, idx, pkey)), Sense::click()).on_hover_text("Toggle animation");
+        let resp = ui
+            .interact(sw, egui::Id::new(("sw", clip.0, idx, pkey)), Sense::click())
+            .on_hover_text(crate::i18n::t("Toggle animation", "アニメーションのオン/オフ"));
         icons::paint(ui.painter(), sw, Icon::Stopwatch, if param.is_animated() { t.accent } else { t.text_dim });
         if resp.clicked() {
             actions.push(("effects.toggleAnimation".into(), with_mask(json!({"clip": clip.0, "effect": idx, "param": pd.id}))));
@@ -259,7 +271,8 @@ pub(crate) fn param_row(
         app.auto.add(&format!("effectControls.{}.{}.stopwatch", e.effect, pkey), sw, "Toggle animation");
     }
     x += 14.0;
-    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, pd.label, Tokens::ui(12.0), t.text);
+    let label = param_display_label(pd.id, pd.label);
+    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text);
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
     let value = param.value_at(mt);
     let mut vui = ui.new_child(
@@ -372,7 +385,11 @@ pub(crate) fn param_row(
         {
             actions.push(("playhead.set".into(), json!({"time": to_tl(k).0})));
         }
-        if ui.interact(kr, egui::Id::new(("kadd", clip.0, idx, pkey)), Sense::click()).on_hover_text("Add/Remove Keyframe").clicked() {
+        if ui
+            .interact(kr, egui::Id::new(("kadd", clip.0, idx, pkey)), Sense::click())
+            .on_hover_text(crate::i18n::t("Add/Remove Keyframe", "キーフレームを追加／削除"))
+            .clicked()
+        {
             actions.push(("effects.addKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id}))));
         }
         app.auto.add(&format!("effectControls.{}.{}.addKeyframe", e.effect, pkey), kr, "Add/Remove Keyframe");
@@ -426,7 +443,7 @@ pub(crate) fn param_row(
                 actions.push(("playhead.set".into(), json!({"time": tl.0})));
             }
             resp.context_menu(|ui| {
-                ui.label(egui::RichText::new("Temporal Interpolation").color(t.text_dim));
+                ui.label(egui::RichText::new(crate::i18n::t("Temporal Interpolation", "時間補間法")).color(t.text_dim));
                 for (label, key) in [
                     ("Linear", "linear"),
                     ("Bezier", "bezier"),
@@ -445,7 +462,7 @@ pub(crate) fn param_row(
                     }
                 }
                 ui.separator();
-                if ui.button("Clear").clicked() {
+                if ui.button(crate::i18n::t("Clear", "消去")).clicked() {
                     actions
                         .push(("effects.deleteKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0}))));
                     ui.close();
@@ -459,14 +476,14 @@ pub(crate) fn param_row(
 pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it, _)) = selected_clip(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a clip to grade");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("Select a clip to grade", "グレーディングするクリップを選択してください"));
         return;
     };
     let idx = it.effects.iter().position(|e| e.effect == "lumetri");
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)).id_salt("lumetri"));
-    bui.label(egui::RichText::new(format!("Master · {}", it.name)).color(t.text_dim));
+    bui.label(egui::RichText::new(crate::tf!("Master · {}", "マスター · {}", it.name)).color(t.text_dim));
     let Some(idx) = idx else {
-        if bui.button("Add Lumetri Color to clip").clicked() {
+        if bui.button(crate::i18n::t("Add Lumetri Color to clip", "クリップに Lumetri カラーを追加")).clicked() {
             let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
         }
         return;
@@ -539,7 +556,7 @@ pub fn lumetri_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it, kind)) = selected_clip(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a clip to see its properties");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("Select a clip to see its properties", "クリップを選択するとプロパティが表示されます"));
         return;
     };
     let ph = app.session.playhead();
@@ -554,7 +571,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     bui.painter().text(pos2(hr.min.x + 22.0, hr.center().y), Align2::LEFT_CENTER, &it.name, Tokens::semibold(12.5), t.text);
     let row = |ui: &mut egui::Ui, label: &str| -> Rect {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::hover());
-        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text_dim);
+        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(label), Tokens::ui(12.0), t.text_dim);
         r
     };
     let section = |ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, reset: Option<(usize, u64)>, actions: &mut Vec<(String, Value)>| -> bool {
@@ -569,7 +586,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             if open { Icon::ChevronDown } else { Icon::ChevronRight },
             t.text_dim,
         );
-        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::semibold(13.0), t.text);
+        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(name), Tokens::semibold(13.0), t.text);
         if let Some((idx, c)) = reset {
             let rr = Rect::from_center_size(pos2(r.max.x - 10.0, r.center().y), vec2(14.0, 14.0));
             icons::paint(ui.painter(), rr, Icon::Reset, t.text_dim);
@@ -641,7 +658,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     actions.push(("effects.toggleAnimation".into(), json!({"clip": clip.0, "effect": "motion", "param": p})));
                 }
             }
-            let r = row(&mut bui, "Opacity");
+            let r = row(&mut bui, crate::i18n::t("Opacity", "不透明度"));
             let mut vui = bui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - 24.0, r.max.y - 4.0)))
@@ -678,7 +695,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
     } else if section(&mut bui, app, "Audio", eff_idx("volume").map(|i| (i, clip.0)), &mut actions) {
-        let r = row(&mut bui, "Level");
+        let r = row(&mut bui, crate::i18n::t("Level", "レベル"));
         let mut vui = bui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - 24.0, r.max.y - 4.0)))
@@ -692,7 +709,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if diamond(&mut bui, r, anim("volume", "level"), egui::Id::new(("pd-vol", clip.0))) {
             actions.push(("effects.toggleAnimation".into(), json!({"clip": clip.0, "effect": "volume", "param": "level"})));
         }
-        let r = row(&mut bui, "Pan");
+        let r = row(&mut bui, crate::i18n::t("Pan", "パン"));
         let mut vui = bui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_max(pos2(r.min.x + 150.0, r.min.y + 4.0), pos2(r.max.x - 24.0, r.max.y - 4.0)))
@@ -709,7 +726,7 @@ pub fn properties_panel(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let (br, bresp) = bui.allocate_exact_size(vec2(118.0, 26.0), Sense::click());
     bui.painter().rect_filled(br, 4.0, if bresp.hovered() { t.hover } else { t.panel_bg });
     bui.painter().rect_stroke(br, 4.0, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-    bui.painter().text(br.center(), Align2::CENTER_CENTER, format!("Speed {:.0}%", it.speed * 100.0), Tokens::ui(12.0), t.text);
+    bui.painter().text(br.center(), Align2::CENTER_CENTER, crate::tf!("Speed {:.0}%", "速度 {:.0}%", it.speed * 100.0), Tokens::ui(12.0), t.text);
     for (cmd, p) in actions {
         if let Err(e) = app.session.execute(&cmd, p) {
             app.ui.status = e.to_string();
@@ -784,7 +801,7 @@ pub(crate) fn graph_rows(
     let dec = if let ParamKind::Float { decimals, .. } = pd.kind { decimals as usize } else { 1 };
     p.text(pos2(vr.max.x - 30.0, area.min.y + 6.0), Align2::RIGHT_CENTER, format!("{hi:.dec$}"), Tokens::ui(10.0), t.text_dim);
     p.text(pos2(vr.max.x - 30.0, area.max.y - 6.0), Align2::RIGHT_CENTER, format!("{lo:.dec$}"), Tokens::ui(10.0), t.text_dim);
-    p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, "Value", Tokens::ui(11.0), t.text_dim);
+    p.text(pos2(vr.min.x + 44.0, area.center().y), Align2::LEFT_CENTER, crate::i18n::t("Value", "値"), Tokens::ui(11.0), t.text_dim);
     let line: Vec<Pos2> = vals.iter().enumerate().map(|(i, v)| pos2(x_of(i as f32 / n as f32), y_of(*v))).collect();
     p.add(egui::Shape::line(line, Stroke::new(1.5, t.accent)));
     // velocity (units per second, derivative of the sampled value)
@@ -797,7 +814,7 @@ pub(crate) fn graph_rows(
     p.line_segment([pos2(varea.min.x, varea.center().y), pos2(varea.max.x, varea.center().y)], Stroke::new(1.0, Color32::from_rgb(0x33, 0x33, 0x33)));
     let vline: Vec<Pos2> = vel.iter().enumerate().map(|(i, v)| pos2(x_of((i as f32 + 0.5) / n as f32), vy(*v))).collect();
     p.add(egui::Shape::line(vline, Stroke::new(1.2, Color32::from_rgb(0xd0, 0xa0, 0x40))));
-    p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, "Velocity", Tokens::ui(11.0), t.text_dim);
+    p.text(pos2(velr.min.x + 44.0, varea.center().y), Align2::LEFT_CENTER, crate::i18n::t("Velocity", "速度"), Tokens::ui(11.0), t.text_dim);
     p.text(pos2(velr.max.x - 30.0, varea.min.y + 6.0), Align2::RIGHT_CENTER, format!("{vmax:.1}/s"), Tokens::ui(10.0), t.text_dim);
     let p = p.clone();
     // keyframes + handles
@@ -856,14 +873,70 @@ pub(crate) fn graph_rows(
     }
 }
 
+fn param_display_label<'a>(id: &str, label: &'a str) -> &'a str {
+    if !crate::i18n::is_japanese() {
+        return label;
+    }
+    let ja = match id {
+        "position" => "位置",
+        "scale" => "スケール",
+        "uniform_scale" => "縦横比を固定",
+        "scale_w" => "スケール (幅)",
+        "rotation" => "回転",
+        "anchor" => "アンカーポイント",
+        "antiflicker" => "アンチフリッカーフィルター",
+        "opacity" => "不透明度",
+        "blend" => "描画モード",
+        "speed" => "速度",
+        "level" => "レベル",
+        "bypass" => "バイパス",
+        "pan" => "パン",
+        _ => label,
+    };
+    crate::i18n::remember(label, ja);
+    ja
+}
+
+fn effect_def_display_name<'a>(id: &str, name: &'a str) -> &'a str {
+    if !crate::i18n::is_japanese() {
+        return name;
+    }
+    let ja = match id {
+        "motion" => "モーション",
+        "opacity" => "不透明度",
+        "time_remap" => "タイムリマップ",
+        "volume" => "ボリューム",
+        "channel_volume" => "チャンネルボリューム",
+        "panner" => "パナー",
+        "gaussian_blur" => "ガウス",
+        "brightness_contrast" => "輝度＆コントラスト",
+        "crop" => "クロップ",
+        "proc_amp" => "プロアンプ",
+        "tint" => "色合い",
+        "black_white" => "白黒",
+        "color_balance" => "カラーバランス (RGB)",
+        "directional_blur" => "方向ブラー",
+        "unsharp_mask" => "アンシャープマスク",
+        "levels" => "レベル",
+        "gamma_correction" => "ガンマ補正",
+        "lumetri" => "Lumetri カラー",
+        _ => name,
+    };
+    crate::i18n::remember(name, ja);
+    ja
+}
+
 /// Read-only text for parameters without an inline editor (LUT references, free text, curves).
 fn param_text(project: &filmcraft_project::Project, id: &str, value: &ParamValue) -> String {
     match value {
-        ParamValue::Text(s) if id.ends_with("_lut") => filmcraft_render::luts::label(Some(project), s),
-        ParamValue::Text(s) if s.is_empty() => "None".into(),
+        ParamValue::Text(s) if id.ends_with("_lut") => {
+            let lbl = filmcraft_render::luts::label(Some(project), s);
+            if lbl == "None" { crate::i18n::t("None", "なし").into() } else { lbl }
+        }
+        ParamValue::Text(s) if s.is_empty() => crate::i18n::t("None", "なし").into(),
         ParamValue::Text(s) => s.clone(),
-        ParamValue::Curve(pts) if pts.is_empty() || *pts == [[0.0, 0.0], [1.0, 1.0]] => "Default".into(),
-        ParamValue::Curve(pts) => format!("Custom ({} points)", pts.len()),
+        ParamValue::Curve(pts) if pts.is_empty() || *pts == [[0.0, 0.0], [1.0, 1.0]] => crate::i18n::t("Default", "初期設定").into(),
+        ParamValue::Curve(pts) => crate::tf!("Custom ({} points)", "カスタム ({} ポイント)", pts.len()),
         other => format!("{other:?}"),
     }
 }
@@ -875,12 +948,15 @@ mod param_text_tests {
     #[test]
     fn readable_values_for_text_lut_and_curve_params() {
         let p = filmcraft_project::Project::default();
-        assert_eq!(param_text(&p, "input_lut", &ParamValue::Text(String::new())), "None");
+        assert_eq!(param_text(&p, "input_lut", &ParamValue::Text(String::new())), crate::i18n::t("None", "なし"));
         assert_eq!(param_text(&p, "look_lut", &ParamValue::Text("builtin:look-teal-orange".into())), "Teal & Orange");
-        assert_eq!(param_text(&p, "label", &ParamValue::Text(String::new())), "None");
+        assert_eq!(param_text(&p, "label", &ParamValue::Text(String::new())), crate::i18n::t("None", "なし"));
         assert_eq!(param_text(&p, "label", &ParamValue::Text("Reel 3".into())), "Reel 3");
-        assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [1.0, 1.0]])), "Default");
-        assert_eq!(param_text(&p, "hue_vs_sat", &ParamValue::Curve(vec![])), "Default");
-        assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])), "Custom (3 points)");
+        assert_eq!(param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [1.0, 1.0]])), crate::i18n::t("Default", "初期設定"));
+        assert_eq!(param_text(&p, "hue_vs_sat", &ParamValue::Curve(vec![])), crate::i18n::t("Default", "初期設定"));
+        assert_eq!(
+            param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])),
+            crate::i18n::t("Custom (3 points)", "カスタム (3 ポイント)")
+        );
     }
 }

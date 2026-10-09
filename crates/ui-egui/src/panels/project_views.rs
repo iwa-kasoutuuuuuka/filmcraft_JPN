@@ -196,42 +196,45 @@ pub fn item_interactions(
 
 fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemKind, actions: &mut Actions) {
     let sel = || json!({"items": [id.0]});
-    if ui.button("Rename").clicked() {
+    if ui.button(crate::i18n::t("Rename", "名前を変更")).clicked() {
         actions.push(("projectPanel.rename".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button("Open in Source Monitor").clicked() {
+    if ui.button(crate::i18n::t("Open in Source Monitor", "ソースモニターで開く")).clicked() {
         actions.push(("source.open".into(), json!({"item": id.0})));
         ui.close();
     }
-    if matches!(kind, ItemKind::Sequence(_)) && ui.button("Open in Timeline").clicked() {
+    if matches!(kind, ItemKind::Sequence(_)) && ui.button(crate::i18n::t("Open in Timeline", "タイムラインで開く")).clicked() {
         actions.push(("sequence.open".into(), json!({"item": id.0})));
         ui.close();
     }
-    if ui.button("New Sequence From Clip").clicked() {
+    if ui.button(crate::i18n::t("New Sequence From Clip", "クリップから新規シーケンス")).clicked() {
         actions.push(("file.newSequence".into(), json!({"fromItem": id.0})));
         ui.close();
     }
-    if ui.button("Duplicate").clicked() {
+    if ui.button(crate::i18n::t("Duplicate", "複製")).clicked() {
         actions.push(("project.select".into(), sel()));
         actions.push(("edit.duplicate".into(), json!({})));
         ui.close();
     }
-    if ui.button("Set Poster Frame").clicked() {
+    if ui.button(crate::i18n::t("Set Poster Frame", "ポスターフレームを設定")).clicked() {
         // the hover-scrubbed time when there is one
         let h = app.ui.project_panel.hover.filter(|h| h.item == id.0);
         actions.push(("project.select".into(), sel()));
         actions.push(("clip.setPosterFrame".into(), h.map(|h| json!({"item": id.0, "time": h.time})).unwrap_or(json!({}))));
         ui.close();
     }
-    if ui.button("Interpret Footage…").clicked() {
+    if ui.button(crate::i18n::t("Interpret Footage…", "フッテージを変換…")).clicked() {
         actions.push(("clip.interpretFootage".into(), json!({"items": [id.0]})));
         ui.close();
     }
     // subclips: Make Subclip (media), Edit Subclip and Convert to Master Clip (subclips)
     let subclip_items: &[(&str, &str, &str)] = match kind {
-        ItemKind::Media(_) => &[("makeSubclip", "Make Subclip…", "clip.makeSubclip")],
-        ItemKind::Subclip { .. } => &[("editSubclip", "Edit Subclip…", "clip.editSubclip"), ("convertToMaster", "Convert to Master Clip", "clip.editSubclip")],
+        ItemKind::Media(_) => &[("makeSubclip", crate::i18n::t("Make Subclip…", "サブクリップを作成…"), "clip.makeSubclip")],
+        ItemKind::Subclip { .. } => &[
+            ("editSubclip", crate::i18n::t("Edit Subclip…", "サブクリップを編集…"), "clip.editSubclip"),
+            ("convertToMaster", crate::i18n::t("Convert to Master Clip", "マスタークリップに変換"), "clip.editSubclip"),
+        ],
         _ => &[],
     };
     for (key, label, cmd) in subclip_items {
@@ -244,7 +247,7 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
             ui.close();
         }
     }
-    ui.menu_button("Label", |ui| {
+    ui.menu_button(crate::i18n::t("Label", "ラベル"), |ui| {
         for l in filmcraft_project::Label::ALL {
             if ui.button(l.name()).clicked() {
                 actions.push(("project.select".into(), json!({"items": [id.0]})));
@@ -255,19 +258,22 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
     });
     if matches!(kind, ItemKind::Media(m) if matches!(m.media, filmcraft_project::MediaRef::File { .. })) {
         ui.separator();
-        for (label, cmd) in [("Link Media…", "media.linkMedia"), ("Make Offline…", "media.makeOffline")] {
+        for (label, cmd) in [
+            (crate::i18n::t("Link Media…", "メディアにリンク…"), "media.linkMedia"),
+            (crate::i18n::t("Make Offline…", "オフラインにする…"), "media.makeOffline"),
+        ] {
             if ui.button(label).clicked() {
                 actions.push(("project.select".into(), sel()));
                 actions.push((cmd.into(), json!({})));
                 ui.close();
             }
         }
-        ui.menu_button("Proxy", |ui| {
+        ui.menu_button(crate::i18n::t("Proxy", "プロキシ"), |ui| {
             for (label, cmd) in [
-                ("Create Proxies…", "media.createProxies"),
-                ("Attach Proxies…", "media.attachProxies"),
-                ("Reconnect Full Resolution Media…", "media.reconnectFullRes"),
-                ("Detach Proxies", "media.detachProxies"),
+                (crate::i18n::t("Create Proxies…", "プロキシを作成…"), "media.createProxies"),
+                (crate::i18n::t("Attach Proxies…", "プロキシをアタッチ…"), "media.attachProxies"),
+                (crate::i18n::t("Reconnect Full Resolution Media…", "フル解像度メディアを再接続…"), "media.reconnectFullRes"),
+                (crate::i18n::t("Detach Proxies", "プロキシを切り離す"), "media.detachProxies"),
             ] {
                 if ui.button(label).clicked() {
                     actions.push(("project.select".into(), json!({"items": [id.0]})));
@@ -278,15 +284,19 @@ fn item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: ItemId, kind: &ItemK
         });
     }
     ui.separator();
-    if ui.button("Clear").clicked() {
+    if ui.button(crate::i18n::t("Clear", "消去")).clicked() {
         actions.push(("project.delete".into(), json!({"items": [id.0]})));
         ui.close();
     }
 }
 
 fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actions: &mut Actions) {
-    for (label, how) in [("Open in Place", "inPlace"), ("Open in New Tab", "newTab"), ("Open in New Window", "newWindow")] {
-        let b = ui.button(label);
+    for (label, how) in [
+        (crate::i18n::t("Open in Place", "その場で開く"), "inPlace"),
+        (crate::i18n::t("Open in New Tab", "新しいタブで開く"), "newTab"),
+        (crate::i18n::t("Open in New Window", "新しいウィンドウで開く"), "newWindow"),
+    ] {
+        let b = ui.button(crate::i18n::tr_ui(label));
         app.auto.add(&format!("{}.binMenu.{how}", v.prefix), b.rect, label);
         if b.clicked() {
             let r = open_bin(app, v.inst, bin, Some(&format!("open{}{}", how[..1].to_uppercase(), &how[1..])), egui::Modifiers::NONE);
@@ -297,11 +307,11 @@ fn bin_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: u64, actio
         }
     }
     ui.separator();
-    if ui.button("Rename").clicked() {
+    if ui.button(crate::i18n::t("Rename", "名前を変更")).clicked() {
         actions.push(("projectPanel.rename".into(), json!({"bin": bin})));
         ui.close();
     }
-    if ui.button("New Bin").clicked() {
+    if ui.button(crate::i18n::t("New Bin", "新規ビン")).clicked() {
         actions.push(("file.newBin".into(), json!({"name": "New Bin", "parent": bin})));
         ui.close();
     }
@@ -454,7 +464,7 @@ pub fn list_view(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, v: &View
                 actions.push(("project.sort".into(), json!({"column": c.name})));
             }
             resp.context_menu(|ui| {
-                if ui.button("Metadata Display…").clicked() {
+                if ui.button(crate::i18n::t("Metadata Display…", "メタデータの表示…")).clicked() {
                     actions.push(("projectPanel.metadataDisplay".into(), json!({})));
                     ui.close();
                 }
@@ -513,7 +523,7 @@ fn background_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Opt
             ui.close();
         }
     }
-    ui.menu_button("New Item", |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, actions));
+    ui.menu_button(crate::i18n::t("New Item", "新規項目"), |ui| crate::panels::project::new_item_menu(app, ui, &v.prefix, actions));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -766,7 +776,7 @@ fn bin_card(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, b: &Bin, v: &Vie
     let nr = Rect::from_min_max(pos2(th.min.x, th.max.y + 2.0), pos2(th.max.x, th.max.y + 20.0));
     if !rename_field(app, ui, nr, None, Some(b.id.0), &v.prefix) {
         ui.painter().with_clip_rect(nr).text(pos2(th.min.x, th.max.y + 11.0), Align2::LEFT_CENTER, &b.name, Tokens::ui(f - 0.5), t.text);
-        ui.painter().text(pos2(th.max.x, th.max.y + 11.0), Align2::RIGHT_CENTER, format!("{} items", n.len()), Tokens::ui(f - 1.5), t.text_dim);
+        ui.painter().text(pos2(th.max.x, th.max.y + 11.0), Align2::RIGHT_CENTER, crate::tf!("{} items", "{} 項目", n.len()), Tokens::ui(f - 1.5), t.text_dim);
     }
     app.auto.add(&format!("{}.bin.{}", v.prefix, b.id.0), th, &b.name);
     accept_bin_drop(app, ui, th, b.id.0, actions);
@@ -949,27 +959,27 @@ fn cards_stack(cards: &[Card], item: u64) -> Option<u64> {
 fn card_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, item: u64, actions: &mut Actions) {
     let sel: Vec<u64> = app.session.state.project_selection.iter().map(|i| i.0).collect();
     let items: Vec<u64> = if sel.contains(&item) { sel.clone() } else { vec![item] };
-    let b = ui.add_enabled(items.len() > 1, egui::Button::new("Stack"));
+    let b = ui.add_enabled(items.len() > 1, egui::Button::new(crate::i18n::t("Stack", "スタック")));
     app.auto.add(&format!("{}.cardMenu.stack", v.prefix), b.rect, "Stack");
     if b.clicked() {
         actions.push(("project.freeform.stack".into(), json!({"items": items})));
         ui.close();
     }
     let stacked = app.session.project.item(ItemId(item)).is_some_and(|i| i.metadata.contains_key(pp::FREEFORM_STACK));
-    let b = ui.add_enabled(stacked, egui::Button::new("Unstack"));
+    let b = ui.add_enabled(stacked, egui::Button::new(crate::i18n::t("Unstack", "スタックを解除")));
     app.auto.add(&format!("{}.cardMenu.unstack", v.prefix), b.rect, "Unstack");
     if b.clicked() {
         actions.push(("project.freeform.unstack".into(), json!({"items": items})));
         ui.close();
     }
-    ui.menu_button("Clip Size", |ui| {
+    ui.menu_button(crate::i18n::t("Clip Size", "クリップサイズ"), |ui| {
         for (label, step) in [("Larger", 1), ("Smaller", -1)] {
             if ui.button(label).clicked() {
                 actions.push(("project.freeform.resize".into(), json!({"items": items, "step": step})));
                 ui.close();
             }
         }
-        if ui.button("Default").clicked() {
+        if ui.button(crate::i18n::t("Default", "デフォルト")).clicked() {
             actions.push(("project.freeform.resize".into(), json!({"items": items, "size": app.session.prefs.project_panel.freeform.card_size})));
             ui.close();
         }
@@ -1001,7 +1011,7 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
         .and_then(|v| serde_json::from_value(v["arrangements"].clone()).ok())
         .unwrap_or_default();
     ui.add_enabled_ui(!names.is_empty(), |ui| {
-        ui.menu_button("Restore Arrangement", |ui| {
+        ui.menu_button(crate::i18n::t("Restore Arrangement", "配置を復元"), |ui| {
             for n in &names {
                 if ui.button(n).clicked() {
                     actions.push(("project.freeform.restoreArrangement".into(), json!({"name": n, "bin": bin})));
@@ -1009,7 +1019,7 @@ fn canvas_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &View, bin: Option<
                 }
             }
         });
-        ui.menu_button("Delete Arrangement", |ui| {
+        ui.menu_button(crate::i18n::t("Delete Arrangement", "配置を削除"), |ui| {
             for n in &names {
                 if ui.button(n).clicked() {
                     actions.push(("project.freeform.deleteArrangement".into(), json!({"name": n, "bin": bin})));

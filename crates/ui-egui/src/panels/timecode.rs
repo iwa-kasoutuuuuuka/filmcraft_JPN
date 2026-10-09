@@ -171,7 +171,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let aresp = ui.interact(ar, egui::Id::new("timecode-add"), Sense::click());
     ui.painter().text(ar.center(), Align2::CENTER_CENTER, "+", Tokens::ui(16.0), if aresp.hovered() { t.tab_text_active } else { t.icon });
     elems.push(("timecode.addRow".into(), ar, "Add Row".into()));
-    if aresp.on_hover_text("Add a timecode row").clicked() {
+    if aresp.on_hover_text(crate::i18n::t("Add a timecode row", "タイムコードの行を追加")).clicked() {
         app.ui.panels.timecode.rows.push(TimecodeRow { mode: TcMode::Duration, ..rows.last().copied().unwrap_or_default() });
     }
     for (id, r, l) in elems {

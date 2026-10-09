@@ -139,7 +139,12 @@ impl Ed<'_> {
     fn slider(&mut self, ui: &mut egui::Ui, pid: &str, label: &str, log: bool) {
         let (min, max, unit) = self.range(pid);
         let mut v = self.v(pid);
-        let r = ui.add(egui::Slider::new(&mut v, min..=max).text(format!("{label} {unit}").trim().to_string()).logarithmic(log && min > 0.0).max_decimals(2));
+        let r = ui.add(
+            egui::Slider::new(&mut v, min..=max)
+                .text(format!("{} {unit}", crate::i18n::tr_ui(label)).trim().to_string())
+                .logarithmic(log && min > 0.0)
+                .max_decimals(2),
+        );
         self.auto(format!("fxEditor.{}.param.{pid}", self.fx), r.rect, label);
         if r.dragged() {
             self.drafts.insert(pid.to_string(), v);
@@ -151,7 +156,7 @@ impl Ed<'_> {
     /// A toggle button for a Bool parameter.
     fn toggle(&mut self, ui: &mut egui::Ui, pid: &str, label: &str) {
         let on = self.on(pid);
-        let r = ui.selectable_label(on, label);
+        let r = ui.selectable_label(on, crate::i18n::tr_ui(label));
         self.auto(format!("fxEditor.{}.toggle.{pid}", self.fx), r.rect, label);
         if r.clicked() {
             self.commit(pid, if on { 0.0 } else { 1.0 });
@@ -191,7 +196,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.separator();
             ui.horizontal(|ui| {
-                let r = ui.button("Close");
+                let r = ui.button(crate::i18n::t("Close", "閉じる"));
                 ed.auto(format!("fxEditor.{}.close", ed.fx), r.rect, "Close");
                 if r.clicked() {
                     closed = true;
@@ -402,7 +407,7 @@ fn graphic(ui: &mut egui::Ui, ed: &mut Ed) {
     }
     ui.horizontal(|ui| {
         ed.slider(ui, "gain", "Master Gain", false);
-        let r = ui.button("Reset");
+        let r = ui.button(crate::i18n::t("Reset", "リセット"));
         ed.auto(format!("fxEditor.{}.reset", ed.fx), r.rect, "Reset");
         if r.clicked() {
             for i in 0..n {
@@ -455,7 +460,7 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
     for b in 0..4 {
         let br = Rect::from_min_max(pos2(edges[b], r.min.y), pos2(edges[b + 1], r.max.y));
         ui.painter().rect_filled(br.shrink2(vec2(0.0, 8.0)), 0.0, cols[b].gamma_multiply(0.35));
-        ui.painter().text(br.center(), Align2::CENTER_CENTER, format!("Band {}", b + 1), Tokens::ui(10.0), ed.t.text);
+        ui.painter().text(br.center(), Align2::CENTER_CENTER, crate::tf!("Band {}", "バンド {}", b + 1), Tokens::ui(10.0), ed.t.text);
     }
     for (k, pid) in ["xo1", "xo2", "xo3"].iter().enumerate() {
         let x = edges[k + 1];
@@ -480,7 +485,7 @@ fn multiband(ui: &mut egui::Ui, ed: &mut Ed) {
         for b in 1..=4 {
             ui.vertical(|ui| {
                 ui.set_width(150.0);
-                ui.label(egui::RichText::new(format!("Band {b}")).strong());
+                ui.label(egui::RichText::new(crate::tf!("Band {b}", "バンド {b}")).strong());
                 transfer_plot(ui, ed, 110.0, b - 1, format!("fxEditor.{}.curve.{b}", ed.fx));
                 ui.horizontal(|ui| {
                     ed.toggle(ui, &format!("b{b}_solo"), "Solo");

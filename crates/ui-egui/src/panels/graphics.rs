@@ -777,7 +777,7 @@ impl Ctx<'_> {
     }
     fn row(&self, ui: &mut egui::Ui, label: &str) -> (Rect, egui::Ui) {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
-        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), self.t.text_dim);
+        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(label), Tokens::ui(12.0), self.t.text_dim);
         let v = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_max(pos2(r.min.x + 130.0, r.min.y + 3.0), pos2(r.max.x - 6.0, r.max.y - 3.0)))
@@ -835,7 +835,7 @@ impl Ctx<'_> {
     }
     fn check(&mut self, vui: &mut egui::Ui, id: &str, label: &str) -> bool {
         let mut b = pv(self.e, id, self.mt).as_bool().unwrap_or(false);
-        let r = vui.checkbox(&mut b, label);
+        let r = vui.checkbox(&mut b, crate::i18n::tr_ui(label));
         self.auto(id, r.rect, label);
         if r.changed() {
             self.set(id, json!(b));
@@ -885,7 +885,7 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, t: &Tokens) ->
         if open { Icon::ChevronDown } else { Icon::ChevronRight },
         t.text_dim,
     );
-    ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::semibold(13.0), t.text);
+    ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(name), Tokens::semibold(13.0), t.text);
     app.auto.add(&format!("graphics.section.{}", name.replace(' ', "")), r, name);
     if resp.clicked() {
         if open {
@@ -969,7 +969,7 @@ fn glyph_button(ui: &mut egui::Ui, how: &str, tip: &str, on: bool, t: &Tokens) -
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
     align_glyph(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 14.0)), how, if resp.hovered() || on { t.text } else { t.text_dim });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr_ui(tip))
 }
 
 fn letter_button(ui: &mut egui::Ui, text: &str, tip: &str, on: bool, t: &Tokens, font: egui::FontId) -> egui::Response {
@@ -980,7 +980,7 @@ fn letter_button(ui: &mut egui::Ui, text: &str, tip: &str, on: bool, t: &Tokens,
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, font, if on || resp.hovered() { t.text } else { t.text_dim });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr_ui(tip))
 }
 
 /// Whether the Properties panel should show the graphic editor.
@@ -992,9 +992,17 @@ pub fn graphic_selected(app: &FilmcraftApp) -> bool {
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a graphic clip, or use the Type tool (T) on the Program monitor");
+        crate::dock::placeholder(
+            ui,
+            rect,
+            &t,
+            crate::i18n::t(
+                "Select a graphic clip, or use the Type tool (T) on the Program monitor",
+                "グラフィッククリップを選択するか、プログラムモニターで文字ツール (T) を使用してください",
+            ),
+        );
         let br = Rect::from_center_size(rect.center() + vec2(0.0, 30.0), vec2(150.0, 26.0));
-        let resp = ui.put(br, egui::Button::new("Create new graphic"));
+        let resp = ui.put(br, egui::Button::new(crate::i18n::t("Create new graphic", "新規グラフィックを作成")));
         app.auto.add("graphics.createNew", br, "Create new graphic");
         if resp.clicked()
             && let Err(e) = app.session.execute("graphics.newText", json!({"text": "New Text"}))
@@ -1048,7 +1056,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let (dr, dresp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
                     icons::paint(ui.painter(), dr.shrink(4.0), Icon::Trash, if dresp.hovered() { t.text } else { t.text_dim });
                     autos.push(("graphics.deleteLayer".into(), dr, "Delete Layer".into()));
-                    if dresp.on_hover_text("Delete Layer").clicked() {
+                    if dresp.on_hover_text(crate::i18n::t("Delete Layer", "レイヤーを削除")).clicked() {
                         actions.push(("graphics.deleteLayer".into(), json!({"clip": clip.0, "layer": l})));
                     }
                 }
@@ -1087,7 +1095,10 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 crate::panels::graphics_templates::responsive_time(app, ui, clip, &it, &mut autos, &mut actions);
             }
             ui.add_space(12.0);
-            ui.label(egui::RichText::new("Select a layer to edit its properties.").color(t.text_faint));
+            ui.label(
+                egui::RichText::new(crate::i18n::t("Select a layer to edit its properties.", "レイヤーを選択すると、プロパティを編集できます。"))
+                    .color(t.text_faint),
+            );
             return;
         };
         let e = &it.effects[idx[l]];
@@ -1162,7 +1173,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 _ => String::new(),
             };
             let fams = filmcraft_text::families();
-            let (_, mut vui) = cx.row(ui, "Font");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Font", "フォント"));
             let r = egui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
                 if !filmcraft_text::fonts::system_scanned() {
                     filmcraft_text::fonts::scan_system();
@@ -1175,7 +1186,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             });
             cx.auto("font", r.response.rect, "Font");
             let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
-            let (_, mut vui) = cx.row(ui, "Font Style");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Font Style", "フォントスタイル"));
             let r = egui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
                 for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({
                     let mut seen = Vec::new();
@@ -1199,7 +1210,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ParamValue::Choice(c) => c,
                 _ => 0,
             };
-            let (_, mut vui) = cx.row(ui, "Alignment");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Alignment", "整列"));
             for (i, (how, tip)) in [("pl", "Left Align Text"), ("pc", "Center Align Text"), ("pr", "Right Align Text"), ("pj", "Justify")].iter().enumerate() {
                 let r = glyph_button(&mut vui, how, tip, align == i as u32, &t);
                 cx.auto(&format!("align.{i}"), r.rect, tip);
@@ -1211,7 +1222,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.number(ui, "Leading", "leading", 0.5, (-5000.0, 5000.0), 0, "");
             cx.number(ui, "Baseline Shift", "baseline_shift", 0.5, (-5000.0, 5000.0), 0, "");
             cx.number(ui, "Text Box Width", "box_width", 2.0, (0.0, 100_000.0), 0, "");
-            let (_, mut vui) = cx.row(ui, "Style");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Style", "スタイル"));
             let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
             let caps = match pv(e, "caps", mt) {
                 ParamValue::Choice(c) => c,
@@ -1244,7 +1255,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.check(&mut vui, "ligatures", "Ligatures");
         }
         if e.effect == graphic::SHAPE_LAYER && section(ui, app, "Shape", &t) {
-            let (_, mut vui) = cx.row(ui, "Shape");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Shape", "シェイプ"));
             cx.choice(&mut vui, "shape", graphic::SHAPE_OPTS, 120.0);
             cx.point(ui, "Size", "size");
             cx.number(ui, "Corner Radius", "corner_radius", 0.5, (0.0, 10_000.0), 0, "");
@@ -1252,7 +1263,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         // ---- appearance
         if section(ui, app, "Appearance", &t) {
-            let (_, mut vui) = cx.row(ui, "Fill");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Fill", "塗り"));
             cx.check(&mut vui, "fill", "");
             cx.color(&mut vui, "fill_color");
             for (on, col, w, kind, label) in
@@ -1266,7 +1277,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 vui.add_space(6.0);
                 cx.choice(&mut vui, kind, graphic::STROKE_OPTS, 70.0);
             }
-            let (_, mut vui) = cx.row(ui, "Background");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Background", "背景"));
             let bg = cx.check(&mut vui, "background", "");
             cx.color(&mut vui, "background_color");
             if bg {
@@ -1274,7 +1285,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.number(ui, "   Size", "background_size", 0.5, (0.0, 1000.0), 0, "");
                 cx.number(ui, "   Corner Radius", "background_radius", 0.5, (0.0, 1000.0), 0, "");
             }
-            let (_, mut vui) = cx.row(ui, "Shadow");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Shadow", "シャドウ"));
             let sh = cx.check(&mut vui, "shadow", "");
             cx.color(&mut vui, "shadow_color");
             if sh {

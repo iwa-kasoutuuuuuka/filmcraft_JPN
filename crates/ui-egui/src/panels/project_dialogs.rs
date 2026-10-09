@@ -24,7 +24,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
         ProjectDialog::FreeformOptions { .. } => "Freeform View Options",
         ProjectDialog::SaveArrangement { .. } => "Save Arrangement",
     };
-    let mut win = egui::Window::new(title).id(egui::Id::new("project-dialog")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]);
+    let mut win = egui::Window::new(crate::i18n::tr_ui(title))
+        .id(egui::Id::new("project-dialog"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0]);
     // a fixed size keeps the two-list dialog from shifting while its lists settle
     if matches!(d, ProjectDialog::MetadataDisplay { .. }) {
         win = win.fixed_size(egui::vec2(480.0, 470.0));
@@ -34,14 +38,14 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ProjectDialog::MetadataDisplay { columns, filter } => metadata_display(app, ui, columns, filter, &mut run),
             ProjectDialog::SavePresetAs { name } => {
                 ui.horizontal(|ui| {
-                    ui.label("Name:");
+                    ui.label(crate::i18n::t("Name:", "名前:"));
                     let r = ui.add(egui::TextEdit::singleline(name).desired_width(240.0));
                     push(app, "projectDialog.name", &r, "Name");
                 });
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     run = Some(("project.viewPreset.saveAs".into(), json!({"name": name})));
                 }
-                ui.label(egui::RichText::new("Saves the view, columns, sort, thumbnail and font size.").weak().size(11.0));
+                ui.label(egui::RichText::new(crate::i18n::t("Saves the view, columns, sort, thumbnail and font size.", "表示、列、並べ替え、サムネール、フォントサイズを保存します。")).weak().size(11.0));
                 if ok_cancel(app, ui, &mut close) {
                     run = Some(("project.viewPreset.saveAs".into(), json!({"name": name})));
                 }
@@ -49,11 +53,11 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ProjectDialog::ManagePresets { selected, name } => manage_presets(app, ui, selected, name, &mut run, &mut close),
             ProjectDialog::FreeformOptions { options } => {
                 egui::Grid::new("ff-options").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                    ui.label("Grid spacing:");
+                    ui.label(crate::i18n::t("Grid spacing:", "グリッド間隔:"));
                     let r = ui.add(egui::DragValue::new(&mut options.grid).range(4.0..=200.0).suffix(" pt"));
                     push(app, "projectDialog.grid", &r, "Grid spacing");
                     ui.end_row();
-                    ui.label("Default clip size:");
+                    ui.label(crate::i18n::t("Default clip size:", "デフォルトのクリップサイズ:"));
                     let r = ui.add(egui::DragValue::new(&mut options.card_size).range(48.0..=480.0).suffix(" pt"));
                     push(app, "projectDialog.cardSize", &r, "Default clip size");
                     ui.end_row();
@@ -72,7 +76,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ProjectDialog::SaveArrangement { name, bin } => {
                 ui.horizontal(|ui| {
-                    ui.label("Name:");
+                    ui.label(crate::i18n::t("Name:", "名前:"));
                     let r = ui.add(egui::TextEdit::singleline(name).desired_width(240.0));
                     push(app, "projectDialog.name", &r, "Name");
                 });
@@ -107,7 +111,7 @@ fn ok_cancel(app: &mut FilmcraftApp, ui: &mut egui::Ui, close: &mut bool) -> boo
     ui.separator();
     let mut ok = false;
     ui.horizontal(|ui| {
-        let r = ui.button("Cancel");
+        let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
         push(app, "projectDialog.cancel", &r, "Cancel");
         if r.clicked() {
             *close = true;
@@ -122,8 +126,8 @@ fn ok_cancel(app: &mut FilmcraftApp, ui: &mut egui::Ui, close: &mut bool) -> boo
 fn metadata_display(app: &mut FilmcraftApp, ui: &mut egui::Ui, columns: &mut Vec<String>, filter: &mut String, run: &mut Option<(String, Value)>) {
     let all = filmcraft_engine::project_panel::all_columns(&app.session.project);
     ui.horizontal(|ui| {
-        ui.label("Show:");
-        let r = ui.add(egui::TextEdit::singleline(filter).hint_text("Search fields").desired_width(220.0));
+        ui.label(crate::i18n::t("Show:", "表示:"));
+        let r = ui.add(egui::TextEdit::singleline(filter).hint_text(crate::i18n::t("Search fields", "フィールドを検索")).desired_width(220.0));
         push(app, "projectDialog.filter", &r, "Search fields");
     });
     ui.add_space(4.0);
@@ -131,7 +135,7 @@ fn metadata_display(app: &mut FilmcraftApp, ui: &mut egui::Ui, columns: &mut Vec
     ui.horizontal_top(|ui| {
         // every field, checked when shown
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new("Project Metadata").strong());
+            ui.label(egui::RichText::new(crate::i18n::t("Project Metadata", "プロジェクトメタデータ")).strong());
             egui::ScrollArea::vertical().id_salt("md-all").max_height(340.0).min_scrolled_height(340.0).show(ui, |ui| {
                 ui.set_min_width(220.0);
                 for c in all.iter().filter(|c| f.is_empty() || c.to_ascii_lowercase().contains(&f)) {
@@ -149,7 +153,7 @@ fn metadata_display(app: &mut FilmcraftApp, ui: &mut egui::Ui, columns: &mut Vec
                 }
             });
             ui.horizontal(|ui| {
-                let r = ui.button("Add Property…");
+                let r = ui.button(crate::i18n::t("Add Property…", "プロパティを追加…"));
                 push(app, "projectDialog.addProperty", &r, "Add Property…");
                 if r.clicked() && !filter.trim().is_empty() && !columns.iter().any(|c| c.eq_ignore_ascii_case(filter.trim())) {
                     // a custom metadata field (typed in the search box)
@@ -160,7 +164,7 @@ fn metadata_display(app: &mut FilmcraftApp, ui: &mut egui::Ui, columns: &mut Vec
         ui.separator();
         // the shown columns, in order
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new("Column order").strong());
+            ui.label(egui::RichText::new(crate::i18n::t("Column order", "列の順序")).strong());
             egui::ScrollArea::vertical().id_salt("md-order").max_height(340.0).min_scrolled_height(340.0).show(ui, |ui| {
                 ui.set_min_width(200.0);
                 let mut mv: Option<(usize, isize)> = None;
@@ -215,27 +219,27 @@ fn manage_presets(app: &mut FilmcraftApp, ui: &mut egui::Ui, selected: &mut usiz
     });
     let filled = presets.get(*selected).is_some_and(Option::is_some);
     ui.horizontal(|ui| {
-        ui.label("Name:");
+        ui.label(crate::i18n::t("Name:", "名前:"));
         let r = ui.add_enabled(filled, egui::TextEdit::singleline(name).desired_width(200.0));
         push(app, "projectDialog.name", &r, "Name");
-        let b = ui.add_enabled(filled, egui::Button::new("Rename"));
+        let b = ui.add_enabled(filled, egui::Button::new(crate::i18n::t("Rename", "名前を変更")));
         push(app, "projectDialog.rename", &b, "Rename");
         if b.clicked() {
             *run = Some(("project.viewPreset.rename".into(), json!({"slot": *selected + 1, "name": name})));
         }
     });
     ui.horizontal(|ui| {
-        let b = ui.add_enabled(filled, egui::Button::new("Restore"));
+        let b = ui.add_enabled(filled, egui::Button::new(crate::i18n::t("Restore", "復元")));
         push(app, "projectDialog.restore", &b, "Restore");
         if b.clicked() {
             *run = Some(("project.viewPreset.restore".into(), json!({"slot": *selected + 1})));
         }
-        let b = ui.add_enabled(filled, egui::Button::new("Delete"));
+        let b = ui.add_enabled(filled, egui::Button::new(crate::i18n::t("Delete", "削除")));
         push(app, "projectDialog.delete", &b, "Delete");
         if b.clicked() {
             *run = Some(("project.viewPreset.delete".into(), json!({"slot": *selected + 1})));
         }
-        let b = ui.button("Overwrite with Current View");
+        let b = ui.button(crate::i18n::t("Overwrite with Current View", "現在の表示で上書き"));
         push(app, "projectDialog.overwrite", &b, "Overwrite with Current View");
         if b.clicked() {
             *run = Some((
@@ -245,7 +249,7 @@ fn manage_presets(app: &mut FilmcraftApp, ui: &mut egui::Ui, selected: &mut usiz
         }
     });
     ui.separator();
-    let r = ui.button("Done");
+    let r = ui.button(crate::i18n::t("Done", "完了"));
     push(app, "projectDialog.ok", &r, "Done");
     if r.clicked() {
         *close = true;

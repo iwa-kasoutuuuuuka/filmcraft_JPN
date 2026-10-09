@@ -76,6 +76,8 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     log::info!("hardware decoding: {:?}", filmcraft_platform::register());
+    // Settings ▸ Appearance ▸ Language "Auto" follows the operating system's language
+    filmcraft_ui_egui::i18n::set_system_language(filmcraft_platform::locale::system_language());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")

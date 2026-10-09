@@ -55,9 +55,12 @@ pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: TrackId, 
     if resp.clicked() {
         act = Some(Action::Toggle(track));
     }
-    let resp = resp.on_hover_text("Voice-over record (right-click: Voice-Over Record Settings…)");
+    let resp = resp.on_hover_text(crate::i18n::t(
+        "Voice-over record (right-click: Voice-Over Record Settings…)",
+        "ボイスオーバー録音(右クリック: ボイスオーバー録音設定…)",
+    ));
     resp.context_menu(|ui| {
-        let b = ui.button("Voice-Over Record Settings…");
+        let b = ui.button(crate::i18n::t("Voice-Over Record Settings…", "ボイスオーバー録音設定…"));
         app.auto.add(&format!("{id}.settings"), b.rect, "Voice-Over Record Settings…");
         if b.clicked() {
             act = Some(Action::Settings);
@@ -100,7 +103,7 @@ pub fn toggle(app: &mut FilmcraftApp, track: Option<u64>) -> Result<Value, Strin
     let from = Tick(r["captureStart"].as_i64().unwrap_or(0));
     app.session.set_playhead(from);
     app.play(1.0);
-    app.ui.status = "Recording voice-over…".into();
+    app.ui.status = crate::i18n::t("Recording voice-over…", "ボイスオーバーを録音中…").into();
     Ok(r)
 }
 
@@ -108,7 +111,7 @@ fn stop(app: &mut FilmcraftApp) -> Result<Value, String> {
     let t = app.session.playhead();
     let r = app.session.execute("audio.voiceover.stop", json!({"time": t.0})).map_err(|e| e.to_string())?;
     app.ui.status = match r["path"].as_str() {
-        Some(p) => format!("Voice-over recorded: {p}"),
+        Some(p) => crate::tf!("Voice-over recorded: {p}", "ボイスオーバーを録音しました: {p}"),
         None => "Voice-over recording stopped (nothing recorded)".into(),
     };
     Ok(r)
@@ -235,13 +238,13 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut close = false;
     let mut apply = false;
     let accent = app.tokens.accent;
-    egui::Window::new("Voice-Over Record Settings").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    egui::Window::new(crate::i18n::t("Voice-Over Record Settings", "ボイスオーバー録音設定")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         egui::Grid::new("voiceover-grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label("Name:");
+            ui.label(crate::i18n::t("Name:", "名前:"));
             let r = ui.add(egui::TextEdit::singleline(&mut d.prefs.name).desired_width(220.0));
             elems.push(("voiceover.name".into(), r.rect, d.prefs.name.clone()));
             ui.end_row();
-            ui.label("Source:");
+            ui.label(crate::i18n::t("Source:", "ソース:"));
             let shown = if d.prefs.source.is_empty() { "Default Input".to_string() } else { d.prefs.source.clone() };
             let cb = egui::ComboBox::from_id_salt("voiceover-source").selected_text(&shown).width(220.0).show_ui(ui, |ui| {
                 let mut opts = vec![(String::new(), "Default Input".to_string())];
@@ -256,12 +259,12 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             });
             elems.push(("voiceover.source".into(), cb.response.rect, shown));
             ui.end_row();
-            ui.label("Input:");
+            ui.label(crate::i18n::t("Input:", "入力:"));
             let n = d.channels.max(1) as u32;
-            let cur = format!("Channel {}", d.prefs.input_channel + 1);
+            let cur = crate::tf!("Channel {}", "チャンネル {}", d.prefs.input_channel + 1);
             let cb = egui::ComboBox::from_id_salt("voiceover-input").selected_text(&cur).width(220.0).show_ui(ui, |ui| {
                 for c in 0..n.max(d.prefs.input_channel + 1) {
-                    let label = format!("Channel {}", c + 1);
+                    let label = crate::tf!("Channel {}", "チャンネル {}", c + 1);
                     let r = ui.selectable_label(d.prefs.input_channel == c, &label);
                     elems.push((format!("voiceover.input.{c}"), r.rect, label));
                     if r.clicked() {
@@ -272,26 +275,26 @@ fn settings_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             elems.push(("voiceover.input".into(), cb.response.rect, cur));
             ui.end_row();
             ui.label("");
-            let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, "Countdown Sound Cues");
+            let r = ui.checkbox(&mut d.prefs.countdown_sound_cues, crate::i18n::t("Countdown Sound Cues", "カウントダウンの効果音"));
             elems.push(("voiceover.countdown".into(), r.rect, "Countdown Sound Cues".into()));
             ui.end_row();
-            ui.label("Pre-roll:");
-            let r = ui.add(egui::DragValue::new(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(" seconds"));
+            ui.label(crate::i18n::t("Pre-roll:", "プリロール:"));
+            let r = ui.add(egui::DragValue::new(&mut d.prefs.preroll_seconds).speed(0.1).range(0.0..=60.0).suffix(crate::i18n::t(" seconds", " 秒")));
             elems.push(("voiceover.preroll".into(), r.rect, format!("{}", d.prefs.preroll_seconds)));
             ui.end_row();
-            ui.label("Post-roll:");
-            let r = ui.add(egui::DragValue::new(&mut d.prefs.postroll_seconds).speed(0.1).range(0.0..=60.0).suffix(" seconds"));
+            ui.label(crate::i18n::t("Post-roll:", "ポストロール:"));
+            let r = ui.add(egui::DragValue::new(&mut d.prefs.postroll_seconds).speed(0.1).range(0.0..=60.0).suffix(crate::i18n::t(" seconds", " 秒")));
             elems.push(("voiceover.postroll".into(), r.rect, format!("{}", d.prefs.postroll_seconds)));
             ui.end_row();
         });
         ui.label(
-            RichText::new("Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.")
+            RichText::new(crate::i18n::t("Playback starts the pre-roll before the playhead (or the In point); with In/Out marked, recording punches in and out there.", "再生は、再生ヘッド(またはインポイント)の手前からプリロール分を再生して始まります。イン／アウトをマークしている場合、録音はその範囲でパンチイン／アウトします。"))
                 .weak()
                 .small(),
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let c = ui.button("Cancel");
+            let c = ui.button(crate::i18n::t("Cancel", "キャンセル"));
             elems.push(("voiceover.cancel".into(), c.rect, "Cancel".into()));
             if c.clicked() {
                 close = true;

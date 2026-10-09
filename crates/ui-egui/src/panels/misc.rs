@@ -23,7 +23,7 @@ pub fn history(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), if dim { t.text_faint } else { t.text });
             resp.clicked()
         };
-        if row(ui, "Open", undo.is_empty(), false) {
+        if row(ui, crate::i18n::t("Open", "開く"), undo.is_empty(), false) {
             target = Some(-(undo.len() as i64));
         }
         for (i, l) in undo.iter().enumerate() {
@@ -62,7 +62,7 @@ pub const MARKER_FILTER: [filmcraft_project::Label; 7] = {
 pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some(seq) = app.session.active_sequence().cloned() else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequence)");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("(no sequence)", "(シーケンスなし)"));
         return;
     };
     let hidden: Vec<[u8; 3]> = app.session.state.hidden_marker_colors.iter().map(|l| l.marker_rgb()).collect();
@@ -82,7 +82,7 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ui.painter().rect_stroke(r.shrink(2.5), 3.0, egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
             }
             elems.push((format!("markers.filter.{}", l.name()), r, format!("{} markers {}", l.name(), if on { "shown" } else { "hidden" })));
-            if resp.on_hover_text(format!("Show or hide {} markers", l.name())).clicked() {
+            if resp.on_hover_text(crate::tf!("Show or hide {} markers", "{} のマーカーを表示／非表示", l.name())).clicked() {
                 toggle = Some((l, !on));
             }
         }
@@ -115,9 +115,17 @@ pub fn markers(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
         if seq.markers.is_empty() {
-            ui.label(egui::RichText::new("No markers. Press M to add one.").color(t.text_faint));
+            ui.label(
+                egui::RichText::new(crate::i18n::t("No markers. Press M to add one.", "マーカーはありません。M キーで追加できます。")).color(t.text_faint),
+            );
         } else if shown == 0 {
-            ui.label(egui::RichText::new("All markers are hidden by the colour filter.").color(t.text_faint));
+            ui.label(
+                egui::RichText::new(crate::i18n::t(
+                    "All markers are hidden by the colour filter.",
+                    "カラーフィルターにより、すべてのマーカーが非表示になっています。",
+                ))
+                .color(t.text_faint),
+            );
         }
     });
     for (id, r, l) in elems {
@@ -148,7 +156,11 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         line(ui, "Type:", item.type_label().to_string());
         if let Some(m) = item.as_media() {
             if let Some(v) = &m.info.video {
-                line(ui, "Video:", format!("{} fps, {} x {} ({:.4})", v.frame_rate.label(), v.width, v.height, v.par.0 as f32 / v.par.1 as f32));
+                line(
+                    ui,
+                    crate::i18n::t("Video:", "ビデオ:"),
+                    format!("{} fps, {} x {} ({:.4})", v.frame_rate.label(), v.width, v.height, v.par.0 as f32 / v.par.1 as f32),
+                );
                 line(ui, "Codec:", v.codec.clone());
             }
             if let Some(a) = &m.info.audio {
@@ -169,11 +181,11 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         line(ui, "Playhead:", format_time(app.session.playhead(), seq.settings.frame_rate, seq.settings.drop_frame, TimeDisplay::Timecode, 48000));
         for (i, tr) in seq.video_tracks.iter().enumerate().rev() {
             let at = tr.item_at(app.session.playhead()).map(|x| x.name.clone()).unwrap_or_default();
-            line(ui, &format!("Video {}:", i + 1), at);
+            line(ui, &crate::tf!("Video {}:", "ビデオ {}:", i + 1), at);
         }
         for (i, tr) in seq.audio_tracks.iter().enumerate() {
             let at = tr.item_at(app.session.playhead()).map(|x| x.name.clone()).unwrap_or_default();
-            line(ui, &format!("Audio {}:", i + 1), at);
+            line(ui, &crate::tf!("Audio {}:", "オーディオ {}:", i + 1), at);
         }
     }
     ui.separator();

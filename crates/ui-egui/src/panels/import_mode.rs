@@ -9,22 +9,41 @@ use crate::theme::Tokens;
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().rect_filled(rect, t.radius, t.panel_bg);
-    ui.painter().text(rect.min + vec2(24.0, 30.0), Align2::LEFT_CENTER, "Import", Tokens::semibold(22.0), t.text);
+    ui.painter().text(rect.min + vec2(24.0, 30.0), Align2::LEFT_CENTER, crate::i18n::t("Import", "読み込み"), Tokens::semibold(22.0), t.text);
     ui.painter().text(
         rect.min + vec2(24.0, 58.0),
         Align2::LEFT_CENTER,
-        "Add media to your project. Drop files anywhere in the window, or choose a source below.",
+        crate::i18n::t(
+            "Add media to your project. Drop files anywhere in the window, or choose a source below.",
+            "プロジェクトにメディアを追加します。ウィンドウ内の任意の場所にファイルをドロップするか、以下から選択してください。",
+        ),
         Tokens::ui(13.0),
         t.text_dim,
     );
     let ctx = ui.ctx().clone();
     let cards = [
-        ("Browse files…", "file.import", "Movies, audio and stills from disk"),
-        ("Demo footage", "file.importDemoFootage", "Six procedural 1080p clips with sound"),
-        ("Demo project", "file.openDemoProject", "A cut sequence with transitions, effects and music"),
-        ("Bars and Tone", "file.newBarsAndTone", "SMPTE HD bars with 1 kHz reference tone"),
+        (
+            crate::i18n::t("Browse files…", "ファイルを参照…"),
+            "file.import",
+            crate::i18n::t("Movies, audio and stills from disk", "ディスク上の動画、音声、静止画"),
+        ),
+        (
+            crate::i18n::t("Demo footage", "デモ映像"),
+            "file.importDemoFootage",
+            crate::i18n::t("Six procedural 1080p clips with sound", "音声付き1080pクリップ6本を自動生成"),
+        ),
+        (
+            crate::i18n::t("Demo project", "デモプロジェクト"),
+            "file.openDemoProject",
+            crate::i18n::t("A cut sequence with transitions, effects and music", "エフェクトと音楽入りの編集済みシーケンス"),
+        ),
+        (
+            crate::i18n::t("Bars and Tone", "カラーバーとトーン"),
+            "file.newBarsAndTone",
+            crate::i18n::t("SMPTE HD bars with 1 kHz reference tone", "1kHz基準音付きSMPTE HDカラーバー"),
+        ),
     ];
-    let cw = 260.0;
+    let cw = 300.0;
     for (i, (title, cmd, sub)) in cards.iter().enumerate() {
         let r = Rect::from_min_size(rect.min + vec2(24.0 + i as f32 * (cw + 16.0), 90.0), vec2(cw, 150.0));
         let resp = ui.interact(r, egui::Id::new(("imp", *cmd)), Sense::click());
@@ -48,12 +67,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ArtCraft wordmark (first-party trademark, docs/brand/), then the section title.
     let logo = crate::brand::paint_wordmark(ui, rect.min + vec2(24.0, y), 15.0, app.ui.dark);
     let tx = logo.map_or(rect.min.x + 24.0, |r| r.max.x + 12.0);
-    ui.painter().text(pos2(tx, rect.min.y + y), Align2::LEFT_CENTER, "Community", Tokens::semibold(15.0), t.text);
+    ui.painter().text(pos2(tx, rect.min.y + y), Align2::LEFT_CENTER, crate::i18n::t("Community", "コミュニティ"), Tokens::semibold(15.0), t.text);
     let mut x = rect.min.x + 24.0;
     for (i, (id, label, url)) in crate::links::ALL.iter().take(4).enumerate() {
         let primary = i == 0;
-        let label = if primary { "Join us on Discord" } else { *label };
-        let g = ui.painter().layout_no_wrap(label.to_string(), Tokens::ui(13.0), t.text);
+        let localized_label = if primary { crate::i18n::t("Join us on Discord", "Discordに参加") } else { crate::i18n::tr(label) };
+        let g = ui.painter().layout_no_wrap(localized_label.to_string(), Tokens::ui(13.0), t.text);
         let r = Rect::from_min_size(pos2(x, rect.min.y + y + 18.0), vec2(g.size().x + 44.0, 34.0));
         let resp = ui.interact(r, egui::Id::new(("imp-link", *id)), Sense::click()).on_hover_text(*url);
         app.auto.add(&format!("import.link.{}", id.trim_start_matches("help.")), r, label);

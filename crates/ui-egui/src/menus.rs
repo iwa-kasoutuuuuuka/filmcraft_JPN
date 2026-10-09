@@ -279,7 +279,7 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         id if crate::links::url_for(id).is_some() => {
             let url = crate::links::url_for(id).unwrap_or_default();
             crate::links::open(ctx, url);
-            app.ui.status = format!("Opened {url}");
+            app.ui.status = crate::tf!("Opened {url}", "{url} を開きました");
             return Ok(json!({"url": url}));
         }
         "help.shortcuts" | "app.keyboardShortcuts" => {
@@ -517,25 +517,30 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
 }
 
 /// Draw the in-window menu bar.
-pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+/// Returns the right edge of the last menu (the bar itself takes the whole width it is given).
+pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> f32 {
     let items = menu_items(app);
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
+    let mut end = ui.max_rect().min.x;
     egui::MenuBar::new().ui(ui, |ui| {
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
-            ui.menu_button(top, |ui| {
+            let display_top = crate::i18n::tr(top);
+            let r = ui.menu_button(display_top, |ui| {
                 ui.set_min_width(260.0);
                 if mine.is_empty() {
-                    ui.add_enabled(false, egui::Button::new("(empty)"));
+                    ui.add_enabled(false, egui::Button::new(crate::i18n::t("(empty)", "(空)")));
                 }
                 menu_level(ui, &mine, 1, &mut clicked);
             });
+            end = end.max(r.response.rect.max.x);
         }
     });
     if let Some(id) = clicked {
         let _ = invoke(app, &ctx, &id, json!({}));
     }
+    end
 }
 
 /// One menu level: items whose path ends here, and a submenu (at its first item's position) for
@@ -549,7 +554,8 @@ fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mu
             }
             subs.push(sub);
             let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
-            ui.menu_button(sub, |ui| {
+            let display_sub = crate::i18n::tr(sub);
+            ui.menu_button(display_sub, |ui| {
                 ui.set_min_width(220.0);
                 menu_level(ui, &inner, depth + 1, clicked);
             });
@@ -562,7 +568,8 @@ fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mu
 
 fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> bool {
     // checkable items leave room for a checkmark drawn at the left
-    let label = if it.checked.is_some() { format!("      {}", it.label) } else { it.label.clone() };
+    let localized = crate::i18n::tr(&it.label);
+    let label = if it.checked.is_some() { format!("      {}", localized) } else { localized.to_string() };
     let mut b = egui::Button::new(label);
     if let Some(s) = &it.shortcut {
         b = b.shortcut_text(shortcut_text(s));

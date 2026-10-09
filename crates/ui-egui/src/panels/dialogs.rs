@@ -29,7 +29,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     match d {
         Dialog::About => {
-            egui::Window::new("About FilmCraft")
+            egui::Window::new(crate::i18n::t("About FilmCraft", "FilmCraft について"))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -85,44 +85,48 @@ fn audio_gain(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    egui::Window::new("Audio Gain").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.add_space(6.0);
-        egui::Grid::new("audio-gain").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
-            let rows: [(&str, &str, &mut f64); 4] = [
-                ("set", "Set Gain to:", &mut draft.set_db),
-                ("adjust", "Adjust Gain by:", &mut draft.adjust_db),
-                ("normalizeMax", "Normalize Max Peak to:", &mut draft.max_peak_db),
-                ("normalizeAll", "Normalize All Peaks to:", &mut draft.all_peaks_db),
-            ];
-            for (id, label, v) in rows {
-                let r = ui.radio(draft.mode == id, label);
-                elems.push((format!("audioGain.{id}"), r.rect, label.to_string()));
-                if r.clicked() {
-                    draft.mode = id.to_string();
+    egui::Window::new(crate::i18n::t("Audio Gain", "オーディオゲイン"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.add_space(6.0);
+            egui::Grid::new("audio-gain").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
+                let rows: [(&str, &str, &mut f64); 4] = [
+                    ("set", crate::i18n::t("Set Gain to:", "ゲインを次のように設定:"), &mut draft.set_db),
+                    ("adjust", crate::i18n::t("Adjust Gain by:", "ゲインを次のように調整:"), &mut draft.adjust_db),
+                    ("normalizeMax", crate::i18n::t("Normalize Max Peak to:", "最大ピークを次のように正規化:"), &mut draft.max_peak_db),
+                    ("normalizeAll", crate::i18n::t("Normalize All Peaks to:", "すべてのピークを次のように正規化:"), &mut draft.all_peaks_db),
+                ];
+                for (id, label, v) in rows {
+                    let r = ui.radio(draft.mode == id, label);
+                    elems.push((format!("audioGain.{id}"), r.rect, label.to_string()));
+                    if r.clicked() {
+                        draft.mode = id.to_string();
+                    }
+                    let f = ui.add_enabled(draft.mode == id, egui::DragValue::new(v).speed(0.1).range(-96.0..=96.0).suffix(" dB"));
+                    elems.push((format!("audioGain.{id}.value"), f.rect, format!("{v:.1} dB")));
+                    ui.end_row();
                 }
-                let f = ui.add_enabled(draft.mode == id, egui::DragValue::new(v).speed(0.1).range(-96.0..=96.0).suffix(" dB"));
-                elems.push((format!("audioGain.{id}.value"), f.rect, format!("{v:.1} dB")));
-                ui.end_row();
-            }
+            });
+            ui.add_space(8.0);
+            let pk_text = crate::tf!("Peak Amplitude: {}", "ピーク振幅: {}", peak.map(|p| format!("{p:.1} dB")).unwrap_or_else(|| "—".into()));
+            let pk = ui.label(&pk_text);
+            elems.push(("audioGain.peak".into(), pk.rect, pk_text));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(crate::i18n::t("Cancel", "キャンセル"));
+                elems.push(("audioGain.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    keep = false;
+                }
+                let o = ui.add(egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                elems.push(("audioGain.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
+            });
         });
-        ui.add_space(8.0);
-        let pk_text = format!("Peak Amplitude: {}", peak.map(|p| format!("{p:.1} dB")).unwrap_or_else(|| "—".into()));
-        let pk = ui.label(&pk_text);
-        elems.push(("audioGain.peak".into(), pk.rect, pk_text));
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            let c = ui.button("Cancel");
-            elems.push(("audioGain.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                keep = false;
-            }
-            let o = ui.add(egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push(("audioGain.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
-        });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -161,48 +165,54 @@ fn delete_tracks(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let mut keep = true;
     let mut apply = false;
     let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
-    egui::Window::new("Delete Tracks").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        ui.set_min_width(300.0);
-        for (kind, title, on, target, list) in [
-            ("video", "Video Tracks", &mut draft.video, &mut draft.video_target, &vnames),
-            ("audio", "Audio Tracks", &mut draft.audio, &mut draft.audio_target, &anames),
-        ] {
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(title).strong());
-            let label = format!("Delete {title}");
-            let c = ui.checkbox(on, &label);
-            elems.push((format!("deleteTracks.{kind}"), c.rect, label));
-            ui.horizontal(|ui| {
-                ui.add_space(22.0);
-                let shown = if target == "empty" { "All Empty Tracks".to_string() } else { target.clone() };
-                ui.add_enabled_ui(*on, |ui| {
-                    let r = egui::ComboBox::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
-                        let e = ui.selectable_value(target, "empty".to_string(), "All Empty Tracks");
-                        elems.push((format!("deleteTracks.{kind}.option.empty"), e.rect, "All Empty Tracks".into()));
-                        for n in list {
-                            let r = ui.selectable_value(target, n.clone(), n);
-                            elems.push((format!("deleteTracks.{kind}.option.{n}"), r.rect, n.clone()));
-                        }
+    egui::Window::new(crate::i18n::t("Delete Tracks", "トラックを削除"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.set_min_width(300.0);
+            for (kind, title, on, target, list) in [
+                ("video", crate::i18n::t("Video Tracks", "ビデオトラック"), &mut draft.video, &mut draft.video_target, &vnames),
+                ("audio", crate::i18n::t("Audio Tracks", "オーディオトラック"), &mut draft.audio, &mut draft.audio_target, &anames),
+            ] {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(title).strong());
+                let label = crate::tf!("Delete {title}", "{title}を削除");
+                let c = ui.checkbox(on, &label);
+                let label_en = if kind == "video" { "Delete Video Tracks" } else { "Delete Audio Tracks" };
+                elems.push((format!("deleteTracks.{kind}"), c.rect, label_en.into()));
+                ui.horizontal(|ui| {
+                    ui.add_space(22.0);
+                    let shown =
+                        if target == "empty" { crate::i18n::t("All Empty Tracks", "すべての空のトラック").to_string() } else { target.clone() };
+                    ui.add_enabled_ui(*on, |ui| {
+                        let r = egui::ComboBox::from_id_salt(("delete-tracks", kind)).selected_text(&shown).width(170.0).show_ui(ui, |ui| {
+                            let e = ui.selectable_value(target, "empty".to_string(), crate::i18n::t("All Empty Tracks", "すべての空のトラック"));
+                            elems.push((format!("deleteTracks.{kind}.option.empty"), e.rect, "All Empty Tracks".into()));
+                            for n in list {
+                                let r = ui.selectable_value(target, n.clone(), n);
+                                elems.push((format!("deleteTracks.{kind}.option.{n}"), r.rect, n.clone()));
+                            }
+                        });
+                        elems.push((format!("deleteTracks.{kind}.target"), r.response.rect, shown));
                     });
-                    elems.push((format!("deleteTracks.{kind}.target"), r.response.rect, shown));
                 });
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(crate::i18n::t("Cancel", "キャンセル"));
+                elems.push(("deleteTracks.cancel".into(), c.rect, "Cancel".into()));
+                if c.clicked() {
+                    keep = false;
+                }
+                let o = ui
+                    .add_enabled(draft.video || draft.audio, egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
+                elems.push(("deleteTracks.ok".into(), o.rect, "OK".into()));
+                if o.clicked() {
+                    apply = true;
+                }
             });
-        }
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            let c = ui.button("Cancel");
-            elems.push(("deleteTracks.cancel".into(), c.rect, "Cancel".into()));
-            if c.clicked() {
-                keep = false;
-            }
-            let o =
-                ui.add_enabled(draft.video || draft.audio, egui::Button::new(egui::RichText::new("OK").color(egui::Color32::WHITE)).fill(app.tokens.accent));
-            elems.push(("deleteTracks.ok".into(), o.rect, "OK".into()));
-            if o.clicked() {
-                apply = true;
-            }
         });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }
@@ -241,8 +251,11 @@ fn about(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     crate::brand::paint_wordmark(ui, egui::pos2(r.min.x, r.center().y), 20.0, app.ui.dark);
     ui.add_space(6.0);
     ui.heading("FilmCraft");
-    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-    ui.label("A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.");
+    ui.label(crate::tf!("Version {}", "バージョン {}", env!("CARGO_PKG_VERSION")));
+    ui.label(crate::i18n::t(
+        "A clean-room, pure-Rust non-linear video editor. Part of the ArtCraft family.",
+        "クリーンルーム設計の、純 Rust 製ノンリニアビデオエディター。ArtCraft ファミリーの一員です。",
+    ));
     ui.add_space(10.0);
     let mut link = |ui: &mut egui::Ui, id: &str, icon: Icon, label: &str, url: &str, primary: bool| {
         let size = egui::vec2(ui.available_width(), if primary { 36.0 } else { 28.0 });
@@ -263,7 +276,7 @@ fn about(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         ui.painter().text(
             egui::pos2(r.min.x + 40.0, r.center().y),
             egui::Align2::LEFT_CENTER,
-            label,
+            crate::i18n::tr_ui(label),
             crate::theme::Tokens::ui(if primary { 14.0 } else { 13.0 }),
             fg,
         );
@@ -278,5 +291,12 @@ fn about(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     link(ui, "github", Icon::Code, "Source code on GitHub", links::GITHUB, false);
     link(ui, "reportIssue", Icon::Code, "Report an issue", links::ISSUES, false);
     ui.add_space(10.0);
-    ui.label(egui::RichText::new("MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).").small().color(t.text_dim));
+    ui.label(
+        egui::RichText::new(crate::i18n::t(
+            "MIT OR Apache-2.0. Fonts: Inter, Noto Serif and JetBrains Mono (SIL OFL 1.1).",
+            "MIT OR Apache-2.0。フォント: Inter、Noto Serif、JetBrains Mono(SIL OFL 1.1)。",
+        ))
+        .small()
+        .color(t.text_dim),
+    );
 }

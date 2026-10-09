@@ -586,10 +586,10 @@ pub fn waveform(
             p.add(mesh);
         }
         Some(_) => {
-            p.text(area.center(), Align2::CENTER_CENTER, "(no audio)", Tokens::ui(12.0), t.text_dim);
+            p.text(area.center(), Align2::CENTER_CENTER, crate::i18n::t("(no audio)", "(オーディオなし)"), Tokens::ui(12.0), t.text_dim);
         }
         None => {
-            p.text(area.center(), Align2::CENTER_CENTER, "Generating waveform…", Tokens::ui(12.0), t.text_dim);
+            p.text(area.center(), Align2::CENTER_CENTER, crate::i18n::t("Generating waveform…", "波形を生成中…"), Tokens::ui(12.0), t.text_dim);
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
@@ -613,7 +613,13 @@ pub fn compare_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, rate: f
     let t = app.tokens;
     let rf = Tick(app.ui.program.compare_ref.unwrap_or(app.session.playhead().0));
     let tc = format_time(rf, rate, drop_frame, TimeDisplay::Timecode, 48000);
-    ui.painter().text(pos2(bar.min.x + 4.0, bar.center().y), Align2::LEFT_CENTER, format!("Reference  {tc}"), Tokens::ui(11.0), t.text_dim);
+    ui.painter().text(
+        pos2(bar.min.x + 4.0, bar.center().y),
+        Align2::LEFT_CENTER,
+        crate::tf!("Reference  {tc}", "リファレンス  {tc}"),
+        Tokens::ui(11.0),
+        t.text_dim,
+    );
     let mut x = bar.max.x;
     for (key, label, tip) in
         [("set", "Set", "Set the reference to the playhead"), ("next", "▶", "Reference: next frame"), ("prev", "◀", "Reference: previous frame")]
@@ -638,7 +644,7 @@ pub fn compare_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, rate: f
 type Picks = Vec<(String, Rect, String, bool)>;
 
 fn pick(ui: &mut egui::Ui, out: &mut Picks, key: &str, label: &str, on: bool) {
-    let r = ui.selectable_label(on, label);
+    let r = ui.selectable_label(on, crate::i18n::tr_ui(label));
     out.push((key.to_string(), r.rect, label.to_string(), r.clicked()));
 }
 
@@ -648,7 +654,7 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
     let mode = v.display_mode();
     let mut out: Picks = Vec::new();
     pick(ui, &mut out, "display.composite", "Composite Video", mode == Some(DisplayMode::Composite));
-    ui.menu_button("RGBA Channels", |ui| {
+    ui.menu_button(crate::i18n::t("RGBA Channels", "RGBA チャンネル"), |ui| {
         for (k, l, m) in [
             ("alpha", "Alpha", DisplayMode::Alpha),
             ("red", "Red", DisplayMode::Red),
@@ -666,12 +672,12 @@ pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
         pick(ui, &mut out, "display.videoAndWaveform", "Video and Audio Waveform Split", mode == Some(DisplayMode::VideoAndWaveform));
     }
     ui.separator();
-    ui.menu_button("Playback Resolution", |ui| {
+    ui.menu_button(crate::i18n::t("Playback Resolution", "再生解像度"), |ui| {
         for (k, r) in RES_NAMES {
             pick(ui, &mut out, &format!("playbackRes.{k}"), r.label(), v.res == r);
         }
     });
-    ui.menu_button("Paused Resolution", |ui| {
+    ui.menu_button(crate::i18n::t("Paused Resolution", "一時停止解像度"), |ui| {
         for (k, r) in RES_NAMES {
             pick(ui, &mut out, &format!("pausedRes.{k}"), r.label(), v.paused_res == r);
         }
@@ -740,25 +746,25 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         GuideDialog::Add { vertical, position, source } => {
             let m = if *source { "source" } else { "program" };
             ui.horizontal(|ui| {
-                ui.label("Orientation:");
-                let r = ui.radio(*vertical, "Vertical");
+                ui.label(crate::i18n::t("Orientation:", "方向:"));
+                let r = ui.radio(*vertical, crate::i18n::t("Vertical", "垂直"));
                 push(&mut elems, "guides.add.vertical", &r, "Vertical");
                 if r.clicked() {
                     *vertical = true;
                 }
-                let r = ui.radio(!*vertical, "Horizontal");
+                let r = ui.radio(!*vertical, crate::i18n::t("Horizontal", "水平"));
                 push(&mut elems, "guides.add.horizontal", &r, "Horizontal");
                 if r.clicked() {
                     *vertical = false;
                 }
             });
             ui.horizontal(|ui| {
-                ui.label("Position:");
+                ui.label(crate::i18n::t("Position:", "位置:"));
                 let r = ui.add(egui::DragValue::new(position).speed(1.0).suffix(" px"));
                 push(&mut elems, "guides.add.position", &r, "Position");
             });
             ui.horizontal(|ui| {
-                let r = ui.button("Cancel");
+                let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
                 push(&mut elems, "guides.add.cancel", &r, "Cancel");
                 close |= r.clicked();
                 let r = ui.button("OK");
@@ -774,12 +780,12 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         GuideDialog::SaveTemplate { name, source } => {
             let m = if *source { "source" } else { "program" };
             ui.horizontal(|ui| {
-                ui.label("Name:");
+                ui.label(crate::i18n::t("Name:", "名前:"));
                 let r = ui.text_edit_singleline(name);
                 push(&mut elems, "guides.save.name", &r, "Name");
             });
             ui.horizontal(|ui| {
-                let r = ui.button("Cancel");
+                let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
                 push(&mut elems, "guides.save.cancel", &r, "Cancel");
                 close |= r.clicked();
                 let r = ui.button("OK");
@@ -792,7 +798,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
         GuideDialog::Manage { selected, source } => {
             let m = if *source { "source" } else { "program" };
             if templates.is_empty() {
-                ui.label("No saved guide templates.");
+                ui.label(crate::i18n::t("No saved guide templates.", "保存したガイドテンプレートはありません。"));
             }
             for (i, n) in templates.iter().enumerate() {
                 let r = ui.selectable_label(*selected == Some(i), n);
@@ -804,14 +810,14 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.separator();
             ui.horizontal(|ui| {
                 let sel = selected.and_then(|i| templates.get(i)).cloned();
-                let r = ui.add_enabled(sel.is_some(), egui::Button::new("Apply"));
+                let r = ui.add_enabled(sel.is_some(), egui::Button::new(crate::i18n::t("Apply", "適用")));
                 push(&mut elems, "guides.manage.apply", &r, "Apply");
                 if r.clicked()
                     && let Some(n) = &sel
                 {
                     act = Some(("view.guideTemplates.apply".into(), json!({"monitor": m, "name": n})));
                 }
-                let r = ui.add_enabled(sel.is_some(), egui::Button::new("Delete"));
+                let r = ui.add_enabled(sel.is_some(), egui::Button::new(crate::i18n::t("Delete", "削除")));
                 push(&mut elems, "guides.manage.delete", &r, "Delete");
                 if r.clicked()
                     && let Some(n) = &sel
@@ -819,7 +825,7 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     act = Some(("view.guideTemplates.delete".into(), json!({"name": n})));
                     *selected = None;
                 }
-                let r = ui.button("Close");
+                let r = ui.button(crate::i18n::t("Close", "閉じる"));
                 push(&mut elems, "guides.manage.close", &r, "Close");
                 close |= r.clicked();
             });

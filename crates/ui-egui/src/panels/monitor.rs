@@ -33,12 +33,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let (target, frame_size, rate, time, duration, drop_frame, mark_in, mark_out, name) = match which {
         Which::Program => {
             let Some(seq_id) = app.session.state.active_sequence else {
-                crate::dock::placeholder(ui, rect, &t, "(no sequences)");
+                crate::dock::placeholder(ui, rect, &t, crate::i18n::t("(no sequences)", "(シーケンスがありません)"));
                 return;
             };
             // A damaged project can name an active sequence that no longer exists.
             let Some(q) = app.session.active_sequence() else {
-                crate::dock::placeholder(ui, rect, &t, "(no sequences)");
+                crate::dock::placeholder(ui, rect, &t, crate::i18n::t("(no sequences)", "(シーケンスがありません)"));
                 return;
             };
             (
@@ -55,7 +55,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         }
         Which::Source => {
             let Some(item) = app.session.state.source_item else {
-                crate::dock::placeholder(ui, rect, &t, "(no clips)");
+                crate::dock::placeholder(ui, rect, &t, crate::i18n::t("(no clips)", "(クリップがありません)"));
                 return;
             };
             let Some(pi) = app.session.project.item(item) else { return };
@@ -269,9 +269,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     );
     ui.painter().text(pos2(row1.max.x, row1.center().y), Align2::RIGHT_CENTER, &dur_tc, Tokens::semibold(15.0), t.text_dim);
     // zoom + resolution dropdowns centred-ish
-    let zr = Rect::from_min_size(pos2(row1.min.x + 116.0, row1.min.y), vec2(70.0, 24.0));
+    let zr = Rect::from_min_size(pos2(row1.min.x + 116.0, row1.min.y), vec2(88.0, 24.0));
     let zoom_label = match mv.zoom {
-        None => "Fit".to_string(),
+        None => crate::i18n::t("Fit", "全体表示").to_string(),
         Some(z) => format!("{}%", (z * 100.0).round() as i32),
     };
     let zresp = crate::widgets::dropdown_text(ui, zr, &zoom_label, &t, egui::Id::new((prefix, "zoom")));
@@ -296,38 +296,39 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
         ui.set_min_width(240.0);
         monitor_view::wrench_items(app, ui, which);
         let mv = monitor_view::view_mut(app, which);
-        ui.checkbox(&mut mv.safe_margins, "Safe Margins");
-        ui.checkbox(&mut mv.show_transport, "Show Transport Controls");
+        ui.checkbox(&mut mv.safe_margins, crate::i18n::t("Safe Margins", "セーフマージン"));
+        ui.checkbox(&mut mv.show_transport, crate::i18n::t("Show Transport Controls", "トランスポートコントロールを表示"));
         if which == Which::Program {
             ui.separator();
-            ui.checkbox(&mut app.ui.show_scopes, "Lumetri Scopes");
-            ui.checkbox(&mut app.playback.looping, "Loop");
+            ui.checkbox(&mut app.ui.show_scopes, crate::i18n::t("Lumetri Scopes", "Lumetri スコープ"));
+            ui.checkbox(&mut app.playback.looping, crate::i18n::t("Loop", "ループ再生"));
             ui.separator();
             let mut follows = app.session.state.multicam_audio_follows_video;
-            if ui.checkbox(&mut follows, "Multi-Camera Audio Follows Video").changed() {
+            if ui.checkbox(&mut follows, crate::i18n::t("Multi-Camera Audio Follows Video", "マルチカメラのオーディオをビデオに追従")).changed()
+            {
                 let _ = app.session.execute("multicam.audioFollowsVideo", json!({"enabled": follows}));
             }
-            ui.checkbox(&mut app.ui.multicam_record, "Multi-Camera Record");
+            ui.checkbox(&mut app.ui.multicam_record, crate::i18n::t("Multi-Camera Record", "マルチカメラ録画"));
             let v = app.session.state.multicam_view.clone();
             for (cmd, label, on) in [
-                ("multicam.selectionTopDown", "Multi-Camera Selection Top Down", v.top_down),
-                ("multicam.showPreviewMonitor", "Show Multi-Camera Preview Monitor", v.show_preview),
-                ("multicam.autoAdjustQuality", "Auto-Adjust Multi-Camera Playback Quality", v.auto_quality),
-                ("multicam.transmitView", "Transmit Multi-Camera View", v.transmit),
+                ("multicam.selectionTopDown", crate::i18n::t("Multi-Camera Selection Top Down", "上から下へのマルチカメラ選択"), v.top_down),
+                ("multicam.showPreviewMonitor", crate::i18n::t("Show Multi-Camera Preview Monitor", "マルチカメラプレビューモニターを表示"), v.show_preview),
+                ("multicam.autoAdjustQuality", crate::i18n::t("Auto-Adjust Multi-Camera Playback Quality", "マルチカメラ再生画質の自動調整"), v.auto_quality),
+                ("multicam.transmitView", crate::i18n::t("Transmit Multi-Camera View", "マルチカメラ表示を送信"), v.transmit),
             ] {
                 let mut b = on;
                 if ui.checkbox(&mut b, label).changed() {
                     let _ = app.session.execute(cmd, json!({"enabled": b}));
                 }
             }
-            ui.menu_button("Multi-Camera Layout", |ui| {
-                for (k, label) in [("auto", "Automatic"), ("2x2", "2 × 2"), ("3x3", "3 × 3"), ("4x4", "4 × 4")] {
+            ui.menu_button(crate::i18n::t("Multi-Camera Layout", "マルチカメラレイアウト"), |ui| {
+                for (k, label) in [("auto", crate::i18n::t("Automatic", "自動")), ("2x2", "2 × 2"), ("3x3", "3 × 3"), ("4x4", "4 × 4")] {
                     if ui.selectable_label(v.layout_name() == k, label).clicked() {
                         let _ = app.session.execute("multicam.gridLayout", json!({"layout": k}));
                     }
                 }
             });
-            if ui.button("Edit Cameras…").clicked() {
+            if ui.button(crate::i18n::t("Edit Cameras…", "カメラを編集…")).clicked() {
                 let _ = crate::panels::multicam::route(app, "multicam.editCamerasDialog", &json!({}));
                 ui.close();
             }
@@ -450,33 +451,33 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     let src = which == Which::Source;
     let buttons: Vec<(Icon, &str, &str)> = if src {
         vec![
-            (Icon::Marker, "markers.add", "Add Marker (M)"),
-            (Icon::MarkIn, "src.markIn", "Mark In (I)"),
-            (Icon::MarkOut, "src.markOut", "Mark Out (O)"),
-            (Icon::GoToIn, "src.goIn", "Go to In (Shift+I)"),
-            (Icon::StepBack, "src.stepBack", "Step Back 1 Frame (Left)"),
-            (Icon::Play, "src.play", "Play-Stop Toggle (Space)"),
-            (Icon::StepFwd, "src.stepFwd", "Step Forward 1 Frame (Right)"),
-            (Icon::GoToOut, "src.goOut", "Go to Out (Shift+O)"),
-            (Icon::Insert, "source.insert", "Insert (,)"),
-            (Icon::Overwrite, "source.overwrite", "Overwrite (.)"),
-            (Icon::Camera, "exportFrame", "Export Frame (Shift+E)"),
-            (Icon::Proxy, "media.toggleProxies", "Toggle Proxies"),
+            (Icon::Marker, "markers.add", crate::i18n::t("Add Marker (M)", "マーカーを追加 (M)")),
+            (Icon::MarkIn, "src.markIn", crate::i18n::t("Mark In (I)", "インをマーク (I)")),
+            (Icon::MarkOut, "src.markOut", crate::i18n::t("Mark Out (O)", "アウトをマーク (O)")),
+            (Icon::GoToIn, "src.goIn", crate::i18n::t("Go to In (Shift+I)", "インへ移動 (Shift+I)")),
+            (Icon::StepBack, "src.stepBack", crate::i18n::t("Step Back 1 Frame (Left)", "1フレーム戻る (Left)")),
+            (Icon::Play, "src.play", crate::i18n::t("Play-Stop Toggle (Space)", "再生/停止 (Space)")),
+            (Icon::StepFwd, "src.stepFwd", crate::i18n::t("Step Forward 1 Frame (Right)", "1フレーム進む (Right)")),
+            (Icon::GoToOut, "src.goOut", crate::i18n::t("Go to Out (Shift+O)", "アウトへ移動 (Shift+O)")),
+            (Icon::Insert, "source.insert", crate::i18n::t("Insert (,)", "インサート (,)")),
+            (Icon::Overwrite, "source.overwrite", crate::i18n::t("Overwrite (.)", "上書き (.)")),
+            (Icon::Camera, "exportFrame", crate::i18n::t("Export Frame (Shift+E)", "フレームを書き出し (Shift+E)")),
+            (Icon::Proxy, "media.toggleProxies", crate::i18n::t("Toggle Proxies", "プロキシの切り替え")),
         ]
     } else {
         vec![
-            (Icon::Marker, "markers.add", "Add Marker (M)"),
-            (Icon::MarkIn, "markers.markIn", "Mark In (I)"),
-            (Icon::MarkOut, "markers.markOut", "Mark Out (O)"),
-            (Icon::GoToIn, "markers.goToIn", "Go to In (Shift+I)"),
-            (Icon::StepBack, "playhead.stepBack", "Step Back 1 Frame (Left)"),
-            (if app.playback.playing { Icon::Pause } else { Icon::Play }, "playback.toggle", "Play-Stop Toggle (Space)"),
-            (Icon::StepFwd, "playhead.stepForward", "Step Forward 1 Frame (Right)"),
-            (Icon::GoToOut, "markers.goToOut", "Go to Out (Shift+O)"),
-            (Icon::Lift, "sequence.lift", "Lift (;)"),
-            (Icon::Extract, "sequence.extract", "Extract (')"),
-            (Icon::Camera, "exportFrame", "Export Frame (Shift+E)"),
-            (Icon::Proxy, "media.toggleProxies", "Toggle Proxies"),
+            (Icon::Marker, "markers.add", crate::i18n::t("Add Marker (M)", "マーカーを追加 (M)")),
+            (Icon::MarkIn, "markers.markIn", crate::i18n::t("Mark In (I)", "インをマーク (I)")),
+            (Icon::MarkOut, "markers.markOut", crate::i18n::t("Mark Out (O)", "アウトをマーク (O)")),
+            (Icon::GoToIn, "markers.goToIn", crate::i18n::t("Go to In (Shift+I)", "インへ移動 (Shift+I)")),
+            (Icon::StepBack, "playhead.stepBack", crate::i18n::t("Step Back 1 Frame (Left)", "1フレーム戻る (Left)")),
+            (if app.playback.playing { Icon::Pause } else { Icon::Play }, "playback.toggle", crate::i18n::t("Play-Stop Toggle (Space)", "再生/停止 (Space)")),
+            (Icon::StepFwd, "playhead.stepForward", crate::i18n::t("Step Forward 1 Frame (Right)", "1フレーム進む (Right)")),
+            (Icon::GoToOut, "markers.goToOut", crate::i18n::t("Go to Out (Shift+O)", "アウトへ移動 (Shift+O)")),
+            (Icon::Lift, "sequence.lift", crate::i18n::t("Lift (;)", "リフト (;)")),
+            (Icon::Extract, "sequence.extract", crate::i18n::t("Extract (')", "抽出 (')")),
+            (Icon::Camera, "exportFrame", crate::i18n::t("Export Frame (Shift+E)", "フレームを書き出し (Shift+E)")),
+            (Icon::Proxy, "media.toggleProxies", crate::i18n::t("Toggle Proxies", "プロキシの切り替え")),
         ]
     };
     let bw = 30.0;
@@ -512,7 +513,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
                 }
                 "src.play" => Ok(serde_json::Value::Null),
                 "exportFrame" => {
-                    app.ui.status = "Export Frame: use Export mode (M6)".into();
+                    app.ui.status = crate::i18n::t("Export Frame: use Export mode (M6)", "フレームを書き出し: 書き出しモードを使用してください (M6)").into();
                     Ok(serde_json::Value::Null)
                 }
                 c => crate::menus::invoke(app, &ctx, c, json!({})),
@@ -525,7 +526,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     }
     // button editor "+"
     let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 4.0), vec2(22.0, 22.0));
-    let resp = ui.interact(r, egui::Id::new((prefix, "btn-editor")), Sense::click()).on_hover_text("Button Editor");
+    let resp = ui.interact(r, egui::Id::new((prefix, "btn-editor")), Sense::click()).on_hover_text(crate::i18n::t("Button Editor", "ボタンエディター"));
     icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
 }
 

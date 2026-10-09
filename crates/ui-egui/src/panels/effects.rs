@@ -20,7 +20,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let sr = Rect::from_min_size(rect.min + vec2(8.0, 6.0), vec2(rect.width() - 16.0, 22.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sr));
     let mut q = app.ui.effects_search.clone();
-    crate::widgets::search_field(&mut child, &mut q, "Search effects", sr.width(), &t);
+    crate::widgets::search_field(&mut child, &mut q, crate::i18n::t("Search effects", "エフェクトを検索"), sr.width(), &t);
     app.ui.effects_search = q.clone();
     let body = Rect::from_min_max(pos2(rect.min.x, sr.max.y + 6.0), rect.max);
     // wide panel: the tree on the left, the Lumetri Presets thumbnail grid on the right
@@ -99,7 +99,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     } else {
                         ui.painter().text(icon_r.center(), Align2::CENTER_CENTER, "fx", Tokens::ui(8.0), t.text_dim);
                     }
-                    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, d.name, Tokens::ui(12.0), t.text);
+                    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, effect_display_name(d.id, d.name), Tokens::ui(12.0), t.text);
                     // badges: accelerated / 32-bit / YUV
                     let mut bx = r.max.x - 8.0;
                     for (on, label) in [(d.yuv, "YUV"), (d.float32, "32"), (d.accelerated, "⚡")] {
@@ -158,8 +158,9 @@ fn folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize
     );
     icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 18.0, r.center().y), vec2(13.0, 13.0)), Icon::Folder, t.text_dim);
     let name = key.rsplit('/').next().unwrap_or(key);
-    ui.painter().text(pos2(x + 30.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::ui(12.0), t.text);
-    app.auto.add(&format!("effects.folder.{key}"), r, name);
+    let display = folder_display_name(name);
+    ui.painter().text(pos2(x + 30.0, r.center().y), Align2::LEFT_CENTER, display, Tokens::ui(12.0), t.text);
+    app.auto.add(&format!("effects.folder.{key}"), r, display);
     if resp.clicked() {
         if open {
             app.ui.expanded_fx.retain(|k| k != key);
@@ -175,7 +176,7 @@ fn folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize
 fn apply_menu(app: &mut FilmcraftApp, resp: &egui::Response) -> bool {
     let mut chosen = false;
     resp.context_menu(|ui| {
-        let b = ui.button("Apply to Selected Clips");
+        let b = ui.button(crate::i18n::t("Apply to Selected Clips", "選択したクリップに適用"));
         app.auto.add("effects.presetMenu.apply", b.rect, "Apply to Selected Clips");
         if b.clicked() {
             chosen = true;
@@ -291,4 +292,77 @@ fn preset_grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) -> Option<
         }
     }
     apply
+}
+
+fn folder_display_name(name: &str) -> &str {
+    if !crate::i18n::is_japanese() {
+        return name;
+    }
+    let ja = match name {
+        "Presets" => "プリセット",
+        "Lumetri Presets" => "Lumetri プリセット",
+        "Audio Effects" => "オーディオエフェクト",
+        "Audio Transitions" => "オーディオトランジション",
+        "Video Effects" => "ビデオエフェクト",
+        "Video Transitions" => "ビデオトランジション",
+        "Legacy" => "レガシー",
+        "Color Correction" => "カラー補正",
+        "Blur & Sharpen" => "ブラー＆シャープ",
+        "Distort" => "ディストーション",
+        "Generate" => "描画",
+        "Keying" => "キーイング",
+        "Noise & Grain" => "ノイズ＆グレイン",
+        "Perspective" => "遠近",
+        "Stylize" => "スタイライズ",
+        "Time" => "時間",
+        "Transition" => "トランジション",
+        "Transform" => "トランスフォーム",
+        "Utility" => "ユーティリティ",
+        "Video" => "ビデオ",
+        "Dissolve" => "ディゾルブ",
+        "Iris" => "アイリス",
+        "Slide" => "スライド",
+        "Wipe" => "ワイプ",
+        "Zoom" => "ズーム",
+        "Page Peel" => "ページピール",
+        "Crossfade" => "クロスフェード",
+        "Obsolete" => "旧バージョン",
+        "Cinematic" => "シネマティック",
+        "Monochrome" => "モノクロ",
+        "Temperature" => "色温度",
+        "Clean" => "クリーン",
+        _ => name,
+    };
+    crate::i18n::remember(name, ja);
+    ja
+}
+
+fn effect_display_name<'a>(id: &str, name: &'a str) -> &'a str {
+    if !crate::i18n::is_japanese() {
+        return name;
+    }
+    let ja = match id {
+        "gaussian_blur" => "ガウス",
+        "brightness_contrast" => "輝度＆コントラスト",
+        "crop" => "クロップ",
+        "proc_amp" => "プロアンプ",
+        "tint" => "色合い",
+        "black_white" => "白黒",
+        "color_balance" => "カラーバランス (RGB)",
+        "directional_blur" => "方向ブラー",
+        "unsharp_mask" => "アンシャープマスク",
+        "levels" => "レベル",
+        "gamma_correction" => "ガンマ補正",
+        "lumetri" => "Lumetri カラー",
+        "cross_dissolve" => "クロスディゾルブ",
+        "dip_to_black" => "暗転 (黒へディップ)",
+        "dip_to_white" => "明転 (白へディップ)",
+        "morph_cut" => "モーフカット",
+        "constant_power" => "コンスタントパワー",
+        "constant_gain" => "コンスタントゲイン",
+        "exponential_fade" => "指数フェード",
+        _ => name,
+    };
+    crate::i18n::remember(name, ja);
+    ja
 }

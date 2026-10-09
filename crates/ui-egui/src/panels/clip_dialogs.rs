@@ -203,7 +203,7 @@ fn format_of(name: &str) -> AudioChannels {
 
 fn check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, enabled: bool) {
     let mut v = p.get(key).and_then(Value::as_bool).unwrap_or(false);
-    let r = ui.add_enabled(enabled, egui::Checkbox::new(&mut v, label));
+    let r = ui.add_enabled(enabled, egui::Checkbox::new(&mut v, crate::i18n::tr_ui(label)));
     push(elems, format!("{pre}.{key}"), &r, label);
     if r.changed() {
         p[key] = json!(v);
@@ -212,7 +212,7 @@ fn check(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &s
 
 fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, width: f32) {
     ui.horizontal(|ui| {
-        ui.label(label);
+        ui.label(crate::i18n::tr_ui(label));
         let mut v = p.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
         let r = ui.add(egui::TextEdit::singleline(&mut v).desired_width(width));
         push(elems, format!("{pre}.{key}"), &r, label);
@@ -224,7 +224,7 @@ fn text(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &st
 
 fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, range: std::ops::RangeInclusive<f64>, suffix: &str) {
     ui.horizontal(|ui| {
-        ui.label(label);
+        ui.label(crate::i18n::tr_ui(label));
         let mut v = p.get(key).and_then(Value::as_f64).unwrap_or(0.0);
         let r = ui.add(egui::DragValue::new(&mut v).range(range).suffix(suffix));
         push(elems, format!("{pre}.{key}"), &r, label);
@@ -236,7 +236,7 @@ fn number(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
 
 fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &str, label: &str, fps: f64) {
     ui.horizontal(|ui| {
-        ui.label(label);
+        ui.label(crate::i18n::tr_ui(label));
         let mut v = p.get(key).and_then(Value::as_i64).unwrap_or(0);
         let r = ui.add(egui::DragValue::new(&mut v).range(0..=i64::MAX / 4).suffix(" fr"));
         push(elems, format!("{pre}.{key}"), &r, label);
@@ -259,120 +259,147 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
     let can_save = app.session.path.is_some();
-    egui::Window::new(title).collapsible(false).resizable(false).default_width(360.0).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-        let p = &mut d.params;
-        match d.command.as_str() {
-            "edit.pasteAttributes" | "edit.removeAttributes" => {
-                let (v, a) = (d.info["video"].as_bool().unwrap_or(true), d.info["audio"].as_bool().unwrap_or(true));
-                ui.label(RichText::new("Video Attributes").strong());
-                for (k, l) in INTRINSIC_VIDEO {
-                    check(ui, &mut elems, pre, p, k, l, v);
-                }
-                ui.label(RichText::new("Audio Attributes").strong());
-                for (k, l) in INTRINSIC_AUDIO {
-                    check(ui, &mut elems, pre, p, k, l, a);
-                }
-                let effects: Vec<(String, String)> = d.info["effects"]
-                    .as_array()
-                    .map(|x| x.iter().filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].as_str()?.to_string()))).collect())
-                    .unwrap_or_default();
-                ui.label(RichText::new("Effects").strong());
-                if effects.is_empty() {
-                    ui.label(RichText::new("No effects").weak());
-                }
-                for (id, name) in &effects {
-                    let mut on = p["effects"].as_array().is_some_and(|x| x.iter().any(|e| e.as_str() == Some(id)));
-                    let r = ui.checkbox(&mut on, name);
-                    push(&mut elems, format!("{pre}.effect.{id}"), &r, name.as_str());
-                    if r.changed() {
-                        let mut list: Vec<Value> = p["effects"].as_array().cloned().unwrap_or_default();
-                        list.retain(|e| e.as_str() != Some(id));
-                        if on {
-                            list.push(json!(id));
+    egui::Window::new(crate::i18n::tr_ui(title))
+        .id(egui::Id::new(("clip-dialog", title)))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(360.0)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            let p = &mut d.params;
+            match d.command.as_str() {
+                "edit.pasteAttributes" | "edit.removeAttributes" => {
+                    let (v, a) = (d.info["video"].as_bool().unwrap_or(true), d.info["audio"].as_bool().unwrap_or(true));
+                    ui.label(RichText::new(crate::i18n::t("Video Attributes", "ビデオ属性")).strong());
+                    for (k, l) in INTRINSIC_VIDEO {
+                        check(ui, &mut elems, pre, p, k, l, v);
+                    }
+                    ui.label(RichText::new(crate::i18n::t("Audio Attributes", "オーディオ属性")).strong());
+                    for (k, l) in INTRINSIC_AUDIO {
+                        check(ui, &mut elems, pre, p, k, l, a);
+                    }
+                    let effects: Vec<(String, String)> = d.info["effects"]
+                        .as_array()
+                        .map(|x| x.iter().filter_map(|e| Some((e[0].as_str()?.to_string(), e[1].as_str()?.to_string()))).collect())
+                        .unwrap_or_default();
+                    ui.label(RichText::new(crate::i18n::t("Effects", "エフェクト")).strong());
+                    if effects.is_empty() {
+                        ui.label(RichText::new(crate::i18n::t("No effects", "エフェクトなし")).weak());
+                    }
+                    for (id, name) in &effects {
+                        let mut on = p["effects"].as_array().is_some_and(|x| x.iter().any(|e| e.as_str() == Some(id)));
+                        let r = ui.checkbox(&mut on, name);
+                        push(&mut elems, format!("{pre}.effect.{id}"), &r, name.as_str());
+                        if r.changed() {
+                            let mut list: Vec<Value> = p["effects"].as_array().cloned().unwrap_or_default();
+                            list.retain(|e| e.as_str() != Some(id));
+                            if on {
+                                list.push(json!(id));
+                            }
+                            p["effects"] = Value::Array(list);
                         }
-                        p["effects"] = Value::Array(list);
+                    }
+                    if d.command == "edit.pasteAttributes" {
+                        ui.separator();
+                        check(ui, &mut elems, pre, p, "scaleTimes", "Scale Attribute Times", true);
                     }
                 }
-                if d.command == "edit.pasteAttributes" {
-                    ui.separator();
-                    check(ui, &mut elems, pre, p, "scaleTimes", "Scale Attribute Times", true);
-                }
-            }
-            "file.newOfflineFile" => {
-                text(ui, &mut elems, pre, p, "fileName", "File Name:", 220.0);
-                text(ui, &mut elems, pre, p, "name", "Clip Name:", 220.0);
-                text(ui, &mut elems, pre, p, "tapeName", "Tape Name:", 220.0);
-                text(ui, &mut elems, pre, p, "description", "Description:", 220.0);
-                ui.horizontal(|ui| {
-                    ui.label("Contains:");
-                    check(ui, &mut elems, pre, p, "video", "Video", true);
-                    check(ui, &mut elems, pre, p, "audio", "Audio", true);
-                });
-                let has_v = p["video"].as_bool().unwrap_or(true);
-                ui.add_enabled_ui(has_v, |ui| {
-                    number(ui, &mut elems, pre, p, "width", "Width:", 16.0..=16384.0, " px");
-                    number(ui, &mut elems, pre, p, "height", "Height:", 16.0..=16384.0, " px");
-                    number(ui, &mut elems, pre, p, "fps", "Frame Rate:", 1.0..=240.0, " fps");
-                });
-                text(ui, &mut elems, pre, p, "timecode", "Media Start:", 120.0);
-                number(ui, &mut elems, pre, p, "seconds", "Duration:", 0.05..=86_400.0, " s");
-            }
-            "clip.makeSubclip" | "clip.editSubclip" => {
-                let fps = d.info["fps"].as_f64().unwrap_or(24.0);
-                if d.command == "clip.makeSubclip" {
-                    text(ui, &mut elems, pre, p, "name", "Name:", 240.0);
-                } else {
-                    ui.label(format!("Subclip: {}", d.info["name"].as_str().unwrap_or_default()));
-                }
-                frames(ui, &mut elems, pre, p, "startFrame", "Start:", fps);
-                frames(ui, &mut elems, pre, p, "endFrame", "End:", fps);
-                check(ui, &mut elems, pre, p, "restrictTrims", "Restrict Trims To Subclip Boundaries", true);
-                if d.command == "clip.editSubclip" {
-                    check(ui, &mut elems, pre, p, "convertToMaster", "Convert to Master Clip", true);
-                }
-            }
-            "clip.audioChannels" => {
-                let n = d.info["channels"].as_u64().unwrap_or(2).max(1) as u16;
-                if d.info["items"].as_bool().unwrap_or(false) {
+                "file.newOfflineFile" => {
+                    text(ui, &mut elems, pre, p, "fileName", "File Name:", 220.0);
+                    text(ui, &mut elems, pre, p, "name", "Clip Name:", 220.0);
+                    text(ui, &mut elems, pre, p, "tapeName", "Tape Name:", 220.0);
+                    text(ui, &mut elems, pre, p, "description", "Description:", 220.0);
                     ui.horizontal(|ui| {
-                        ui.label("Clip Channel Format:");
-                        for (k, l) in FORMATS {
-                            let r = ui.radio(p["format"].as_str() == Some(k), l);
-                            push(&mut elems, format!("{pre}.format.{k}"), &r, l);
-                            if r.clicked() {
-                                p["format"] = json!(k);
-                                p["clips"] = json!(AudioChannelMap::for_format(format_of(k), n).clips);
-                            }
-                        }
+                        ui.label(crate::i18n::t("Contains:", "含む:"));
+                        check(ui, &mut elems, pre, p, "video", "Video", true);
+                        check(ui, &mut elems, pre, p, "audio", "Audio", true);
                     });
-                    let mut clips: Vec<Vec<u16>> = serde_json::from_value(p["clips"].clone()).unwrap_or_default();
-                    ui.horizontal(|ui| {
-                        ui.label("Number of Audio Clips:");
-                        let mut count = clips.len() as u32;
-                        let r = ui.add(egui::DragValue::new(&mut count).range(1..=n as u32));
-                        push(&mut elems, format!("{pre}.count"), &r, "Number of Audio Clips");
-                        if r.changed() {
-                            let count = count.max(1) as usize;
-                            while clips.len() < count {
-                                let c = (clips.len() as u16).min(n - 1);
-                                clips.push(vec![c]);
-                            }
-                            clips.truncate(count);
-                        }
+                    let has_v = p["video"].as_bool().unwrap_or(true);
+                    ui.add_enabled_ui(has_v, |ui| {
+                        number(ui, &mut elems, pre, p, "width", "Width:", 16.0..=16384.0, " px");
+                        number(ui, &mut elems, pre, p, "height", "Height:", 16.0..=16384.0, " px");
+                        number(ui, &mut elems, pre, p, "fps", "Frame Rate:", 1.0..=240.0, " fps");
                     });
-                    ui.label(RichText::new("Media Source Channels").strong());
-                    egui::Grid::new("audio-channel-matrix").striped(true).show(ui, |ui| {
-                        ui.label("");
-                        for c in 0..n {
-                            ui.label(format!("Ch. {}", c + 1));
-                        }
-                        ui.end_row();
-                        for (ci, chans) in clips.iter_mut().enumerate() {
-                            ui.label(format!("Clip {}", ci + 1));
+                    text(ui, &mut elems, pre, p, "timecode", "Media Start:", 120.0);
+                    number(ui, &mut elems, pre, p, "seconds", "Duration:", 0.05..=86_400.0, " s");
+                }
+                "clip.makeSubclip" | "clip.editSubclip" => {
+                    let fps = d.info["fps"].as_f64().unwrap_or(24.0);
+                    if d.command == "clip.makeSubclip" {
+                        text(ui, &mut elems, pre, p, "name", "Name:", 240.0);
+                    } else {
+                        ui.label(crate::tf!("Subclip: {}", "サブクリップ: {}", d.info["name"].as_str().unwrap_or_default()));
+                    }
+                    frames(ui, &mut elems, pre, p, "startFrame", "Start:", fps);
+                    frames(ui, &mut elems, pre, p, "endFrame", "End:", fps);
+                    check(ui, &mut elems, pre, p, "restrictTrims", "Restrict Trims To Subclip Boundaries", true);
+                    if d.command == "clip.editSubclip" {
+                        check(ui, &mut elems, pre, p, "convertToMaster", "Convert to Master Clip", true);
+                    }
+                }
+                "clip.audioChannels" => {
+                    let n = d.info["channels"].as_u64().unwrap_or(2).max(1) as u16;
+                    if d.info["items"].as_bool().unwrap_or(false) {
+                        ui.horizontal(|ui| {
+                            ui.label(crate::i18n::t("Clip Channel Format:", "クリップのチャンネル形式:"));
+                            for (k, l) in FORMATS {
+                                let r = ui.radio(p["format"].as_str() == Some(k), crate::i18n::tr_ui(l));
+                                push(&mut elems, format!("{pre}.format.{k}"), &r, l);
+                                if r.clicked() {
+                                    p["format"] = json!(k);
+                                    p["clips"] = json!(AudioChannelMap::for_format(format_of(k), n).clips);
+                                }
+                            }
+                        });
+                        let mut clips: Vec<Vec<u16>> = serde_json::from_value(p["clips"].clone()).unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            ui.label(crate::i18n::t("Number of Audio Clips:", "オーディオクリップ数:"));
+                            let mut count = clips.len() as u32;
+                            let r = ui.add(egui::DragValue::new(&mut count).range(1..=n as u32));
+                            push(&mut elems, format!("{pre}.count"), &r, "Number of Audio Clips");
+                            if r.changed() {
+                                let count = count.max(1) as usize;
+                                while clips.len() < count {
+                                    let c = (clips.len() as u16).min(n - 1);
+                                    clips.push(vec![c]);
+                                }
+                                clips.truncate(count);
+                            }
+                        });
+                        ui.label(RichText::new(crate::i18n::t("Media Source Channels", "メディアソースのチャンネル")).strong());
+                        egui::Grid::new("audio-channel-matrix").striped(true).show(ui, |ui| {
+                            ui.label("");
                             for c in 0..n {
+                                ui.label(format!("Ch. {}", c + 1));
+                            }
+                            ui.end_row();
+                            for (ci, chans) in clips.iter_mut().enumerate() {
+                                ui.label(crate::tf!("Clip {}", "クリップ {}", ci + 1));
+                                for c in 0..n {
+                                    let mut on = chans.contains(&c);
+                                    let r = ui.checkbox(&mut on, "");
+                                    push(&mut elems, format!("{pre}.clip.{ci}.ch.{c}"), &r, format!("Clip {} Ch. {}", ci + 1, c + 1));
+                                    if r.changed() {
+                                        if on {
+                                            chans.push(c);
+                                            chans.sort_unstable();
+                                        } else {
+                                            chans.retain(|x| *x != c);
+                                        }
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                        p["clips"] = json!(clips);
+                    } else {
+                        ui.label(crate::i18n::t("Source channels the selected audio clips play:", "選択したオーディオクリップが再生するソースチャンネル:"));
+                        let mut chans: Vec<u16> = serde_json::from_value(p["channels"].clone()).unwrap_or_default();
+                        ui.horizontal(|ui| {
+                            for c in 0..n.max(2) {
                                 let mut on = chans.contains(&c);
-                                let r = ui.checkbox(&mut on, "");
-                                push(&mut elems, format!("{pre}.clip.{ci}.ch.{c}"), &r, format!("Clip {} Ch. {}", ci + 1, c + 1));
+                                let r = ui.checkbox(&mut on, format!("Ch. {}", c + 1));
+                                push(&mut elems, format!("{pre}.clip.0.ch.{c}"), &r, format!("Ch. {}", c + 1));
                                 if r.changed() {
                                     if on {
                                         chans.push(c);
@@ -382,105 +409,84 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                                     }
                                 }
                             }
-                            ui.end_row();
-                        }
-                    });
-                    p["clips"] = json!(clips);
-                } else {
-                    ui.label("Source channels the selected audio clips play:");
-                    let mut chans: Vec<u16> = serde_json::from_value(p["channels"].clone()).unwrap_or_default();
-                    ui.horizontal(|ui| {
-                        for c in 0..n.max(2) {
-                            let mut on = chans.contains(&c);
-                            let r = ui.checkbox(&mut on, format!("Ch. {}", c + 1));
-                            push(&mut elems, format!("{pre}.clip.0.ch.{c}"), &r, format!("Ch. {}", c + 1));
-                            if r.changed() {
-                                if on {
-                                    chans.push(c);
-                                    chans.sort_unstable();
-                                } else {
-                                    chans.retain(|x| *x != c);
-                                }
+                        });
+                        p["channels"] = json!(chans);
+                    }
+                }
+                "clip.modifyTimecode" => {
+                    text(ui, &mut elems, pre, p, "timecode", "Set Timecode:", 120.0);
+                    text(ui, &mut elems, pre, p, "tapeName", "Tape Name:", 200.0);
+                    check(ui, &mut elems, pre, p, "reset", "Use the file's timecode", true);
+                }
+                "clip.frameHoldOptions" => {
+                    check(ui, &mut elems, pre, p, "enabled", "Hold On", true);
+                    let on = p["enabled"].as_bool().unwrap_or(true);
+                    ui.add_enabled_ui(on, |ui| {
+                        for (k, l) in HOLD_ON {
+                            let r = ui.radio(p["holdOn"].as_str() == Some(k), crate::i18n::tr_ui(l));
+                            push(&mut elems, format!("{pre}.holdOn.{k}"), &r, l);
+                            if r.clicked() {
+                                p["holdOn"] = json!(k);
                             }
                         }
+                        if matches!(p["holdOn"].as_str(), Some("sourceTimecode" | "sequenceTime")) {
+                            text(ui, &mut elems, pre, p, "timecode", "Timecode:", 120.0);
+                        }
+                        check(ui, &mut elems, pre, p, "holdFilters", "Hold Filters", true);
                     });
-                    p["channels"] = json!(chans);
                 }
-            }
-            "clip.modifyTimecode" => {
-                text(ui, &mut elems, pre, p, "timecode", "Set Timecode:", 120.0);
-                text(ui, &mut elems, pre, p, "tapeName", "Tape Name:", 200.0);
-                check(ui, &mut elems, pre, p, "reset", "Use the file's timecode", true);
-            }
-            "clip.frameHoldOptions" => {
-                check(ui, &mut elems, pre, p, "enabled", "Hold On", true);
-                let on = p["enabled"].as_bool().unwrap_or(true);
-                ui.add_enabled_ui(on, |ui| {
-                    for (k, l) in HOLD_ON {
-                        let r = ui.radio(p["holdOn"].as_str() == Some(k), l);
-                        push(&mut elems, format!("{pre}.holdOn.{k}"), &r, l);
+                "clip.fieldOptions" => {
+                    check(ui, &mut elems, pre, p, "reverseFieldDominance", "Reverse Field Dominance", true);
+                    ui.label(RichText::new(crate::i18n::t("Processing Options", "処理オプション")).strong());
+                    for (k, l) in [("none", "None"), ("alwaysDeinterlace", "Always Deinterlace"), ("flickerRemoval", "Flicker Removal")] {
+                        let r = ui.radio(p["processing"].as_str() == Some(k), crate::i18n::tr_ui(l));
+                        push(&mut elems, format!("{pre}.processing.{k}"), &r, l);
                         if r.clicked() {
-                            p["holdOn"] = json!(k);
+                            p["processing"] = json!(k);
                         }
                     }
-                    if matches!(p["holdOn"].as_str(), Some("sourceTimecode" | "sequenceTime")) {
-                        text(ui, &mut elems, pre, p, "timecode", "Timecode:", 120.0);
-                    }
-                    check(ui, &mut elems, pre, p, "holdFilters", "Hold Filters", true);
-                });
-            }
-            "clip.fieldOptions" => {
-                check(ui, &mut elems, pre, p, "reverseFieldDominance", "Reverse Field Dominance", true);
-                ui.label(RichText::new("Processing Options").strong());
-                for (k, l) in [("none", "None"), ("alwaysDeinterlace", "Always Deinterlace"), ("flickerRemoval", "Flicker Removal")] {
-                    let r = ui.radio(p["processing"].as_str() == Some(k), l);
-                    push(&mut elems, format!("{pre}.processing.{k}"), &r, l);
-                    if r.clicked() {
-                        p["processing"] = json!(k);
-                    }
                 }
+                "file.closeProject" => {
+                    ui.label(crate::tf!("Save changes to “{project_name}” before closing?", "閉じる前に「{project_name}」への変更を保存しますか?"));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
+                        push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
+                        if r.clicked() {
+                            action = Some("cancel");
+                        }
+                        let r = ui.button(crate::i18n::t("Don't Save", "保存しない"));
+                        push(&mut elems, format!("{pre}.dontSave"), &r, "Don't Save");
+                        if r.clicked() {
+                            action = Some("dontSave");
+                        }
+                        let r = ui.add_enabled(can_save, egui::Button::new(crate::i18n::t("Save", "保存")));
+                        push(&mut elems, format!("{pre}.save"), &r, "Save");
+                        if r.clicked() {
+                            action = Some("save");
+                        }
+                    });
+                    return;
+                }
+                _ => {}
             }
-            "file.closeProject" => {
-                ui.label(format!("Save changes to “{project_name}” before closing?"));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let r = ui.button("Cancel");
-                    push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
-                    if r.clicked() {
-                        action = Some("cancel");
-                    }
-                    let r = ui.button("Don't Save");
-                    push(&mut elems, format!("{pre}.dontSave"), &r, "Don't Save");
-                    if r.clicked() {
-                        action = Some("dontSave");
-                    }
-                    let r = ui.add_enabled(can_save, egui::Button::new("Save"));
-                    push(&mut elems, format!("{pre}.save"), &r, "Save");
-                    if r.clicked() {
-                        action = Some("save");
-                    }
-                });
-                return;
+            if !d.error.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
             }
-            _ => {}
-        }
-        if !d.error.is_empty() {
-            ui.colored_label(egui::Color32::from_rgb(0xe0, 0x60, 0x60), &d.error);
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let r = ui.button("Cancel");
-            push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
-            if r.clicked() {
-                action = Some("cancel");
-            }
-            let r = ui.button("OK");
-            push(&mut elems, format!("{pre}.ok"), &r, "OK");
-            if r.clicked() {
-                action = Some("ok");
-            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
+                push(&mut elems, format!("{pre}.cancel"), &r, "Cancel");
+                if r.clicked() {
+                    action = Some("cancel");
+                }
+                let r = ui.button("OK");
+                push(&mut elems, format!("{pre}.ok"), &r, "OK");
+                if r.clicked() {
+                    action = Some("ok");
+                }
+            });
         });
-    });
     for (id, r, l) in elems {
         app.auto.add(&id, r, &l);
     }

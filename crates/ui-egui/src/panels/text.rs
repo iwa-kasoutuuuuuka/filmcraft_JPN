@@ -14,31 +14,33 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
-const TABS: [&str; 3] = ["Transcript", "Captions", "Graphics"];
+/// (tab id and English label, Japanese label)
+const TABS: [(&str, &str); 3] = [("Transcript", "文字起こし"), ("Captions", "キャプション"), ("Graphics", "グラフィックス")];
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     ui.painter().rect_filled(rect, 0.0, t.panel_bg);
     // tabs
     let mut x = rect.min.x + 12.0;
-    for tab in TABS {
-        let w = tab.len() as f32 * 7.0 + 16.0;
+    for (tab_id, tab_ja) in TABS {
+        let tab_label = crate::i18n::t(tab_id, tab_ja);
+        let w = tab_label.len() as f32 * 5.0 + 24.0;
         let r = Rect::from_min_size(pos2(x, rect.min.y + 4.0), vec2(w, 24.0));
-        let resp = ui.interact(r, egui::Id::new(("text-tab", tab)), Sense::click());
-        let active = app.ui.text_tab == tab;
+        let resp = ui.interact(r, egui::Id::new(("text-tab", tab_id)), Sense::click());
+        let active = app.ui.text_tab == tab_id;
         ui.painter().text(
             pos2(r.min.x, r.center().y),
             Align2::LEFT_CENTER,
-            tab,
+            tab_label,
             if active { Tokens::semibold(12.5) } else { Tokens::ui(12.5) },
             if active { t.text } else { t.text_dim },
         );
         if active {
             ui.painter().line_segment([pos2(r.min.x, r.max.y), pos2(r.min.x + w - 16.0, r.max.y)], Stroke::new(2.0, t.text));
         }
-        app.auto.add(&format!("text.tab.{tab}"), r, tab);
+        app.auto.add(&format!("text.tab.{tab_id}"), r, tab_id);
         if resp.clicked() {
-            app.ui.text_tab = tab.to_string();
+            app.ui.text_tab = tab_id.to_string();
         }
         x += w + 6.0;
     }
@@ -46,7 +48,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     match app.ui.text_tab.as_str() {
         "Captions" => captions(app, ui, body),
         "Transcript" => transcript(app, ui, body),
-        _ => crate::dock::placeholder(ui, body, &t, "Graphics text search arrives with M10.1–M10.2"),
+        _ => crate::dock::placeholder(
+            ui,
+            body,
+            &t,
+            crate::i18n::t("Graphics text search arrives with M10.1–M10.2", "グラフィックテキストの検索は今後のアップデートで対応予定です"),
+        ),
     }
 }
 
@@ -64,25 +71,33 @@ fn tool_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, icon: Icon, i
 fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some(seq) = app.session.active_sequence().cloned() else {
-        crate::dock::placeholder(ui, rect, &t, "Open a sequence to work with captions");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("Open a sequence to work with captions", "キャプションを操作するにはシーケンスを開いてください"));
         return;
     };
     let mut actions: Vec<(String, Value)> = Vec::new();
     if seq.caption_tracks.is_empty() {
         let c = rect.center();
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
-        ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, "Add captions", Tokens::semibold(16.0), t.text);
-        ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, "Create a caption track or import a caption file.", Tokens::ui(12.0), t.text_dim);
-        for (i, (id, label, cmd)) in
-            [("text.captions.newTrack", "Create new caption track", "captions.newTrack"), ("text.captions.import", "Import captions file…", "captions.import")]
-                .into_iter()
-                .enumerate()
+        ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, crate::i18n::t("Add captions", "キャプションを追加"), Tokens::semibold(16.0), t.text);
+        ui.painter().text(
+            c - vec2(0.0, 8.0),
+            Align2::CENTER_CENTER,
+            crate::i18n::t("Create a caption track or import a caption file.", "キャプショントラックを作成するか、キャプションファイルを読み込みます。"),
+            Tokens::ui(12.0),
+            t.text_dim,
+        );
+        for (i, (id, en, ja, cmd)) in [
+            ("text.captions.newTrack", "Create new caption track", "新規キャプショントラックを作成", "captions.newTrack"),
+            ("text.captions.import", "Import captions file…", "キャプションファイルを読み込み…", "captions.import"),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let r = Rect::from_center_size(c + vec2(0.0, 26.0 + i as f32 * 34.0), vec2(200.0, 26.0));
             let resp = ui.interact(r, egui::Id::new(id), Sense::click());
             ui.painter().rect_filled(r, 13.0, if i == 0 { if resp.hovered() { t.accent_hover } else { t.accent } } else { t.field_bg });
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, label, Tokens::semibold(12.0), Color32::WHITE);
-            app.auto.add(id, r, label);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, crate::i18n::t(en, ja), Tokens::semibold(12.0), Color32::WHITE);
+            app.auto.add(id, r, en);
             if resp.clicked() {
                 actions.push((cmd.into(), json!({})));
             }
@@ -102,7 +117,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- toolbar: search, track picker, add / split / merge / delete
     let bar = Rect::from_min_size(rect.min + vec2(10.0, 2.0), vec2(rect.width() - 20.0, 26.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(bar.min, vec2(170.0f32.min(bar.width() * 0.4), 24.0))));
-    let sresp = crate::widgets::search_field(&mut child, &mut app.ui.caption_search, "Search", 170.0f32.min(bar.width() * 0.4), &t);
+    let sresp = crate::widgets::search_field(&mut child, &mut app.ui.caption_search, crate::i18n::t("Search", "検索"), 170.0f32.min(bar.width() * 0.4), &t);
     app.auto.add("text.captions.search", sresp.rect, "Search captions");
     let mut x = bar.min.x + 180.0f32.min(bar.width() * 0.4 + 10.0);
     let picker = Rect::from_min_size(pos2(x, bar.min.y + 1.0), vec2(130.0, 22.0));
@@ -117,7 +132,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         ui.separator();
         for f in CaptionFormat::ALL {
-            if ui.button(format!("New {} track", f.label())).clicked() {
+            if ui.button(crate::tf!("New {} track", "新規 {} トラック", f.label())).clicked() {
                 actions.push(("captions.newTrack".into(), json!({"format": f.label()})));
             }
         }
@@ -127,18 +142,39 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let any_sel = !sel.is_empty();
     let under = track.caption_at(ph).filter(|c| c.start < ph).map(|c| c.id);
     let tools: [(Icon, &str, &str, bool, &str, Value); 5] = [
-        (Icon::Plus, "text.captions.add", "Add caption at playhead", track.caption_at(ph).is_none(), "captions.add", json!({"track": track.id.0})),
+        (
+            Icon::Plus,
+            "text.captions.add",
+            crate::i18n::t("Add caption at playhead", "再生ヘッドの位置にキャプションを追加"),
+            track.caption_at(ph).is_none(),
+            "captions.add",
+            json!({"track": track.id.0}),
+        ),
         (
             Icon::Razor,
             "text.captions.split",
-            "Split caption at playhead",
+            crate::i18n::t("Split caption at playhead", "再生ヘッドの位置でキャプションを分割"),
             under.is_some(),
             "captions.split",
             json!({"caption": under.map(|c| c.0), "time": ph.0}),
         ),
-        (Icon::Link, "text.captions.merge", "Merge selected captions", sel.len() > 1, "captions.merge", json!({})),
-        (Icon::Trash, "text.captions.delete", "Delete selected captions", any_sel, "captions.delete", json!({})),
-        (Icon::Export, "text.captions.export", "Export captions…", !track.captions.is_empty(), "captions.export", json!({"track": track.id.0})),
+        (
+            Icon::Link,
+            "text.captions.merge",
+            crate::i18n::t("Merge selected captions", "選択したキャプションを結合"),
+            sel.len() > 1,
+            "captions.merge",
+            json!({}),
+        ),
+        (Icon::Trash, "text.captions.delete", crate::i18n::t("Delete selected captions", "選択したキャプションを削除"), any_sel, "captions.delete", json!({})),
+        (
+            Icon::Export,
+            "text.captions.export",
+            crate::i18n::t("Export captions…", "キャプションを書き出し…"),
+            !track.captions.is_empty(),
+            "captions.export",
+            json!({"track": track.id.0}),
+        ),
     ];
     for (icon, id, label, enabled, cmd, params) in tools {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
@@ -252,8 +288,15 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         if shown == 0 {
             ui.label(
-                egui::RichText::new(if q.is_empty() { "No captions on this track. Press + to add one at the playhead." } else { "No matching captions." })
-                    .color(t.text_faint),
+                egui::RichText::new(if q.is_empty() {
+                    crate::i18n::t(
+                        "No captions on this track. Press + to add one at the playhead.",
+                        "このトラックにキャプションはありません。+ を押して再生ヘッド位置に追加します。",
+                    )
+                } else {
+                    crate::i18n::t("No matching captions.", "一致するキャプションはありません。")
+                })
+                .color(t.text_faint),
             );
         }
     });
@@ -263,7 +306,7 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     if app.session.active_sequence().is_none() {
-        crate::dock::placeholder(ui, rect, &t, "Open a sequence to see its transcript");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("Open a sequence to see its transcript", "文字起こしを表示するにはシーケンスを開いてください"));
         return;
     }
     let mut actions: Vec<(String, Value)> = Vec::new();
@@ -271,17 +314,26 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if words.is_empty() {
         let c = rect.center();
         icons::paint(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0), vec2(40.0, 40.0)), Icon::Captions, t.text_dim);
-        ui.painter().text(c - vec2(0.0, 30.0), Align2::CENTER_CENTER, "Transcribe sequence", Tokens::semibold(16.0), t.text);
+        ui.painter().text(
+            c - vec2(0.0, 30.0),
+            Align2::CENTER_CENTER,
+            crate::i18n::t("Transcribe sequence", "シーケンスを文字起こし"),
+            Tokens::semibold(16.0),
+            t.text,
+        );
         let note = if filmcraft_speech_available(app) {
-            "Speech-to-text turns the dialogue into editable text."
+            crate::i18n::t("Speech-to-text turns the dialogue into editable text.", "音声を自動認識して編集可能なテキストに変換します。")
         } else {
-            "This build has no speech-to-text; import a transcript with transcript.set."
+            crate::i18n::t(
+                "This build has no speech-to-text; import a transcript with transcript.set.",
+                "このビルドでは音声認識エンジンが未搭載です。transcript.set で文字起こしを読み込んでください。",
+            )
         };
         ui.painter().text(c - vec2(0.0, 8.0), Align2::CENTER_CENTER, note, Tokens::ui(12.0), t.text_dim);
         let r = Rect::from_center_size(c + vec2(0.0, 26.0), vec2(200.0, 26.0));
         let resp = ui.interact(r, egui::Id::new("text.transcript.generate"), Sense::click());
         ui.painter().rect_filled(r, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-        ui.painter().text(r.center(), Align2::CENTER_CENTER, "Transcribe", Tokens::semibold(12.0), Color32::WHITE);
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, crate::i18n::t("Transcribe", "文字起こしを開始"), Tokens::semibold(12.0), Color32::WHITE);
         app.auto.add("text.transcript.generate", r, "Transcribe");
         if resp.clicked() {
             actions.push(("transcript.generate".into(), json!({})));
@@ -296,16 +348,52 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let bar = Rect::from_min_size(rect.min + vec2(10.0, 2.0), vec2(rect.width() - 20.0, 26.0));
     let sw = 170.0f32.min(bar.width() * 0.4);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(bar.min, vec2(sw, 24.0))));
-    let sresp = crate::widgets::search_field(&mut child, &mut app.ui.transcript_search, "Search", sw, &t);
+    let sresp = crate::widgets::search_field(&mut child, &mut app.ui.transcript_search, crate::i18n::t("Search", "検索"), sw, &t);
     app.auto.add("text.transcript.search", sresp.rect, "Search transcript");
     let hits: Vec<std::ops::Range<usize>> = filmcraft_edit::transcript::search(&words, &app.ui.transcript_search);
     let mut x = bar.min.x + sw + 10.0;
     let range = sel.map(|(a, b)| json!({"from": a.min(b), "to": a.max(b)}));
-    let tools: [(Icon, &str, &str, bool, &str, Value); 4] = [
-        (Icon::Razor, "text.transcript.extract", "Extract selected text", sel.is_some(), "transcript.extract", range.clone().unwrap_or_default()),
-        (Icon::Trash, "text.transcript.lift", "Lift selected text", sel.is_some(), "transcript.lift", range.unwrap_or_default()),
-        (Icon::Link, "text.transcript.removeFillers", "Remove filler words", true, "transcript.removeFillers", json!({})),
-        (Icon::Captions, "text.transcript.createCaptions", "Create captions", true, "transcript.createCaptions", json!({})),
+    let tools: [(Icon, &str, &str, bool, &str, Value); 5] = [
+        (
+            Icon::Razor,
+            "text.transcript.extract",
+            crate::i18n::t("Extract selected text", "選択テキストを抽出（ギャップを詰める）"),
+            sel.is_some(),
+            "transcript.extract",
+            range.clone().unwrap_or_default(),
+        ),
+        (
+            Icon::Trash,
+            "text.transcript.lift",
+            crate::i18n::t("Lift selected text", "選択テキストをリフト（ギャップを残す）"),
+            sel.is_some(),
+            "transcript.lift",
+            range.unwrap_or_default(),
+        ),
+        (
+            Icon::Clock,
+            "text.transcript.removePauses",
+            crate::i18n::t("Remove pauses", "無音区間を削除"),
+            true,
+            "transcript.removePauses",
+            json!({"minSeconds": 0.5, "keepSeconds": 0.1}),
+        ),
+        (
+            Icon::Link,
+            "text.transcript.removeFillers",
+            crate::i18n::t("Remove filler words", "フィラーワードを削除"),
+            true,
+            "transcript.removeFillers",
+            json!({}),
+        ),
+        (
+            Icon::Captions,
+            "text.transcript.createCaptions",
+            crate::i18n::t("Create captions", "キャプションを作成"),
+            true,
+            "transcript.createCaptions",
+            json!({}),
+        ),
     ];
     for (icon, id, label, enabled, cmd, params) in tools {
         let r = Rect::from_min_size(pos2(x, bar.min.y), vec2(24.0, 24.0));
@@ -334,7 +422,11 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.set_width(list.width() - 16.0);
         for (pi, pr) in paras.iter().enumerate() {
             let w0 = &words[pr.start];
-            let head = format!("{}  {}", w0.speaker.as_deref().unwrap_or("Speaker"), format_time(w0.start, rate, df, TimeDisplay::Timecode, 48_000));
+            let head = format!(
+                "{}  {}",
+                w0.speaker.as_deref().unwrap_or(crate::i18n::t("Speaker", "話者")),
+                format_time(w0.start, rate, df, TimeDisplay::Timecode, 48_000)
+            );
             let hr = ui.label(egui::RichText::new(head).size(11.0).color(t.text_dim).strong());
             app.auto.add(&format!("text.transcript.paragraph.{pi}"), hr.rect, "Paragraph");
             ui.horizontal_wrapped(|ui| {
@@ -392,22 +484,24 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "color": c})));
         }
         let mut bg = st.background;
-        let resp = ui.checkbox(&mut bg, "Box");
+        let resp = ui.checkbox(&mut bg, crate::i18n::t("Box", "背景ボックス"));
         app.auto.add("text.captions.style.background", resp.rect, "Background box");
         if resp.changed() {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "background": bg})));
         }
-        ui.label(egui::RichText::new("Align").size(11.0).color(app.tokens.text_dim));
-        for (a, icon_txt, name) in [(CaptionAlign::Left, "L", "left"), (CaptionAlign::Center, "C", "center"), (CaptionAlign::Right, "R", "right")] {
-            let resp = ui.selectable_label(st.align == a, icon_txt).on_hover_text(format!("Align {name}"));
+        ui.label(egui::RichText::new(crate::i18n::t("Align", "配置")).size(11.0).color(app.tokens.text_dim));
+        for (a, icon_txt, name, label_jp) in
+            [(CaptionAlign::Left, "L", "left", "左揃え"), (CaptionAlign::Center, "C", "center", "中央揃え"), (CaptionAlign::Right, "R", "right", "右揃え")]
+        {
+            let resp = ui.selectable_label(st.align == a, icon_txt).on_hover_text(crate::tf!("Align {name}", "配置: {label_jp}"));
             app.auto.add(&format!("text.captions.style.align.{name}"), resp.rect, name);
             if resp.clicked() {
                 actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "align": name})));
             }
         }
-        ui.label(egui::RichText::new("Position").size(11.0).color(app.tokens.text_dim));
-        for (a, name) in [(CaptionAnchor::Top, "top"), (CaptionAnchor::Middle, "middle"), (CaptionAnchor::Bottom, "bottom")] {
-            let resp = ui.selectable_label(st.anchor == a, name[..1].to_uppercase()).on_hover_text(format!("Position: {name}"));
+        ui.label(egui::RichText::new(crate::i18n::t("Position", "位置")).size(11.0).color(app.tokens.text_dim));
+        for (a, name, label_jp) in [(CaptionAnchor::Top, "top", "上"), (CaptionAnchor::Middle, "middle", "中央"), (CaptionAnchor::Bottom, "bottom", "下")] {
+            let resp = ui.selectable_label(st.anchor == a, name[..1].to_uppercase()).on_hover_text(crate::tf!("Position: {name}", "位置: {label_jp}"));
             app.auto.add(&format!("text.captions.style.anchor.{name}"), resp.rect, name);
             if resp.clicked() {
                 actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "anchor": name})));

@@ -77,7 +77,7 @@ pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &To
     ui.painter().text(
         pos2(rect.min.x + 20.0, rect.center().y),
         Align2::LEFT_CENTER,
-        title,
+        crate::i18n::tr_ui(title),
         if bold { Tokens::semibold(12.0) } else { Tokens::ui(12.0) },
         t.text,
     );
@@ -124,7 +124,8 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32, t: &
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 12.0, rect.center().y), vec2(12.0, 12.0)), Icon::Search, t.text_dim);
     let inner = Rect::from_min_max(pos2(rect.min.x + 22.0, rect.min.y + 2.0), pos2(rect.max.x - 8.0, rect.max.y - 2.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-    let resp = child.add(egui::TextEdit::singleline(text).hint_text(hint).frame(egui::Frame::NONE).desired_width(inner.width()).font(Tokens::ui(12.0)));
+    let resp = child
+        .add(egui::TextEdit::singleline(text).hint_text(crate::i18n::tr_ui(hint)).frame(egui::Frame::NONE).desired_width(inner.width()).font(Tokens::ui(12.0)));
     // Select Find Box (Shift+F) / Open Search (Cmd+Shift+F)
     crate::panels::keyboard::take_search_focus(ui, rect, &resp);
     resp
@@ -141,7 +142,7 @@ pub fn dropdown_text(ui: &mut Ui, rect: Rect, text: &str, t: &Tokens, id: egui::
         Stroke::new(1.0, if resp.hovered() { Color32::from_rgb(0x4b, 0x4b, 0x4b) } else { t.field_border }),
         StrokeKind::Inside,
     );
-    ui.painter().text(pos2(rect.min.x + 9.0, rect.center().y), Align2::LEFT_CENTER, text, Tokens::ui(12.0), t.text);
+    ui.painter().text(pos2(rect.min.x + 9.0, rect.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(text), Tokens::ui(12.0), t.text);
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 11.0, rect.center().y), vec2(9.0, 9.0)), Icon::ChevronDown, t.text_dim);
     resp
 }
