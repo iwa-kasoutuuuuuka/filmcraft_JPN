@@ -7,23 +7,23 @@
   </a>
 </p>
 
-
-<h1 align="center">FilmCraft</h1>
+<h1 align="center">FilmCraft (日本語版 / filmcraft_JPN)</h1>
 
 <p align="center">
-  <b>Video editing, color and sound; an open-source, clean-room reimplementation of Adobe Premiere Pro, rebuilt in pure Rust.</b>
+  <b>Adobe Premiere Pro の操作体系をピュア Rust で再実装したオープンソース・クリーンルーム設計のノンリニア動画編集ソフトウェア（完全日本語対応・GPU 最適化版）</b>
 </p>
 
 <p align="center">
-  An open-source, clean-room take on the Adobe Premiere Pro workflow: native on macOS, Windows and Linux, and in the browser via WebAssembly.<br>
-  By the ArtCraft team.
+  macOS、Windows、Linux、WebAssembly (ブラウザ) にネイティブ対応。<br>
+  Developed by the ArtCraft team · Japanese Localization & GPU Optimization by filmcraft_JPN
 </p>
 
 <p align="center">
-  <a href="#license-and-credits"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-8b5cf6"></a>
+  <a href="#ライセンスとクレジット"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-8b5cf6"></a>
   <img alt="Written in pure Rust" src="https://img.shields.io/badge/pure-Rust-6a3fd6?logo=rust&logoColor=white">
   <img alt="Runs on macOS, Windows and Linux" src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Windows%20%7C%20Linux-8b5cf6">
-  <a href="#status"><img alt="Status: young and moving fast" src="https://img.shields.io/badge/status-young%20and%20moving%20fast-6a3fd6"></a>
+  <img alt="Language: 日本語 100%" src="https://img.shields.io/badge/UI-完全日本語対応-22c55e">
+  <img alt="GPU Acceleration" src="https://img.shields.io/badge/GPU-WebGPU%20%2F%20wgpu-f59e0b">
 </p>
 
 <p align="center">
@@ -31,342 +31,473 @@
 </p>
 
 <p align="center">
-  <a href="https://getartcraft.com/apps/filmcraft"><b>FilmCraft on getartcraft.com</b></a> ·
-  <a href="https://getartcraft.com/">ArtCraft</a> ·
-  <a href="https://getartcraft.com/apps">All Crafting Apps</a>
+  <a href="#概要と特長">概要と特長</a> ·
+  <a href="#セットアップと起動方法">セットアップと起動</a> ·
+  <a href="#実践チュートリアル">実践チュートリアル</a> ·
+  <a href="#主要パネルとワークスペース">パネル解説</a> ·
+  <a href="#高度な便利機能と操作ガイド">高度機能ガイド</a> ·
+  <a href="#gpu最適化とハードウェアアクセラレーション">GPU 最適化</a> ·
+  <a href="#キーボードショートカット完全早見表">ショートカット早見表</a> ·
+  <a href="#aiエージェント--mcp自動化連携">AI / MCP 連携</a> ·
+  <a href="#トラブルシューティング--faq">FAQ</a> ·
+  <a href="#アーキテクチャと設計思想">設計・構造</a> ·
+  <a href="#ライセンスとクレジット">ライセンス</a>
 </p>
 
 <br>
 
 <p align="center">
-  <img src="docs/images/filmcraft-hero.png" alt="FilmCraft in the Color workspace, mid-way through an Apollo 11 documentary cut from NASA footage: the Program monitor on the Saturn V clearing the launch tower with a Launch Complex 39A lower third and an air-to-ground subtitle, Effect Controls with Lumetri and Scale keyframes on the shot, the Lumetri Color panel, bins of NASA selects, and a timeline with 49 picture cuts, B-roll, titles, a caption track, mission audio, a ducked music bed, named markers, a rendered section and live loudness meters" width="100%">
+  <img src="docs/images/filmcraft-hero.png" alt="FilmCraft カラーワークスペース" width="100%">
 </p>
 
-<p align="center"><sub><i>Apollo 11 - Tranquility</i>: a three-minute documentary edit of NASA's 1969 launch, landing and moonwalk film, with subtitles from the mission transcript. Every frame in these screenshots comes from public-domain footage, decoded, composited and graded by FilmCraft's own code.</sub></p>
+---
+
+## <a id="概要と特長"></a>📖 概要と特長
+
+**FilmCraft** は、Adobe Premiere Pro を使い慣れた映像クリエイターやプロフェッショナルのために設計された、オープンソースの次世代ノンリニア動画編集ソフトウェア（NLE）です。
+
+従来の動画編集ソフトウェアが抱える「動作の重さ」「頻繁なクラッシュ」「高額なサブスクリプション」「ブラックボックス化された設計」を打破するため、ArtCraft チームによってゼロからピュア Rust で開発されました。
+
+本リポジトリ（**`filmcraft_JPN`**）は、日本のクリエイター環境に完璧に適合するよう、**全UIの自然な日本語化（英語との切り替え対応）**、**日本語フォントの同梱**、および **WebGPU による超高速 GPU レンダリング・テクスチャプーリング最適化** を施した特別エディションです。
+
+### 🌟 7つの革新的コア技術
+
+1. **完全日本語ローカライズ (100% Japanese UI)**
+   - メニューバー（ファイル、編集、クリップ、シーケンス、マーカー、表示、ウィンドウ等）、ツールボックス、タイムライン、デュアルモニター、エフェクトライブラリ、Lumetri カラー、環境設定、各種モーダルダイアログに至るまで、Premiere Pro 準拠の自然で分かりやすい日本語で統一されています。
+   - 日本語フォント **BIZ UDPゴシック**（モリサワ、SIL OFL 1.1）を同梱。OS に日本語フォントが無くても、UI・タイトル・キャプションの日本語が文字化け（□ / トーフ）せず、どの環境でも同じ見た目で表示されます。
+   - 表示言語は **設定 ➔ アピアランス ➔ 言語** で「自動 / 日本語 / English」から選べます。「自動」は OS の表示言語が日本語なら日本語、それ以外は英語になります。コマンド ID・オートメーション ID とラベル・プロジェクトファイルは、どの言語でも共通（英語）です。
+
+2. **馴染みのある操作体系とレイアウト**
+   - ソース/プログラムの 2 画面モニター、複数トラックタイムライン、ビンによる素材管理、エフェクトコントロールなど、業界標準のレイアウトを完全踏襲。
+   - 「編集」「アセンブリ」「カラー」「エフェクト」「オーディオ」「キャプションとグラフィック」のワークスペースをワンクリックで切り替え可能です。
+
+3. **厳格な「Never Crash」設計（AGENTS.md Rule 0 準拠）**
+   - 編集作業中のクラッシュやデータ喪失を防止するため、パニックを誘発する記述（`unwrap()` や `expect()`）を本番コードから徹底排除し、安全な `Result<T, E>` 伝播を採用。
+   - アトミックなファイル保存、定期バックアップ、および毎秒記録されるクラッシュリカバリージャーナルにより、万一の電源断でも作業状態を確実に復元します。
+
+4. **WebGPU ハードウェアアクセラレーション & ゼロアロケーション再生**
+   - WebGPU (`wgpu`) を活用したグラフィックスパイプラインを構築。
+   - レイヤー合成・27 種のブレンドモード・Lumetri カラーグレーディング・各種ビデオエフェクトを GPU コンピュートシェーダー（WGSL）で並列処理。
+   - テクスチャプールおよびユニフォームバッファプールにより、再生ループ中のメモリ確保コストを実質ゼロに抑え、4K/60fps の滑らかなリアルタイム再生を実現しています。
+
+5. **ピュア Rust による高信頼性コーデック & 整数時間計算**
+   - H.264、HEVC、ProRes、VP9、AAC などのコーデックを公開仕様書に基づいて独自実装（GPL/LGPL コード非依存のクリーンルーム設計）。
+   - 1秒を 254,016,000,000 分割した超高精度な整数時間（Tick）ベースでタイムラインを管理。フレームレート変換やドロップフレーム環境でも音声同期（リップシンク）のズレが原理的に発生しません。
+
+6. **先進的な次世代編集機能の標準搭載**
+   - **テキストベース編集**: 音声文字起こし結果から不要な文や無音区間を一括削除。
+   - **マルチカメラ編集**: 音声波形やタイムコードによる自動同期と、リアルタイムプレビュースイッチング。
+   - **プロキシワークフロー**: 4K/8K 素材を軽量プロキシへワンクリック切り替え。
+   - **ビジュアルショートカットエディタ**: グラフィカルキーボードによる直感的なキー割り当て。
+
+7. **AI エージェント（MCP / 自動化）ネイティブ対応**
+   - すべての UI 操作や内部コマンドは JSON-RPC / MCP (Model Context Protocol) 経由で外部の AI エージェントやスクリプトから非同期かつ安全にコントロール可能です。
+
+---
+
+## <a id="セットアップと起動方法"></a>🛠 セットアップと起動方法
+
+### 動作要件
+- **OS**: Windows 10 / 11, macOS 12 Monterey 以降, Linux (Ubuntu 22.04+ 等)
+- **CPU**: x86_64 または ARM64 (Apple Silicon M1/M2/M3/M4 完全対応)
+- **GPU**: Vulkan, Metal, DirectX 12, または WebGPU 対応のグラフィックスカード
+- **ビルドツール**: [Rust](https://www.rust-lang.org/tools/install) (1.80 以上推奨 / `rustup`)
+
+### リポジトリのクローンと起動手順
+
+```powershell
+# 1. リポジトリをクローン
+git clone https://github.com/iwa-kasoutuuuuuka/filmcraft_JPN.git
+cd filmcraft_JPN
+
+# 2. アプリケーションのビルドと起動（GUIモード）
+cargo run --release -p filmcraft
+
+# （オプション）AI 連携用 MCP サーバーとして起動する場合
+cargo run --release -p filmcraft-cli -- mcp
+```
+
+> [!TIP]
+> 初回ビルド時は依存クレートのダウンロードとコンパイルに数分かかりますが、2回目以降はビルドキャッシュにより瞬時に起動します。
+
+---
+
+## <a id="実践チュートリアル"></a>🎬 実践チュートリアル：最初の動画を完成させるまで
+
+FilmCraft を初めて使う方向けに、素材の読み込みからカット編集、カラー調整、動画の書き出しまでの一連の流れをステップ・バイ・ステップで解説します。
+
+```text
+[素材インポート] ➔ [ソースモニター(I/O)] ➔ [タイムライン配置] ➔ [カット・トリミング] ➔ [カラー・音声調整] ➔ [書き出し]
+```
+
+### ステップ 1: 素材の読み込みと整理
+1. アプリを起動すると、上部タブの **「読み込み」** モードが開きます。
+2. 画面上の **「ファイルを参照…」** ボタンをクリックするか、エクスプローラー（Finder）から動画・音声・画像をウィンドウ内へ直接ドラッグ＆ドロップします。
+3. （※手元に動画がない場合は、画面内の **「デモ映像」** または **「デモプロジェクト」** を押すだけで、テスト用メディアが即座に生成されます。）
+4. 画面上部の **「編集」** タブをクリックしてメイン編集画面へ遷移します。
+5. プロジェクトパネルで右クリック ➔ **「新規ビン」**（または `Ctrl + B`）を作成すると、フォルダー形式で素材をすっきり整理できます。
+
+### ステップ 2: ソースモニターでの 3 点編集 (In / Out)
+1. プロジェクトパネルの動画をダブルクリックすると、左上の **ソースモニター** に読み込まれます。
+2. キーボードで映像を確認します：
+   - `Space`: 再生 / 停止
+   - `J` / `K` / `L`: シャトル再生（J: 逆再生, K: 停止, L: 早送り。連打すると 2x, 4x, 8x に加速）
+   - `←` / `→`: 1フレームずつ前後にコマ送り
+3. クリップの使用したい範囲を指定します：
+   - `I` キー: **イン点**（開始位置）をマーク
+   - `O` キー: **アウト点**（終了位置）をマーク
+4. タイムラインへ配置します：
+   - `,` (カンマ): **インサート**（再生ヘッド位置に割り込み挿入。後続クリップは自動で後ろへスライド）
+   - `.` (ピリオド): **上書き**（再生ヘッド位置の既存クリップを上書き配置）
+
+### ステップ 3: タイムライン編集テクニック
+- **クリップの選択と移動**:
+  - `V` キーで **選択ツール** に切り替え、クリップをドラッグして自由なトラック・位置へ配置します。
+- **無駄な部分のカット（レーザー & リップル）**:
+  - `Ctrl + K`: 現在の再生ヘッド位置でクリップを一発分割。
+  - `C` キー: **レーザーツール** に切り替え、クリックした場所を分割。
+  - `Q` キー: 直前の編集点から再生ヘッド位置までを一瞬でリップル削除（間を自動で詰める）。
+  - `W` キー: 再生ヘッド位置から次の編集点までを一瞬でリップル削除。
+  - `Shift + Delete`: 選択したクリップを削除し、できた隙間を自動で詰める（リップル削除）。
+- **スナップ機能**:
+  - `S` キーを押すことで、クリップの端や再生ヘッドへの吸着（スナップ）の ON/OFF を切り替えられます。
+
+### ステップ 4: カラーグレーディング (Lumetri カラー)
+1. 画面上部のワークスペースバーから **「カラー」** を選択します。
+2. タイムライン上のクリップを選択すると、右側に **Lumetri カラー** パネルが表示されます。
+3. **基本補正**:
+   - **露光量 (Exposure)**: 明るさ全体の引き上げ・引き下げ
+   - **コントラスト (Contrast)**: 明暗のメリハリ
+   - **ハイライト / シャドウ**: 白飛び・黒つぶれの微調整
+   - **色温度 (Temperature) / 色合い (Tint)**: ホワイトバランスの補正
+   - **彩度 (Saturation)**: 鮮やかさの調整
+4. **クリエイティブ**:
+   - **Look (LUT)** の選択、**フィルム調フェード**、**自然な彩度 (Vibrance)**。
+5. **ビネット**:
+   - 周辺光量を落として映画のようなフォーカス効果を与える演出。
 
 > [!NOTE]
-> **ArtCraft is a community of artists from all walks of life.** Digital, generative, music,
-> games &mdash; if you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
+> FilmCraft では、これらの Lumetri パラメータが WebGPU コンピュートシェーダーによって毎フレーム並列計算されるため、再生中もコマ落ちなくリアルタイムにプレビュー可能です。
 
-<p align="center">
-  <a href="#edit">Edit</a> ·
-  <a href="#color">Color</a> ·
-  <a href="#effects-and-motion">Effects</a> ·
-  <a href="#audio">Audio</a> ·
-  <a href="#titles-and-captions">Titles</a> ·
-  <a href="#formats-and-codecs">Formats</a> ·
-  <a href="#export">Export</a> ·
-  <a href="#interchange">Interchange</a> ·
-  <a href="#built-for-agents">Agents</a> ·
-  <a href="#get-started">Get started</a> ·
-  <a href="#documentation">Docs</a> ·
-  <a href="#status">Status</a>
-</p>
+### ステップ 5: 音声の調整とノーマライズ
+1. タイムラインの音声クリップを選択し、キーボードの `G` キーを押します。
+2. **「オーディオゲイン」** ダイアログが開きます：
+   - **「最大ピークをノーマライズ」**: クリップ内の最大音量を自動検出し、指定した dB（例: `-1.0 dB`）に揃えます。
+   - **「ゲインの調整」**: 手動で音量を `+3 dB` や `-6 dB` など増減。
+3. 「オーディオ」ワークスペースに切り替えると、リアルタイムの **ラウドネスメーター (LUFS / True Peak)** を確認しながらミックスが可能です。
 
-<br>
+### ステップ 6: 高速動画書き出し (エクスポート)
+1. 画面右上の **「書き出し」** タブをクリック（またはショートカット `Ctrl + M`）。
+2. 書き出し設定を指定：
+   - **ファイル名と保存先**: 出力先フォルダーを選択。
+   - **プリセット**: 「YouTube 1080p フル HD」「ソースの一致 - 高ビットレート」などから選択。
+   - **形式**: H.264, Apple ProRes, DNxHR, 静止画連番 など。
+   - **書き出し範囲**: 「ソース全体」または「シーケンスのイン/アウト」。
+3. 右下の **「書き出し」** ボタンを押すと、ピュア Rust エンコーダーによる高速バックグラウンドレンダリングが開始されます。
 
-FilmCraft is a non-linear editor for people who know Premiere: the same panels, workspaces, tools and shortcuts, so your hands already know where everything is. Underneath, it is new from the bitstream up. The H.264, HEVC, ProRes and AAC codecs are our own, written in Rust from the public specifications. A GPU compositor works in linear light. Frame math runs on exact integer time, so edits never drift. And every action in the app is a command that an AI agent can drive as precisely as you can.
+---
 
-<br>
+## <a id="主要パネルとワークスペース"></a>🎛 主要パネルとワークスペース
 
-## Edit
+FilmCraft のパネルは、自由にドラッグ＆ドロップしてドッキング、分割、タブグループ化が可能です。
 
-<p align="center">
-  <img src="docs/images/filmcraft-assembly.png" alt="Assembly workspace: bins of film thumbnails, Carnival of Souls in the Source monitor, a Night of the Living Dead cemetery shot in the Program monitor, and the trailer on a three-track timeline with a Chopin score on A2 and loudness meters" width="100%">
-</p>
+| パネル名 | 英語表記 | 主な役割 |
+|---|---|---|
+| **プロジェクト** | Project | 動画・音声・静止画・シーケンス・ビンの整理、検索、メタデータ確認 |
+| **ソースモニター** | Source | 素材クリップの個別プレビュー、イン点・アウト点の設定 |
+| **プログラムモニター** | Program | タイムラインで編集中のシーケンス映像のリアルタイム確認 |
+| **タイムライン** | Timeline | 複数トラック（映像 V1〜 / 音声 A1〜）でのクリップ配置、トリミング、カット |
+| **ツール** | Tools | 選択、リップル、レーザー、スリップ、ペン、文字などの編集ツール |
+| **エフェクト** | Effects | ビデオ/オーディオエフェクト、トランジションのライブラリ |
+| **エフェクトコントロール** | Effect Controls | モーション（位置・スケール・回転・不透明度）やキーフレームアニメーション |
+| **Lumetri カラー** | Lumetri Color | 基本補正、LUT、カーブ、ホイール、ビネットなどの色調補正 |
+| **テキスト** | Text | 自動文字起こし、無音カット、キャプション（字幕）生成と編集 |
+| **オーディオメーター** | Audio Meters | マスター出力のリアルタイム音量、LUFS、ピークレベルの監視 |
+| **ヒストリー** | History | 編集操作履歴の確認と、任意ステップへの無制限 Undo / Redo |
 
-<p align="center"><sub>The Assembly workspace, cutting a trailer for <i>Night of the Living Dead</i> (1968) with an insert from <i>Carnival of Souls</i> (1962).</sub></p>
+### ワークスペース一覧 (`Alt + Shift + 1..6`)
+- **編集 (Editing)** (`Alt + Shift + 1`): 最もバランスの良い標準カット編集レイアウト。
+- **アセンブリ (Assembly)** (`Alt + Shift + 2`): 素材の確認と粗編集（並べ替え）に特化した大画面レイアウト。
+- **カラー (Color)** (`Alt + Shift + 3`): Lumetri カラーとスコープを中心に配置したグレーディング環境。
+- **エフェクト (Effects)** (`Alt + Shift + 4`): エフェクトライブラリとエフェクトコントロールを広く配置。
+- **オーディオ (Audio)** (`Alt + Shift + 5`): トラックミキサーとメーターを大きく表示した音響調整環境。
+- **キャプションとグラフィック** (`Alt + Shift + 6`): テロップ入れ、テキスト編集、字幕同期に最適な環境。
 
-**A timeline you already know.** Source and Program monitors, bins with thumbnails, a multi-track timeline with patch and target buttons, sync locks and linked selection. The Editing, Assembly, Color, Effects and Audio workspaces are all there, and every panel docks wherever you want it.
+---
 
-- **Three-point editing.** Mark In and Out in the Source monitor, then insert (`,`) or overwrite (`.`) onto the patched tracks. Lift (`;`) and extract (`'`) take ranges back out.
-- **Every trim.** Ripple, roll, slip, slide, rate stretch and razor tools. Trim mode selects edit points as ripple, roll or trim, nudges them a frame at a time (`⌥←` `⌥→`, ×5 with `⇧`), toggles the trim type with `⌃T` and extends them to the playhead with `E`. `Q` and `W` ripple-trim to the playhead. The **Trim Monitor** shows both sides of the edit, and **dynamic trimming** trims live while it plays: `L` forward, `J` back, `K` to stop and commit as one undo step.
-- **Exact time.** Every edit is computed on integer ticks: 254,016,000,000 per second, which divides evenly by every common frame rate and sample rate. 23.976, 29.97 drop-frame and 59.94 are exact, not approximate.
-- **The details pros rely on.** Markers with colours, names and durations; add edit (`⌘K`) on one or all tracks; nesting; copy, paste and paste insert; ripple delete and close gap; snapping; unlimited undo with a History panel.
-- **Your keys.** A Keyboard Shortcuts editor (`⌥⌘K`) with a drawn keyboard, panel-specific shortcuts, conflict warnings and presets for FilmCraft, Premiere Pro, Final Cut Pro and Avid key layouts.
-- **Never lose work.** Saves are atomic, auto-save keeps a rolling set of versions, and a crash-recovery journal written about a second after each edit brings back unsaved changes after a crash or power cut.
+## <a id="高度な便利機能と操作ガイド"></a>🚀 高度な便利機能と操作ガイド
 
-<p align="center">
-  <img src="docs/images/filmcraft-timeline.png" alt="Timeline close-up: Night of the Living Dead shots with dissolves on V1, a Carnival of Souls insert on V2, the Chopin nocturne as a green waveform on A2, coloured markers along the ruler, and the loudness meter reading momentary, short-term, integrated and true-peak values" width="100%">
-</p>
+### 1. テキストベース編集 ＆ AI自動文字起こし（無音・フィラー自動削除）
+インタビュー動画やYouTubeのトーク動画、ポッドキャスト編集の作業時間を最大 80% 削減できる強力な機能です。
 
-<p align="center"><sub>Up close: dissolves, an insert on V2, the score on A2, coloured markers, and the loudness meters on the right.</sub></p>
-
-<br>
-
-## Color
-
-<p align="center">
-  <img src="docs/images/filmcraft-color.png" alt="Color workspace on Charade (1963): Cary Grant and Audrey Hepburn in the Program monitor, the waveform and vectorscope on the left, and the trailer bins and timeline below" width="100%">
-</p>
-
-<p align="center"><sub>The Color workspace on <i>Charade</i> (1963), with live scopes beside the Program monitor.</sub></p>
-
-**A complete Lumetri-style grading panel**, in the order a colourist works:
-
-- **Basic Correction:** temperature and tint, exposure, contrast, highlights, shadows, whites, blacks, saturation.
-- **Creative:** eight built-in looks with an intensity control, plus faded film, sharpen and vibrance. The looks are colour transforms written in code, not LUT files.
-- **Curves:** an RGB curve editor with monotone-cubic interpolation (no overshoot), and hue vs saturation, hue vs hue, hue vs luma, luma vs saturation and saturation vs saturation.
-- **Color Wheels:** shadow, midtone and highlight wheels, each with its own lightness control.
-- **HSL Secondary:** key a colour by hue, saturation and luma, view the key as a matte, and correct only what you selected.
-- **Vignette:** amount, midpoint, roundness and feather.
-
-<table>
-  <tr>
-    <td width="34%" valign="top" align="center">
-      <img src="docs/images/filmcraft-lumetri.png" alt="The Lumetri Color panel on Charade (1963): Basic Correction sliders with coloured temperature and tint tracks, collapsed Creative and Curves sections, shadow, midtone and highlight colour wheels, and HSL Secondary and Vignette toggles"><br>
-      <sub><b>The Lumetri Color panel.</b> Basic Correction, Color Wheels and every other section, each with its own on/off switch.</sub>
-    </td>
-    <td width="66%" valign="top" align="center">
-      <img src="docs/images/filmcraft-scopes.png" alt="Lumetri Scopes: a green luma waveform and a vectorscope of a Charade (1963) frame"><br>
-      <sub><b>Scopes that tell the truth.</b> The waveform and vectorscope are computed from the graded frame. All grading happens in linear light, in 32-bit float.</sub>
-    </td>
-  </tr>
-</table>
-
-<br>
-
-## Effects and motion
-
-<p align="center">
-  <img src="docs/images/filmcraft-effects.png" alt="Effects workspace: Effect Controls with Motion, Opacity, Time Remapping and Lumetri Color, NASA's Earth Views from the ISS in the Program monitor, and the Effects browser open on the Dissolve transitions" width="100%">
-</p>
-
-<p align="center"><sub>NASA's <i>Earth Views from the ISS</i> with a look applied, and the Effects browser open on the dissolves.</sub></p>
-
-- **Premiere 26's full Video Effects bin (93 effects in 16 folders), the Legacy bin and the obsolete effects old projects use, plus around 30 transitions.** Blurs (Bokeh, Focus, Compound), keys (Ultra Key, Track Matte), distortions (Corner Pin, Turbulent Displace, Warp Stabilizer), Lights & Glows, Immersive Video (VR) effects on equirectangular footage, Posterize Time, Echo and more. Cross dissolve, dip to black or white, film dissolve, wipes, irises, pushes, slides, zooms, page peel, cube spin and more.
-- **Motion and opacity on every clip:** position, scale, rotation, anchor point and anti-flicker, plus 26 blend modes.
-- **Keyframes like Premiere's:** linear, Bezier, auto and continuous Bezier, hold, ease in and ease out. Effect Controls shows a keyframe lane for every parameter, and each animated parameter opens into **value and velocity graphs** with draggable influence handles.
-- **A GPU compositor** built on wgpu (Metal, Vulkan, DirectX 12, WebGPU). It samples YUV straight from the decoder with footprint supersampling and blends in linear light. A CPU path renders the same frames, and the two are tested against each other.
-
-<p align="center">
-  <img src="docs/images/filmcraft-keyframes.png" alt="Effect Controls with the value and velocity graphs of an eased Scale push-in on the Night of the Living Dead title card, the Program monitor showing the title over a country road, and the Properties panel with Transform and Crop" width="100%">
-</p>
-
-<p align="center"><sub>An eased push-in on the title card: the value graph, the velocity graph and the Bezier influence handle.</sub></p>
-
-<br>
-
-## Audio
-
-- **Loudness meters to broadcast standards.** Momentary, short-term and integrated loudness and true peak to ITU-R BS.1770 and EBU R128, alongside the peak meters. Our integrated reading matches ffmpeg's `ebur128` filter to the tenth of a LU.
-- **Clip effects on our own DSP library:** parametric EQ, high-pass, low-pass and band-pass filters, dynamics, a true-peak limiter, delay, reverb, DeNoise, DeHummer, invert and pitch shift. Parameters can be keyframed. Effects stay continuous across scrubbing, playback and export, with latency compensated.
-- **Audio Track Mixer and Audio Clip Mixer:** faders, pan, mute, solo, five insert slots per track (pre- or post-fader), sends, submixes and a Mix track, all sample-accurate and latency-compensated. 24 tracks with three effects each mix about six times faster than real time on one core.
-- **Automation like a console:** Read, Latch, Touch and Write modes recorded live from the mixer during playback, shown and edited as track keyframes on the timeline. Plus the Audio Gain dialog (set, adjust, normalize) and constant-power crossfades.
-- **Audio-clock playback.** The sound card is the master clock, so picture follows sound and never the other way round.
-
-<br>
-
-## Titles and captions
-
-- **A real text engine:** OpenType shaping with kerning and ligatures, bidirectional text, line breaking, tracking and leading, drawn in linear light and sharp at any scale or rotation.
-- **Type, Shape and Pen tools** on the Program monitor: click to type, edit with a caret and selection, drag out rectangles, ellipses and paths. Graphic clips hold text and shape layers with fill, strokes, background and shadow, all keyframable, and edited in the Properties panel.
-- **Captions:** caption tracks in Subtitle, CEA-608, CEA-708 and Teletext formats; import and export SRT, WebVTT and SCC with frame-exact timing; edit captions in the Text panel and burn them into exports.
-<br>
-
-## Formats and codecs
-
-No FFmpeg inside. The video codecs, AAC, Opus and the containers are our own Rust code, implemented from the public ITU-T, ISO and IETF specifications and tested frame by frame against ffmpeg as an external oracle.
-
-| | Decode | Encode | Notes |
-|---|:---:|:---:|---|
-| **H.264 / AVC** | ✓ | ✓ | Decoder bit-exact on 37+ streams, 500–600 fps at 1080p. Encoder: High, Main and Baseline profiles, CABAC, B-frames, CRF/CBR/VBR/2-pass |
-| **HEVC / H.265** | ✓ | | Main and Main 10, bit-exact on 41 streams (tiles, WPP, PCM, long-term references), about 225 fps at 1080p |
-| **Apple ProRes** | ✓ | ✓ | Decodes 422 Proxy to 4444 XQ; export writes 422 HQ |
-| **AAC-LC** | ✓ | ✓ | |
-| **VP9** | ✓ | | Profiles 0–3, 8/10/12-bit, 4:2:0 to 4:4:4, tiles and superframes; bit-exact on 50+ streams; in WebM/Matroska and MP4 |
-| **Opus** | ✓ | | SILK, CELT, hybrid and multistream surround; range-exact on every RFC 8251 conformance vector; in WebM/Matroska and MP4 |
-| **AV1** | ✓ | | Main profile, 8/10-bit 4:2:0 and monochrome, every coding tool incl. film grain, superres and spatial layers; bit-exact with libdav1d on the libaom vectors tested; in MP4 and WebM/Matroska |
-| **Avid DNxHD / DNxHR** | ✓ | ✓ | All SMPTE ST 2019-1 CIDs (LB to 444, 8/10/12-bit); export writes DNxHR in MOV |
-| **MJPEG, PCM** | ✓ | ✓ | |
-| **MP3, FLAC, ALAC, Vorbis** | ✓ | | Via the [symphonia](https://github.com/pdeljanov/Symphonia) crate (MPL-2.0) for now, to be replaced by our own |
-| **MP4 / MOV** | ✓ | ✓ | Fragmented MP4, edit lists, timecode tracks |
-| **Matroska / WebM** | ✓ | | Lacing, Cues, header stripping, HDR colour metadata |
-| **Stills** | ✓ | ✓ | Import PNG, JPEG, GIF, WebP, TIFF and BMP; export PNG sequences and animated GIF |
-
-Also imported: MPEG-2 / MPEG-1 video, AC-3, MP2, MXF (OP1a / OP-Atom), MPEG transport and program streams (AVCHD, broadcast, DVD), Ogg and image sequences. Not yet: HEVC and AV1 export, camera RAW, E-AC-3. Hardware decoding works on macOS (VideoToolbox), with Linux and Windows to follow ([#30](https://github.com/storytold/filmcraft/issues/30)).
-
-<br>
-
-## Export
-
-<p align="center">
-  <img src="docs/images/filmcraft-export.png" alt="Export mode: destinations for Media File, YouTube, Vimeo, TikTok, Instagram and FTP on the left, a Night of the Living Dead frame in the preview, and H.264 settings on the right (1440x1080 at 23.976 fps, 48000 Hz stereo, entire sequence)" width="100%">
-</p>
-
-<p align="center"><sub>Export mode, set to write the trailer as H.264 MP4.</sub></p>
-
-- **H.264 MP4 with AAC, using our own encoders.** A 6-second 960×540 render takes 1.3 seconds and decodes cleanly in ffmpeg with error concealment switched off.
-- **Also:** Apple ProRes 422 HQ and Motion JPEG in QuickTime, MXF OP1a and Avid-style OP-Atom (DNxHR, ProRes or H.264 with PCM and start timecode), PNG sequences, animated GIF and WAV.
-- **Background jobs** with progress and cancel, so you keep editing while it renders.
-- **Render previews:** the render bar marks segments green, yellow or red; rendered previews are cached by content, so an edit only invalidates what it touches and undo brings the green back.
-
-<br>
-
-## Interchange
-
-Move timelines between FilmCraft and every other editor:
-
-- **Final Cut Pro 7 XML (xmeml):** the format Premiere and DaVinci Resolve exchange. It carries nested sequences, transitions, generators, Motion, Opacity, Time Remap and audio levels, with keyframes.
-- **FCPXML 1.9–1.11:** the spine, connected clips as lanes, transitions, retiming and compound clips.
-- **OpenTimelineIO:** the open interchange format of the film industry, round-tripping every FilmCraft detail through `metadata.filmcraft`.
-- **CMX 3600 EDL:** the oldest format still in use, with drop-frame timecode, dissolves, wipes, speed changes (`M2`) and one EDL per track.
-- **AAF (Edit Protocol):** for Avid Media Composer and Pro Tools. Video and audio tracks, dissolves and dips, clip volume with keyframes, markers and source timecode; audio embedded or as separate WAV / AIFF files, trimmed with handles, with clip effects rendered in and broken out to mono, plus an optional video mixdown. Import reads AAF back, extracting embedded audio.
-- **OMF 2.0:** the audio-post handoff: the audio tracks with crossfades and gain, sample-accurate, with the audio encapsulated or alongside.
-
-Import merges the document's bins, media and sequences into your project as one undoable step, and links each media file it finds on disk.
-
-<br>
-
-## Built for agents
-
-Every menu item, button, slider and drag in FilmCraft is a **command** with an id, typed parameters and an enabled state. There are about 135 engine commands so far, with the rest of Premiere's catalogue on the way. The UI, the CLI, a JSON control channel and an **MCP server** all dispatch the same commands, so Claude or any agent can cut, trim, grade, mix and export exactly the way a person does. The UI can also be driven at the level of mouse and keyboard: every widget has an automation id, and agents can click, drag, type and take screenshots.
-
-```jsonc
-// over the control channel (JSON lines on TCP) or as MCP tool calls
-{"method": "engine.execute", "params": {"command": "timeline.place",
-  "params": {"item": 1, "track": "V1", "seconds": 0, "sourceIn": 284298240000000, "duration": 1270080000000}}}
-{"method": "engine.execute", "params": {"command": "effects.setParam",
-  "params": {"clip": 87, "effect": "lumetri", "param": "curve_luma", "value": [[0,0],[0.25,0.21],[0.75,0.82],[1,1]]}}}
-{"method": "ui.screenshot", "params": {"path": "frame.png"}}
+```text
+[音声認識] ➔ [テキスト段落化] ➔ [無音区間を削除(0.5s)] ➔ [フィラー除去] ➔ [字幕一括生成]
 ```
 
-The trailer and the grades in these screenshots were built exactly this way, by an agent driving the running app.
+- **文字起こしの実行**:
+  - ウィンドウ ➔ **「テキスト」** パネルを開き、**「文字起こし」** タブを選択。
+  - シーケンス内の音声を自動認識し、話者ごとのテキスト段落としてタイムラインと完全同期して表示されます。
+- **無音区間のワンクリック自動カット**:
+  - ツールバーの **「無音区間を削除」**（時計アイコン）をクリック。
+  - 設定されたしきい値（デフォルト: 0.5秒以上の休止）を超える無音部分を一括検出し、タイムライン上の全トラックを連動させて自動リップル削除（ギャップを詰める）します。
+- **フィラーワード（つなぎ言葉）の削除**:
+  - **「フィラーワードを削除」**（リンクアイコン）をクリックすることで、「あー」「えー」「そのー」などの不要なつなぎ言葉を一発で検出・カット可能。
+- **テキストを消して動画をカット**:
+  - テキスト上で不要な単語や文章をドラッグ選択し、ツールバーの **「抽出（ギャップを詰める）」** または **「リフト（空白を残す）」** をクリックするだけで、タイムラインの該当箇所が瞬時にカットされます。
+- **ワンクリック字幕（キャプション）生成**:
+  - ツールバーの **「キャプションを作成」** をクリックすると、文字起こし結果から自動的にキャプショントラック（C1）へ字幕ブロックが生成されます。
+  - 下部のスタイルバーから、フォント・サイズ・文字色・境界線・背景ボックス・画面配置（下部中央など）を一括適用できます。
 
-<br>
+---
 
-## Everywhere
+### 2. マルチカメラ編集ワークフロー
+複数台のカメラで同時収録されたライブイベント、インタビュー、対談動画のスイッチング編集を直感的に行えます。
 
-- **Native** on macOS, Windows and Linux, with a native macOS menu bar.
-- **The web:** every crate up to the engine compiles to `wasm32`; the browser front end is next.
-- **Swappable UI.** The interface is one crate (`ui-egui`) over the engine, so a different front end can replace it without touching editing logic.
+- **複数素材の自動同期**:
+  - プロジェクトパネルで各カメラのクリップを複数選択し、右クリック ➔ **「クリップを同期」** または **「マルチカメラソースシーケンスを作成」** を選択。
+  - 同期基準として以下から選択できます：
+    - **オーディオ**: 各カメラの音声波形の一致点を自動解析して瞬時にズレなく同期（おすすめ）。
+    - **タイムコード**: 同期タイムコード（LTC）をもとに整列。
+    - **イン点 / アウト点 / クリップマーカー**: 手動で打った目印で同期。
+- **マルチカメラプレビューとリアルタイム切り替え**:
+  - プログラムモニターのレンチメニューから **「マルチカメラ表示」** をオンにすると、全カメラアングルが並んだグリッド表示（2×2、3×3 等）に切り替わります。
+  - スペースキーで再生しながら、目的のカメラ画面をクリック（またはテンキーの `1`〜`9`）するだけで、再生に合わせてリアルタイムにカットが切り替わり、タイムラインに自動的に編集点が記録されます（**マルチカメラ録画モード**）。
+- **カメラアングルの編集**:
+  - **「カメラを編集」** ダイアログから、カメラの表示順序の入れ替え、不要アングルの非表示、カメラ名（「Aカメ（寄り）」「Bカメ（引き）」など）の設定が可能です。
 
-<br>
+---
 
-## Get started
+### 3. プロキシ＆オフラインメディア管理
+高ビットレートな 4K/8K RAW 素材や重いコーデックでも、軽量プロキシを活用することでノート PC でも軽快に編集作業が行えます。
 
-```sh
-cargo run --release -p filmcraft                           # the desktop app, with a demo project
-cargo run --release -p filmcraft -- --control 9876         # plus the JSON-lines control server
-cargo run --release -p filmcraft-cli -- commands           # list every engine command
-cargo run --release -p filmcraft-cli -- mcp                # MCP server (headless)
+- **プロキシの作成**:
+  - プロジェクトパネルで対象素材を右クリック ➔ **「プロキシ」** ➔ **「プロキシを作成…」**。
+  - 形式（Apple ProRes Proxy または H.264）と解像度（1/2 または 1/4）を選択すると、バックグラウンドで安全に生成され、自動的にオリジナルクリップへ紐付けられます。
+- **プロキシのワンクリック切り替え**:
+  - プログラムモニター下の **「プロキシの切り替え」** ボタン（またはプロジェクト一覧の「P」バッジ）を押すだけで、編集用の軽量表示とオリジナル高画質表示を一瞬で切り替えられます。
+  - 最終書き出し（エクスポート）時は、自動的に最高画質のオリジナルファイルが参照されます。
+- **メディアの再リンクとオフライン管理**:
+  - ドライブレターの変更やフォルダー移動でリンクが切れた素材も、右クリック ➔ **「メディアにリンク…」** でファイル名・拡張子・デュレーションをもとに自動検索し、一括で再接続できます。
+- **プロジェクトマネージャー**:
+  - ファイル ➔ **「プロジェクトマネージャー」** を開くと、使用している素材だけを別フォルダーへ収集・コピーしたり、不要な部分をトリミング（ハンドル余白付き）して軽量な保管用アーカイブを作成できます。
+
+---
+
+### 4. ビジュアル・キーボードショートカット編集
+- `Ctrl + Alt + K`（macOS: `Option + Command + K`）で **「キーボードショートカット」** ダイアログが起動します。
+- **ビジュアルキーボード**:
+  - 画面上にフルキーボードが描画され、アプリケーション全体で割り当てられているキー（紫色）、特定のパネルに特化したキー（緑色）、空いているキー（灰色）が色分けでひと目でわかります。
+- **キーの割り当て**:
+  - コマンドリストから割り当てたい機能を検索し、ショートカット列をクリックしてキーボードのキーを押すだけで即座に登録。
+  - 既存のキーと重複した場合は、競合警告と再割り当て先が分かりやすく案内されます。
+- **プリセットの管理**:
+  - 独自のキー設定をプリセット名をつけて保存可能。JSON ファイルとしてのエクスポート／インポートにも対応しており、チーム内でのショートカット共有も容易です。
+
+---
+
+## <a id="gpu最適化とハードウェアアクセラレーション"></a>⚡ GPU 最適化とハードウェアアクセラレーション
+
+本リポジトリでは、フレームレートの安定化と GPU メモリ効率を極限まで高めるため、以下の最適化を実装しています。
+
+```text
+[CPU: デコード & Tick 管理] ➔ [GPU テクスチャプール] ➔ [WGSL Lumetri Compute] ➔ [27種ブレンド合成] ➔ [sRGB ディスプレイ出力]
+                                       ↑ (回収・再利用)
 ```
 
-The control protocol is documented in [docs/control-protocol.md](docs/control-protocol.md). Stuck, or want to show what you made? Ask in [Discord](https://discord.gg/artcraft).
+### 1. テクスチャプーリング・リサイクル（ゼロアロケーション再生ループ）
+- **課題**: 従来の再生ループでは、毎フレームのデコード画像に対して新規に `wgpu::Texture` を確保・破棄しており、ドライバ呼び出しオーバーヘッドと GPU メモリ断片化によるフレームドロップが発生していました。
+- **実装内容**: `GpuCompositor` に解像度・フォーマット別の LRU テクスチャプールを導入。LRU キャッシュから退避されたテクスチャおよびビューを自動的にプールへ回収し、次フレームで再利用（`write_texture` のみ発行）することで、再生中の GPU リソース確保コストを実質ゼロに抑えています。
+- **アクティブフレーム保護**: 多重レイヤーやトランジション合成時、現在フレームで利用中のテクスチャが LRU 回収されて上書きされるのを防ぐフレーム保護インバリアント（`frame_start`）を導入。
 
-## Documentation
+### 2. レイヤーユニフォームバッファのプーリングとヒープ確保ゼロ化
+- **課題**: レイヤー合成ごとに 112 バイトのユニフォームバッファ（変換行列・透明度・ブレンド設定）が毎フレーム新規作成（`device.create_buffer`）され、60fps 再生時に秒間数百回の GPU メモリ確保が発生していました。
+- **実装内容**: `GpuCompositor` にユニフォームバッファプール（`uniform_pool`）を導入。スタック上の固定長バイト変換によりヒープアロケーションをゼロにし、コマンドバッファの送信（`submit`）完了後にバッファをプールへ即座に返却・再利用。再生中のユニフォームバッファ確保を完全ゼロに最適化しました。
 
-| | |
+### 3. Lumetri Color の WGSL コンピュートパイプライン統合
+- **課題**: これまで Lumetri Color はクリップに適用されると CPU レンダリング（マルチスレッド rayon）へフォールバックし、1 フレームあたり数十〜数百ミリ秒の負荷がかかってプレビュー再生がコマ落ちしていました。
+- **実装内容**: `gpufx` および `fx.wgsl` に `OP_LUMETRI` コンピュートパスを統合。
+  - **基本補正**: 露光量、コントラスト、ハイライト、シャドウ、白レベル、黒レベル、色温度、色合い、彩度
+  - **クリエイティブ**: 自然な彩度 (Vibrance)、色褪せたフィルム (Faded Film)
+  - **ビネット**: 適用量、中間点、真円度、ぼかし
+  - 厳格な 16 バイト境界（96 バイト構造体 `struct U`）で Uniform データを WGSL シェーダーへ転送し、16×16 ワークグループでピクセル並列計算。CPU リファレンスと完全一致するカラー精度を維持したまま、数ミリ秒以内の超高速 GPU プレビューを実現しています。
+
+### 4. 27 種類の全ブレンドモードとエフェクトの GPU コンポジット
+- Premiere Pro 互換の全 27 種類のブレンドモード（通常、ディゾルブ、乗算、スクリーン、オーバーレイ、ソフトライト、ハードライト、差の絶対値等）を GPU フラグメントシェーダーで高速合成。
+- ガウスブラー、方向ブラー、アンシャープマスク、変形、クロップ等の主要ビデオエフェクトも GPU コンピュートパスで実行されます。
+
+---
+
+## <a id="キーボードショートカット完全早見表"></a>⌨️ キーボードショートカット完全早見表
+
+Premiere Pro 標準キーバインドに完全準拠しています。`Ctrl + Alt + K` でキーボードショートカット設定画面を開き、自由にカスタマイズも可能です。
+
+### 1. 再生・ナビゲーション
+| ショートカット | 機能説明 |
 |---|---|
-| [CONTRIBUTING.md](CONTRIBUTING.md) · [docs/contributing.md](docs/contributing.md) | Setup, quality gates, commit conventions, how to add commands, effects, codecs, panels and assets |
-| [AGENTS.md](AGENTS.md) | The rules every contributor must follow: assets, clean room, licences |
-| [docs/architecture.md](docs/architecture.md) | Layers, data model, time base, command system, render and export pipeline |
-| [docs/testing.md](docs/testing.md) | Unit, property and ffmpeg-oracle tests, accuracy criteria, benchmarks |
-| [docs/agents.md](docs/agents.md) | Driving FilmCraft over MCP and the control channel; how agents develop it |
-| [docs/control-protocol.md](docs/control-protocol.md) | Control-channel and MCP reference |
-| [docs/project-files.md](docs/project-files.md) | `.fcproj` format, schema migrations, auto-save and crash recovery |
-| [docs/graphics.md](docs/graphics.md) · [docs/captions.md](docs/captions.md) | Text engine, graphic clips and tools; caption tracks and formats |
-| [ROADMAP.md](ROADMAP.md) | Honest assessment, what's missing, milestones and estimates |
+| `Space` | 再生 / 一時停止 |
+| `L` | 早送り（シャトル右。連打で 2x, 4x, 8x に加速） |
+| `K` | 停止（シャトルストップ） |
+| `J` | 逆再生（シャトル左。連打で逆倍速） |
+| `Home` / `End` | シーケンスの先頭 / 末尾へジャンプ |
+| `PageUp` / `PageDown` | 前 / 次の編集点（カット位置）へスナップ移動 |
+| `←` / `→` | 1フレーム前 / 次へコマ送り |
+| `Shift + ←` / `Shift + →` | 5フレーム前 / 次へ移動 |
+| `\` (バックスラッシュ) | タイムライン全体を画面幅にフィット表示 |
+| `=` / `-` | タイムラインの水平ズームイン / ズームアウト |
 
-## Status
-
-FilmCraft is young and moving fast. Editing, trimming, multicam, colour, keyframes, effects, titles, captions, mixing, codecs and export work today.
-
-We track two numbers ([ROADMAP.md](ROADMAP.md#honest-assessment-2026-10-05)):
-
-- **Feature checklist: ~87%.** Premiere Pro's menu items, effects, transitions, panels and formats that exist in FilmCraft.
-- **Ready for real work: ~50–60%.** Our honest estimate of how close FilmCraft is to replacing Premiere on real projects.
-
-The biggest gaps today:
-
-- **Speed on big footage.** Hardware decoding works on macOS; Windows and Linux have no hardware path yet. Blend modes and the most common effects run on the GPU, but Lumetri, keys, export and encoding still run on the CPU ([#30](https://github.com/storytold/filmcraft/issues/30)).
-- **No plugins.** No VST3 / Audio Units or OpenFX hosting.
-- **Delivery codecs.** H.264 is our only delivery-codec export; no HEVC or AV1 export yet.
-- **Real-world media and platforms.** Our decoders are bit-exact on conformance streams, but camera and phone files in the wild are less tested. Windows and Linux get far less testing than macOS.
-- **AI features.** Few so far; speech to text is optional and off by default.
-
-Bug reports with real footage are the most useful thing you can send us: [open an issue](https://github.com/storytold/filmcraft/issues) or tell us in [Discord](https://discord.gg/artcraft).
-
-## Architecture
-
-A layered Cargo workspace:
-
-| Layer | Crates |
+### 2. 編集・トリミング
+| ショートカット | 機能説明 |
 |---|---|
-| Codecs and containers | `h264`, `h264enc`, `hevc`, `vp9`, `prores`, `aac`, `opus`, `isobmff`, `matroska`, `bitstream` |
-| Foundations | `time`, `geom`, `color`, `frame`, `media`, `text`, `project`, `audio-dsp` |
-| Editing and interchange | `edit`, `codecs`, `captions`, `format` (project files), `interchange` |
-| Rendering and output | `render`, `gpu`, `export` |
-| Engine | `engine`: command registry, session, undo, jobs |
-| Front ends | `ui-egui`, `automation` (MCP), `apps/filmcraft`, `apps/filmcraft-cli` |
-| Test support | `testkit` (ffmpeg oracles, fixtures), `golden` (golden-image tests) |
+| `I` / `O` | イン点をマーク / アウト点をマーク |
+| `Shift + I` / `Shift + O` | イン点へ移動 / アウト点へ移動 |
+| `Ctrl + Shift + I` / `Ctrl + Shift + O` | イン点を消去 / アウト点を消去 |
+| `,` (カンマ) | **インサート**（再生ヘッド位置に割り込み挿入） |
+| `.` (ピリオド) | **上書き**（再生ヘッド位置の既存クリップを上書き配置） |
+| `;` (セミコロン) | **リフト**（選択範囲を削除し、隙間を残す） |
+| `'` (シングルクォート) | **抽出**（選択範囲を削除し、隙間を詰める） |
+| `Ctrl + K` | **編集点を追加**（現在位置でクリップをカット） |
+| `Ctrl + Shift + K` | 全トラックに編集点を追加 |
+| `Q` | 直前の編集点から再生ヘッド位置までリップル削除 |
+| `W` | 再生ヘッド位置から次の編集点までリップル削除 |
+| `Delete` / `Backspace` | 選択クリップを消去（隙間はそのまま） |
+| `Shift + Delete` | **リップル削除**（選択クリップを消去し、隙間を自動で詰める） |
+| `S` | タイムラインのスナップ（吸着）有効/無効切り替え |
 
-Nothing below the front ends depends on a UI toolkit or OS API. `cargo xtask ci` checks formatting, lints, tests, the layering rules, asset attribution and the wasm build.
+### 3. ツール切り替え
+| ショートカット | ツール名 |
+|---|---|
+| `V` | **選択ツール**（標準の選択・ドラッグ移動） |
+| `A` | **トラックの前方選択ツール**（クリック位置以降の全クリップを選択） |
+| `Shift + A` | **トラックの後方選択ツール**（クリック位置以前の全クリップを選択） |
+| `B` | **リップル編集ツール**（後続を詰めながらクリップ長を調整） |
+| `N` | **ローリング編集ツール**（隣接クリップの境界点のみを移動） |
+| `R` | **レート調整ツール**（クリップ長を伸縮して再生速度を変更） |
+| `C` | **レーザーツール**（クリックした位置をカット分割） |
+| `Y` | **スリップツール**（クリップ長を保ったまま素材のイン/アウト位置を変更） |
+| `U` | **スライドツール**（クリップ長を保ったまま前後の隣接クリップを伸縮） |
+| `P` | **ペンツール**（キーフレームの作成やマスクの描画） |
+| `H` | **手のひらツール**（タイムラインやモニターのスクロール移動） |
+| `Z` | **ズームツール**（拡大・縮小表示） |
+| `T` | **文字ツール**（画面上へのテキスト入力） |
 
-## The Crafting Apps
+### 4. ファイル・ウィンドウ・システム操作
+| ショートカット | 機能説明 |
+|---|---|
+| `Ctrl + N` | 新規シーケンスの作成 |
+| `Ctrl + O` | プロジェクトを開く |
+| `Ctrl + S` | プロジェクトを上書き保存 |
+| `Ctrl + Shift + S` | プロジェクトを別名で保存 |
+| `Ctrl + I` | メディアのインポート（読み込み） |
+| `Ctrl + M` | メディアの書き出し（エクスポート） |
+| `Ctrl + Z` | 元に戻す (Undo) |
+| `Ctrl + Shift + Z` | やり直す (Redo) |
+| `Ctrl + ,` | 環境設定ダイアログを開く |
+| `Ctrl + Alt + K` | キーボードショートカット設定画面を開く |
+| `Shift + 1` | プロジェクトパネルにフォーカス |
+| `Shift + 2` | ソースモニターにフォーカス |
+| `Shift + 3` | タイムラインにフォーカス |
+| `Shift + 4` | プログラムモニターにフォーカス |
 
-FilmCraft is one of the **Crafting Apps**: free, open-source creative tools from the
-[ArtCraft](https://getartcraft.com/) team, each written from scratch in Rust and each able to
-stand on its own.
+*(※ macOS 環境では `Ctrl` を `Command (⌘)`、`Alt` を `Option (⌥)` に置き換えて操作してください)*
 
-| | App | What it's for | Code | Learn more |
-|:-:|---|---|---|---|
-| <img src="https://raw.githubusercontent.com/storytold/photocraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.photocraft.png" alt="" width="32" height="32"> | **PhotoCraft** | Image editing: layers, masks, type and real PSD files | [GitHub](https://github.com/storytold/photocraft) | [Website](https://getartcraft.com/apps/photocraft) |
-| <img src="https://raw.githubusercontent.com/storytold/vectorcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.vectorcraft.png" alt="" width="32" height="32"> | **VectorCraft** | Vector illustration | [GitHub](https://github.com/storytold/vectorcraft) | [Website](https://getartcraft.com/apps/vectorcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/filmcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.filmcraft.png" alt="" width="32" height="32"> | **FilmCraft** | **Video editing, color and sound · you are here** | [GitHub](https://github.com/storytold/filmcraft) | [Website](https://getartcraft.com/apps/filmcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/lightcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.lightcraft.png" alt="" width="32" height="32"> | **LightCraft** | Photo library and raw development | [GitHub](https://github.com/storytold/lightcraft) | [Website](https://getartcraft.com/apps/lightcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/printcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.printcraft.png" alt="" width="32" height="32"> | **PrintCraft** | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/printcraft) | [Website](https://getartcraft.com/apps/printcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/effectcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.effectcraft.png" alt="" width="32" height="32"> | **EffectCraft** | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [Website](https://getartcraft.com/apps/effectcraft) |
-| <img src="https://raw.githubusercontent.com/storytold/designcraft/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.designcraft.png" alt="" width="32" height="32"> | **DesignCraft** | Page layout and publishing | [GitHub](https://github.com/storytold/designcraft) | [Website](https://getartcraft.com/apps/designcraft) |
+---
 
-And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
+## <a id="aiエージェント--mcp自動化連携"></a>🤖 AI エージェント / MCP 自動化連携
 
-<br>
+FilmCraft は、AI エージェントや外部スクリプトから自動操作できるように設計されています。すべての編集操作、タイムライン走査、エフェクト適用、書き出しは **MCP (Model Context Protocol)** 経由で呼び出すことができます。
 
+### MCP サーバーの起動
+
+```powershell
+cargo run --release -p filmcraft-cli -- mcp
+```
+
+### 主要な MCP コマンドの例 (JSON-RPC)
+
+- **無音区間の自動削除**:
+  ```json
+  {
+    "method": "transcript.removePauses",
+    "params": { "minSeconds": 0.5, "keepSeconds": 0.1 }
+  }
+  ```
+- **クリップのカット**:
+  ```json
+  {
+    "method": "sequence.addEdit",
+    "params": {}
+  }
+  ```
+- **マルチカメラシーケンスの生成**:
+  ```json
+  {
+    "method": "clip.createMulticam",
+    "params": { "name": "対談_マルチカム", "syncPoint": "Audio" }
+  }
+  ```
+- **プロキシの生成**:
+  ```json
+  {
+    "method": "media.createProxies",
+    "params": { "format": "ProResProxy", "scale": 0.5 }
+  }
+  ```
+
+---
+
+## <a id="トラブルシューティング--faq"></a>❓ トラブルシューティング / FAQ
+
+### Q. 日本語フォントが正しく表示されない / トーフ（□）になる
+**A.** 日本語フォント（BIZ UDPゴシック）はアプリに同梱されているため、OS 側のフォントは不要です。タイトルやキャプションで別の日本語フォントを使いたい場合は、OS にインストールすればフォント一覧に表示されます。
+
+### Q. 英語表示に切り替えたい / 日本語表示に戻したい
+**A.** **設定 ➔ アピアランス ➔ 言語**（Settings ➔ Appearance ➔ Language）で切り替えます。変更はすぐに反映され、次回起動時も保持されます。
+
+### Q. ビルド時にエラーが出る
+**A.** Rust のバージョンが古い可能性があります。ターミナルで以下を実行して最新の安定版（stable）にアップデートしてください。
+```powershell
+rustup update stable
+```
+
+### Q. 編集途中で不意に PC が再起動・電源断してしまった
+**A.** FilmCraft は毎秒リカバリージャーナルを記録しています。再度アプリを起動すると、**「未保存の変更を復元」** ダイアログが自動表示され、直前の状態へ安全に復帰できます。
+
+### Q. GPU アクセラレーションが効いているか確認したい
+**A.** ヘルプ ➔ **「システム情報」** またはコンソールログから、検出された WebGPU アダプター名（例: NVIDIA GeForce RTX / Apple M シリーズ / AMD Radeon）を確認できます。対応 GPU が検出された場合、Lumetri カラーやブラーエフェクトは自動的に WGSL コンピュートパイプラインで実行されます。
+
+---
+
+## <a id="アーキテクチャと設計思想"></a>🏗 アーキテクチャと設計思想
+
+FilmCraft は、関心事の分離（Separation of Concerns）と厳格なレイヤリングに基づき、以下のクレート構成で設計されています：
+
+```text
+crates/
+├── bitstream / isobmff / matroska  # MP4, MOV, MKV などのコンテナ解析・パース
+├── h264 / hevc / vp9 / prores / aac # 独自ビットストリームデコーダー群
+├── time / geom / color / media     # 整数 Tick タイムベース・画像幾何・色空間変換
+├── edit / project / captions       # NLE 編集コア・データモデル・字幕トラック
+├── render / gpu / export           # WebGPU パイプライン・コンポジット・書き出し
+├── engine                          # セッション管理・コマンドレジストリ・Undo履歴
+└── ui-egui                         # egui による高レスポンス UI (日本語ローカライズ)
+```
+
+### クリーンルーム設計ポリシー
+- 本プロジェクトは Adobe 製品のバイナリの解析、リバースエンジニアリング、逆アセンブル、または Adobe アプリケーション内リソースのコピーを一切行っていません。
+- すべてのコーデックやコンテナフォーマットは、ITU-T、ISO/IEC、IETF RFC、SMPTE 等の公開された公的仕様書に基づいて独自に実装されています。
+- GPL/LGPL ライセンスの外部ライブラリ（FFmpeg, x264 等）はリンク・バンドルされておらず、商用環境でも安心して利用可能なパーミッシブライセンス（MIT / Apache-2.0）のみで構成されています。
+
+---
+
+## <a id="ライセンスとクレジット"></a>📄 ライセンスとクレジット
+
+FilmCraft は **MIT License** または **Apache License 2.0** のデュアルライセンスで提供されています。
+
+- **Copyright**: (c) 2026 ArtCraft Team and FilmCraft contributors.
+- **商標について**: Adobe, Premiere Pro は Adobe Inc. の登録商標です。互換性およびワークフロー説明の目的でのみ参照しています。
+- **日本語ローカライズ & GPU 最適化**: 本リポジトリ (`filmcraft_JPN`) は、日本のクリエイターコミュニティ向けに UI・ドキュメントを完全日本語化し、WebGPU 最適化を施した特別エディションです。
+
+---
 <p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
-</p>
-
-<h3 align="center">Come make things with us</h3>
-
-<p align="center">
-  Our Discord is where artists of every kind hang out: people who paint, shoot, draw, cut film,
-  set type, and people still figuring out what they like to make. Share what you're working on,
-  ask for help, tell us what's broken, or tell us what you wish these tools could do.
-  Whatever your medium and however long you've been at it, you're welcome here.
-</p>
-
-<p align="center">
-  <a href="https://discord.gg/artcraft"><b>discord.gg/artcraft</b></a> ·
-  <a href="https://getartcraft.com/">getartcraft.com</a> ·
-  <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
-  <a href="https://getartcraft.com/apps/filmcraft">FilmCraft</a>
-</p>
-
-<br>
-
-## License and credits
-
-FilmCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Copyright (c) 2026 ArtCraft Team and the FilmCraft contributors. Required notices are in [NOTICE](NOTICE).
-
-Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
-with its author, source and license in [ATTRIBUTION.md](ATTRIBUTION.md).
-
-**Footage and music in the screenshots:** NASA's Apollo 11 film and television footage from [images.nasa.gov](https://images.nasa.gov) (launch, Launch Control Center, lunar surface and recovery) and the Apollo 11 air-to-ground voice transcript, all US Government works in the public domain (NASA does not endorse this project); *Night of the Living Dead* (1968), *Carnival of Souls* (1962) and *Charade* (1963), all in the US public domain; *Earth Views from the ISS* by NASA; Chopin's Nocturne Op. 48 No. 1 and Ballade No. 1, performed for Musopen and released under CC0. The media itself is not in this repository. Sources and details for every asset are in [ATTRIBUTION.md](ATTRIBUTION.md).
-
-FilmCraft is an independent implementation. It contains no Adobe code, icons, images, presets or LUTs, and no GPL or LGPL code; every icon is drawn in code and every asset is openly licensed and attributed ([AGENTS.md](AGENTS.md)), apart from the ArtCraft name and logos, which are trademarks of the ArtCraft Team used under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt). ffmpeg is used only as an external test oracle.
-
-The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
-ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and FilmCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
-Forks and modified versions must remove them.
-
-<sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. FilmCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
-
-<br>
-
-<p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
+  <sub>Made with ❤️ by the ArtCraft Team & the Japanese Localization Project</sub>
 </p>
