@@ -25,6 +25,21 @@ filmcraft-codecs = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 log = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+filmcraft-color = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-time = { workspace = true }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
@@ -38,3 +53,4 @@ objc2-video-toolbox = "0.3.2"
 filmcraft-testkit = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }
+filmcraft-h264enc = { workspace = true }

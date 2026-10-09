@@ -2078,6 +2078,7 @@ dependencies = [
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-frame",
+ "filmcraft-h264enc",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-testkit",
@@ -2087,6 +2088,7 @@ dependencies = [
  "objc2-core-media",
  "objc2-core-video",
  "objc2-video-toolbox",
+ "windows 0.62.2",
 ]
 
 [[package]]

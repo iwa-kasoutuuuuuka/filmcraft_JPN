@@ -36,7 +36,7 @@ before choosing work.
 | **Correctness in depth** | not tracked | **~60–70%** | A first-time contributor found four real bugs in core paths within hours (#5–#8: AIFF import failed, Slide left linked audio behind, transitions didn't follow ripple trims, export ignored start/end times). User reports: Color Matte always grey with no picker (#29); ALSA audio error on Linux (#23). Settings are "most wired", not all. |
 | **Codecs and media** | ~90% | **~75%** | Our decoders are bit-exact on conformance streams. Real camera and phone media (variable frame rate, damaged files, unusual containers) is far less tested. No camera RAW (RED, BRAW, ARRIRAW), no E-AC-3. |
 | **Export** | ~92% | **~70%** | Delivery: H.264 only (ProRes, DNxHR and image sequences cover mastering). No HEVC or AV1 export. AAF and OMF have never been validated in Avid Media Composer or Pro Tools. Export renders and encodes on the CPU only. |
-| **Performance and hardware** | ~62% | **~35–40%** | Premiere runs effects, decoding and encoding on the GPU and the hardware media engines. Here, hardware decode works on macOS only (VideoToolbox, #33). The GPU does compositing, blend modes (#32) and 31 common effects (GPU2): colour adjustments, crop/flip/transform, blurs, sharpen. Lumetri, keys, masks, the remaining effects, export and encoding are CPU. Linux and Windows have no hardware path. 8K and AV1 aren't real-time. The effect list shows Premiere's "GPU accelerated" badge, but only 31 effect ids run on the GPU here; the rest, Lumetri included, run on the CPU. |
+| **Performance and hardware** | ~62% | **~35–40%** | Premiere runs effects, decoding and encoding on the GPU and the hardware media engines. Here, hardware decode works on macOS (VideoToolbox, #33) and Windows (Media Foundation on Direct3D 11: H.264 bit-exact with our decoder on one NVIDIA machine, 20–27× less CPU per frame; HEVC untested), with decoded pictures still copied through system memory. The GPU does compositing, blend modes (#32) and 31 common effects (GPU2): colour adjustments, crop/flip/transform, blurs, sharpen. Lumetri, keys, masks, the remaining effects, export and encoding are CPU. Linux has no hardware path. 8K and AV1 aren't real-time. The effect list shows Premiere's "GPU accelerated" badge, but only 31 effect ids run on the GPU here; the rest, Lumetri included, run on the CPU. |
 | **Stability** | not tracked | **improving, unproven** | The never-crash pass (no panics in product code, last-resort guards) landed on 2026-10-04. There's no field record from real users' projects yet. |
 | **Plugins and pro ecosystem** | not tracked | **~0–10%** | No audio plugin hosting (VST3 / Audio Units) and no third-party video effects (OpenFX). For many professional editors this alone rules FilmCraft out. Team Projects and Productions are out of scope by design. |
 | **AI features** | partial | **~25–35%** | Speech to text exists but is off in default builds (the `whisper` feature). Enhance Speech is a DSP chain, not a model. Auto Reframe is approximate. No Generative Extend, and no media-intelligence search or auto colour. |
@@ -48,7 +48,7 @@ before choosing work.
 In priority order. Agents should prefer this work over adding more checklist items.
 
 1. **Hardware acceleration** (#30), the most visible gap to users:
-   - hardware decode on Linux (VA-API) and Windows (Media Foundation);
+   - hardware decode on Linux (VA-API); on Windows (Media Foundation, landed) HEVC tests and more GPU vendors;
    - zero-copy decoded frames into wgpu;
    - the remaining effects on the GPU: Lumetri, keys, Vignette, Video Limiter, masks (31 common effects are done);
    - GPU export, then hardware encode (H.264 / HEVC).
@@ -100,7 +100,7 @@ matched against `filmcraft-cli commands` and the UI command table. Effects: the 
 | Graphics and captions | 8% | text engine, shapes, per-character styles, our own graphics templates (.fcgt, 8 built-ins, export/install/edit), rolls/crawls, responsive pins + time, captions SRT/VTT/SCC/MCC/STL/TTML/DFXP, transcripts | ~85% |
 | Export | 8% | own H.264/AAC, ProRes, DNxHR, MXF OP1a/OP-Atom, image sequences, GIF, WAV, 5.1; preset library + user presets, full Export-mode settings, queue, Quick Export; AAF (Edit Protocol) import/export, OMF 2.0 export; no AAF/OMF validation against Avid/Pro Tools yet | ~92% |
 | Preferences and project management | 5% | Settings dialog with 16 categories (most settings wired), project settings, scratch disks, search bins, templates | ~80% |
-| Performance | 5% | 1080p real-time, 3×1080p; 4K H.264 real-time at load ≤140 (−23% decoder cycles, opt-in draft decoding at 1/2–1/4); HEVC 2.5× cheaper, catch-up decoding, `cargo xtask bench` + `perf.stats`; blend modes on the GPU (#32); 8K and AV1 not yet real-time on a loaded machine; no hardware path on Windows/Linux (see the honest assessment: ~35–40% against Premiere) | ~62% |
+| Performance | 5% | 1080p real-time, 3×1080p; 4K H.264 real-time at load ≤140 (−23% decoder cycles, opt-in draft decoding at 1/2–1/4); HEVC 2.5× cheaper, catch-up decoding, `cargo xtask bench` + `perf.stats`; blend modes on the GPU (#32); 8K and AV1 not yet real-time on a loaded machine; no hardware path on Linux (see the honest assessment: ~35–40% against Premiere) | ~62% |
 | **Weighted total** | | | **~87%** |
 
 ## Estimate to parity
