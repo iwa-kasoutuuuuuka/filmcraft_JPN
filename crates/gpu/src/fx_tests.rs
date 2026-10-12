@@ -25,7 +25,7 @@ const EXACT: f32 = 1e-4;
 /// error (measured up to 1.8e-3 relative on Windows / D3D12), so they get a wider bound than the
 /// arithmetic-only effects, which stay at `EXACT`.
 const TRANSCENDENTAL: f32 = 4e-3;
-const TRANSCENDENTAL_EFFECTS: &[&str] = &["proc_amp", "gamma_correction", "extract", "invert", "sharpen", "color_replace", "lumetri"];
+const TRANSCENDENTAL_EFFECTS: &[&str] = &["proc_amp", "gamma_correction", "extract", "invert", "sharpen", "color_replace", "lumetri", "vignette"];
 const FLIPS: f64 = 0.01;
 
 fn tolerance(id: &str) -> f32 {
@@ -196,6 +196,15 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("alpha_adjust", vec![("opacity", fl(60.0))], false),
         ("alpha_adjust", vec![("ignore", ParamValue::Bool(true)), ("invert", ParamValue::Bool(true))], false),
         ("alpha_adjust", vec![("invert", ParamValue::Bool(true)), ("mask_only", ParamValue::Bool(true)), ("opacity", fl(150.0))], false),
+        ("mosaic", vec![], false),
+        ("mosaic", vec![("horizontal", fl(7.0)), ("vertical", fl(3.0))], false),
+        ("mosaic", vec![("horizontal", fl(1.0)), ("vertical", fl(4000.0))], false),
+        ("mosaic", vec![("horizontal", fl(23.0)), ("vertical", fl(17.0))], false),
+        ("vignette", vec![], false),
+        ("vignette", vec![("amount", fl(-100.0)), ("midpoint", fl(30.0)), ("feather", fl(80.0)), ("color", col(0.2, 0.05, 0.4))], false),
+        ("vignette", vec![("amount", fl(70.0)), ("roundness", fl(100.0)), ("feather", fl(0.0))], false),
+        ("vignette", vec![("amount", fl(-60.0)), ("roundness", fl(-100.0)), ("midpoint", fl(90.0))], false),
+        ("vignette", vec![("amount", fl(0.0))], false),
         ("lumetri", vec![], false),
         ("lumetri", vec![("exposure", fl(1.5)), ("contrast", fl(30.0)), ("temperature", fl(20.0)), ("tint", fl(-15.0))], false),
         ("lumetri", vec![("highlights", fl(40.0)), ("shadows", fl(-30.0)), ("whites", fl(20.0)), ("blacks", fl(-10.0)), ("saturation", fl(130.0))], false),
@@ -506,5 +515,41 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         let (p99, mean, _) = stats8(&cpu, &gpu, &interior(&plan));
         eprintln!("effect stage {stage}: interior p99 {p99}, mean {mean:.3}");
         assert!(p99 <= 6 && mean < 1.5, "stage {stage}: p99 {p99}, mean {mean}");
+    }
+}
+
+/// Mosaic and Vignette: the reference the GPU is held to ([`FxOp::apply`]) is what the CPU
+/// renderer draws for the effect (`filmcraft_render::effects::apply`), value for value; and the
+/// case the GPU does not take (Mosaic with Softness) is declined.
+#[test]
+fn mosaic_and_vignette_references_are_the_cpu_effects() {
+    let (w, h) = (67usize, 41usize);
+    let px = picture(w as u32, h as u32);
+    let mut n = 0;
+    for (id, params, _) in cases().into_iter().filter(|c| matches!(c.0, "mosaic" | "vignette")) {
+        let e = effect(id, &params);
+        let c = cx(Tick::ZERO, 1.0);
+        let op = FxOp::eval(&e, &c, w, h).unwrap_or_else(|| panic!("{id} has no GPU op"));
+        let mut reference = filmcraft_render::Image { w, h, px: px.clone() };
+        op.apply(&mut reference);
+        let mut real = filmcraft_render::Image { w, h, px: px.clone() };
+        filmcraft_render::effects::apply(&mut real, &e, &c);
+        assert_eq!(reference.px, real.px, "{id} {params:?}");
+        if !matches!(params.first(), Some((_, ParamValue::Float(v))) if *v == 0.0) {
+            assert_ne!(real.px, px, "{id} {params:?} changes the picture");
+        }
+        n += 1;
+    }
+    assert_eq!(n, 9);
+    let soft = effect("mosaic", &[("softness", fl(40.0))]);
+    assert!(FxOp::eval(&soft, &cx(Tick::ZERO, 1.0), w, h).is_none(), "Mosaic with Softness stays on the CPU");
+    // hostile sizes: block counts beyond the picture, a 1-pixel picture
+    for (bx, by, w, h) in [(1e30, 1e30, 8usize, 8usize), (0.0, -5.0, 8, 8), (4.0, 4.0, 1, 1), (f64::NAN, 2.0, 5, 3)] {
+        let e = effect("mosaic", &[("horizontal", fl(bx)), ("vertical", fl(by))]);
+        if let Some(op) = FxOp::eval(&e, &cx(Tick::ZERO, 1.0), w, h) {
+            let mut img = filmcraft_render::Image { w, h, px: vec![0.5; w * h * 4] };
+            op.apply(&mut img);
+            assert!(img.px.iter().all(|v| v.is_finite()), "{bx} x {by} blocks on {w}x{h}");
+        }
     }
 }

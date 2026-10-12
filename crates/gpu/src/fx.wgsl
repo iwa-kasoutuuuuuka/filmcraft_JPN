@@ -46,6 +46,8 @@ const OP_VFLIP: u32 = 27u;
 const OP_MIRROR: u32 = 28u;
 const OP_OFFSET: u32 = 29u;
 const OP_LUMETRI: u32 = 30u;
+const OP_MOSAIC: u32 = 31u;
+const OP_VIGNETTE: u32 = 32u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -467,6 +469,34 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let q = sample_clamped(uu, vv);
             let o = ld(p);
             return q + (o - q) * u.p0.z;
+        }
+        case OP_MOSAIC: {
+            // `effects::mosaic_blocks`: every pixel takes the picture at its block's centre
+            let bw = u.p0.x; let bh = u.p0.y;
+            return sample_clamped((floor(f32(p.x) / bw) + 0.5) * bw, (floor(f32(p.y) / bh) + 0.5) * bh);
+        }
+        case OP_VIGNETTE: {
+            // `vfx::color::vignette_px`: p0 = amount, midpoint, roundness, feather; p1.xyz = target
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 || u.p0.x < 1e-5 {
+                return o;
+            }
+            let w = f32(s.x); let h = f32(s.y);
+            let round = u.p0.z;
+            var nx = pc.x / w * 2.0 - 1.0;
+            let ny = pc.y / h * 2.0 - 1.0;
+            if round > 0.0 {
+                nx *= 1.0 + (w / h - 1.0) * round;
+            }
+            var pw = 2.0;
+            if round < 0.0 {
+                pw = 2.0 + (-round) * 6.0;
+            }
+            let d = powf(powf(abs(nx), pw) + powf(abs(ny), pw), 1.0 / pw) / powf(2.0, 1.0 / pw);
+            let edge = smoothstep_fx(u.p0.y - u.p0.w * 0.5, u.p0.y + u.p0.w * 0.5, d);
+            let e = enc(o.rgb / a);
+            return vec4(dec(e + (u.p1.xyz - e) * (edge * u.p0.x)) * a, a);
         }
         case OP_LUMETRI: {
             let o = ld(p);

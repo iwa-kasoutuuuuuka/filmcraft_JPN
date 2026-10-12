@@ -161,6 +161,19 @@ pub enum FxOp {
         invert: bool,
         mask_only: bool,
     },
+    /// Solid blocks `bw` × `bh` pixels, each the picture's colour at the block's centre.
+    Mosaic {
+        bw: f32,
+        bh: f32,
+    },
+    /// Blend towards `target` (sRGB-encoded) by `amount` times a soft edge mask.
+    Vignette {
+        amount: f32,
+        mid: f32,
+        round: f32,
+        feather: f32,
+        target: [f32; 3],
+    },
     Lumetri {
         temp: f32,
         tint: f32,
@@ -184,6 +197,8 @@ pub enum FxOp {
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
 pub const GPU_EFFECTS: &[&str] = &[
     "lumetri",
+    "mosaic",
+    "vignette",
     "brightness_contrast",
     "proc_amp",
     "tint",
@@ -509,6 +524,25 @@ impl FxOp {
                     aspect,
                 }
             }
+            "mosaic" => {
+                // Softness blends towards an interpolation of the blocks: the CPU does that
+                if crate::vfx::fv(e, "softness", cx).abs() > 1e-6 {
+                    return None;
+                }
+                let (bx, by) = (f(e, "horizontal", cx).max(1.0) as usize, f(e, "vertical", cx).max(1.0) as usize);
+                FxOp::Mosaic { bw: (w as f32 / bx.max(1) as f32).max(1.0), bh: (h as f32 / by.max(1) as f32).max(1.0) }
+            }
+            "vignette" => {
+                let amt = crate::vfx::fv(e, "amount", cx) / 100.0;
+                let col = crate::vfx::cv(e, "color", cx);
+                FxOp::Vignette {
+                    amount: amt.abs(),
+                    mid: crate::vfx::fv(e, "midpoint", cx) / 100.0,
+                    round: crate::vfx::fv(e, "roundness", cx) / 100.0,
+                    feather: (crate::vfx::fv(e, "feather", cx) / 100.0).max(0.01),
+                    target: if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] },
+                }
+            }
             _ => return None,
         })
     }
@@ -552,6 +586,8 @@ impl FxOp {
             FxOp::ChannelMix { m } => m.iter().all(|r| fin(r)),
             FxOp::ColorReplace { sim, target, replace, replace_hsl, .. } => sim.is_finite() && fin(target) && fin(replace) && fin(replace_hsl),
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
+            FxOp::Mosaic { bw, bh } => fin(&[*bw, *bh]) && *bw >= 1.0 && *bh >= 1.0,
+            FxOp::Vignette { amount, mid, round, feather, target } => fin(&[*amount, *mid, *round, *feather]) && fin(target),
             FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect } => {
                 fin(&[*temp, *tint, *exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *vib, *faded, *va, *vmid, *vround, *vfeather, *aspect]) && *aspect > 0.0
             }
@@ -702,6 +738,8 @@ impl FxOp {
             FxOp::DirectionalBlur { dx, dy, steps } => crate::effects::directional_taps(img, *dx, *dy, *steps as usize),
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
             FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
+            FxOp::Mosaic { bw, bh } => crate::effects::mosaic_blocks(img, *bw, *bh),
+            FxOp::Vignette { amount, mid, round, feather, target } => crate::vfx::color::vignette_px(img, *amount, *mid, *round, *feather, *target),
             FxOp::Resample(r) => {
                 let out = match (&r.inv, r.rect[0]) {
                     (Some(m), u32::MAX) => img.transformed(img.w, img.h, m), // mip path (CPU only)

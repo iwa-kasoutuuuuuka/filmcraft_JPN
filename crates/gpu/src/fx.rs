@@ -50,6 +50,8 @@ const OP_VFLIP: u32 = 27;
 const OP_MIRROR: u32 = 28;
 const OP_OFFSET: u32 = 29;
 const OP_LUMETRI: u32 = 30;
+const OP_MOSAIC: u32 = 31;
+const OP_VIGNETTE: u32 = 32;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -152,6 +154,10 @@ fn steps(op: &FxOp) -> Vec<Step> {
             out.push(s);
         }
         FxOp::Crop { x0, x1, y0, y1, feather } => out.push(step(OP_CROP, [0; 4], &[*x0, *x1, *y0, *y1, *feather])),
+        FxOp::Mosaic { bw, bh } => out.push(step(OP_MOSAIC, [0; 4], &[*bw, *bh])),
+        FxOp::Vignette { amount, mid, round, feather, target } => {
+            out.push(step(OP_VIGNETTE, [0; 4], &[*amount, *mid, *round, *feather, target[0], target[1], target[2]]));
+        }
         FxOp::Resample(r) => {
             let op = if (r.opacity - 1.0).abs() < 1e-6 { 1.0 } else { r.opacity };
             match &r.inv {

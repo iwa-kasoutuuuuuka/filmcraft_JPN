@@ -200,6 +200,16 @@ pub fn vignette(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let feather = (fv(e, "feather", cx) / 100.0).max(0.01);
     let col = cv(e, "color", cx);
     let target = if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] };
+    vignette_px(img, amt.abs(), mid, round, feather, target);
+}
+
+/// Vignette with evaluated parameters: blend towards `target` (sRGB-encoded) by `amount` (0..1)
+/// times the edge mask. Also the reference of the GPU effect (`gpufx::FxOp::Vignette`).
+pub(crate) fn vignette_px(img: &mut Image, amount: f32, mid: f32, round: f32, feather: f32, target: [f32; 3]) {
+    // no amount, no change (not even the clamp of the encode / decode round trip)
+    if amount < 1e-5 {
+        return;
+    }
     let (w, h) = (img.w as f32, img.h as f32);
     let aspect = w / h;
     img.map_rgb(|c, x, y| {
@@ -213,7 +223,7 @@ pub fn vignette(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         // 0 at the centre, 1 at the corners
         let d = (nx.abs().powf(p) + ny.abs().powf(p)).powf(1.0 / p) / 2f32.powf(1.0 / p);
         let edge = smoothstep(mid - feather * 0.5, mid + feather * 0.5, d);
-        dec(lerp3(enc(c), target, edge * amt.abs()))
+        dec(lerp3(enc(c), target, edge * amount))
     });
 }
 

@@ -12,7 +12,7 @@
 //! (isolated tests, adjustment layers) they leave the image unchanged.
 
 mod blur;
-mod color;
+pub(crate) mod color;
 pub(crate) use color::cdl;
 mod distort;
 mod immersive;

@@ -50,7 +50,7 @@ In priority order. Agents should prefer this work over adding more checklist ite
 1. **Hardware acceleration** (#30), the most visible gap to users:
    - hardware decode on Linux (VA-API); on Windows (Media Foundation, landed) HEVC tests and more GPU vendors;
    - zero-copy decoded frames into wgpu;
-   - the remaining effects on the GPU: Lumetri, keys, Vignette, Video Limiter, masks (31 common effects are done);
+   - the remaining effects on the GPU: Lumetri's curves, wheels, LUTs and HSL Secondary, keys, Video Limiter, effects with masks (34 effect ids are done: the 31 common ones, Lumetri's basic sections, Mosaic without Softness, Vignette);
    - GPU export, then hardware encode (H.264 / HEVC).
 2. **A measured parity number.** Add `cargo xtask parity`, run in CI. It should cover menus,
    commands, effects, transitions, panels, preferences and formats against the Premiere snapshot in

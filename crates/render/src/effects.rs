@@ -868,8 +868,13 @@ pub(crate) fn median(img: &mut Image, r: isize) {
 
 pub(crate) fn mosaic(img: &mut Image, bx: usize, by: usize) {
     let (w, h) = (img.w, img.h);
-    let bw = (w as f32 / bx as f32).max(1.0);
-    let bh = (h as f32 / by as f32).max(1.0);
+    mosaic_blocks(img, (w as f32 / bx.max(1) as f32).max(1.0), (h as f32 / by.max(1) as f32).max(1.0));
+}
+
+/// Mosaic with blocks of `bw` × `bh` pixels: each block takes the picture's colour at its centre.
+pub(crate) fn mosaic_blocks(img: &mut Image, bw: f32, bh: f32) {
+    let w = img.w;
+    let (bw, bh) = (bw.max(1.0), bh.max(1.0));
     let src = img.clone();
     img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         let cy = ((y as f32 / bh).floor() + 0.5) * bh;
