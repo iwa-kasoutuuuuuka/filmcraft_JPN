@@ -19,6 +19,7 @@ pub mod layout;
 pub mod mask;
 pub mod raster;
 pub mod render;
+pub mod ruby;
 pub mod sfnt;
 
 pub use fonts::{FaceId, Resolved, families, resolve};

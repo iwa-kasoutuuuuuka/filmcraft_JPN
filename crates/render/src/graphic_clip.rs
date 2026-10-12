@@ -61,6 +61,7 @@ pub fn text_styles(t: &TextProps) -> (TextStyle, ParagraphStyle) {
             width: (t.box_width > 0.0 && !t.vertical).then_some(t.box_width),
             rtl: None,
             vertical: t.vertical,
+            ruby: t.ruby,
         },
     )
 }

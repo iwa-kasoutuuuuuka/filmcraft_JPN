@@ -48,6 +48,7 @@ pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod silence;
 pub mod sync;
+pub mod text_style;
 pub mod transcript;
 pub mod trim;
 pub mod voiceover;
@@ -929,6 +930,8 @@ mod shortcuts_tests;
 mod silence_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_style_tests;
 #[cfg(test)]
 mod transcript_tests;
 #[cfg(test)]

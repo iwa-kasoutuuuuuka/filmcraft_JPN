@@ -92,6 +92,9 @@ pub struct ParagraphStyle {
     /// Vertical text: characters stack top to bottom, paragraphs are columns laid out right to
     /// left. Alignment applies along the column (Left = top, Center, Right = bottom).
     pub vertical: bool,
+    /// Ruby (furigana) in the Aozora Bunko notation is set as ruby (`漢字《かんじ》`,
+    /// `｜base《reading》`; see [`crate::ruby`]). Off: the markup is drawn as typed.
+    pub ruby: bool,
 }
 
 fn hf(h: &mut impl Hasher, v: f32) {
@@ -116,6 +119,7 @@ impl Hash for ParagraphStyle {
         self.width.map(f32::to_bits).hash(h);
         self.rtl.hash(h);
         self.vertical.hash(h);
+        self.ruby.hash(h);
     }
 }
 
@@ -610,6 +614,11 @@ pub fn layout_uncached(text: &str, style: &TextStyle, para: &ParagraphStyle) -> 
 
 /// Lay out `text` with per-character style runs (see [`StyleRun`]); `style` is the base style.
 pub fn layout_rich_uncached(text: &str, style: &TextStyle, runs: &[StyleRun], para: &ParagraphStyle) -> Layout {
+    if para.ruby
+        && let Some(l) = crate::ruby::layout(text, style, runs, para)
+    {
+        return l;
+    }
     let sty = Styles::new(text, style, runs);
     let pm = fonts::face(sty.prim[0].face).metrics(style.size);
     let line_h = (pm.ascent + pm.descent + pm.line_gap).max(style.size * 0.5) + para.leading;

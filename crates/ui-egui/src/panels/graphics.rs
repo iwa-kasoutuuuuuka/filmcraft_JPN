@@ -1253,6 +1253,24 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let (_, mut vui) = cx.row(ui, "OpenType");
             cx.check(&mut vui, "kerning", "Kerning");
             cx.check(&mut vui, "ligatures", "Ligatures");
+            // ruby: 漢字《かんじ》 / ｜base《reading》 in the text is set as furigana
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Ruby", "ルビ"));
+            cx.check(&mut vui, "ruby", "漢字《かんじ》");
+            // one-click looks (fill, outlines, band, shadow): graphics.textStyle
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Text Style", "テキストスタイル"));
+            let r = egui::ComboBox::from_id_salt(("text-style", cx.clip.0, cx.layer))
+                .width(190.0)
+                .selected_text(crate::i18n::t("Choose a style…", "スタイルを選択…"))
+                .show_ui(&mut vui, |ui| {
+                    for (id, name) in filmcraft_engine::text_style::style_names() {
+                        let b = ui.selectable_label(false, crate::i18n::tr(name));
+                        cx.auto(&format!("textStyle.{id}"), b.rect, name);
+                        if b.clicked() {
+                            cx.actions.push(("graphics.textStyle".into(), json!({"clip": cx.clip.0, "layer": cx.layer, "style": id})));
+                        }
+                    }
+                });
+            cx.auto("textStyle", r.response.rect, "Text Style");
         }
         if e.effect == graphic::SHAPE_LAYER && section(ui, app, "Shape", &t) {
             let (_, mut vui) = cx.row(ui, crate::i18n::t("Shape", "シェイプ"));
