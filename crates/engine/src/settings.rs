@@ -348,7 +348,9 @@ impl Default for MediaAnalysisPrefs {
             auto_transcribe: false,
             auto_transcribe_scope: "sequenceClips".into(),
             speaker_labeling: "on".into(),
-            language_auto_detect: false,
+            // the language is detected from the speech (Japanese, English, …); "Default
+            // language" is used when detection is switched off
+            language_auto_detect: true,
             default_language: "en".into(),
             whisper_model: filmcraft_speech::models::DEFAULT_MODEL.into(),
         }

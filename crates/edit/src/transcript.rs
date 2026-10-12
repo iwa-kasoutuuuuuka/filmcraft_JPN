@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use filmcraft_project::transcript::{display_width, needs_space};
 use filmcraft_project::{Caption, ClipId, ItemId, Sequence, TrackId, Transcript};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
@@ -313,8 +314,9 @@ pub struct CaptionBlock {
     pub words: std::ops::Range<usize>,
 }
 
-/// Lay words out as caption blocks: words fill lines of at most `max_chars` (a longer single word
-/// gets a line of its own) and blocks of `lines` lines; a new block starts at a speaker change,
+/// Lay words out as caption blocks: words fill lines of at most `max_chars` columns (a longer
+/// single word gets a line of its own; Japanese and Chinese characters are two columns wide and
+/// are joined without spaces) and blocks of `lines` lines; a new block starts at a speaker change,
 /// at a pause of `break_pause`, after `max_duration`, or after sentence-ending punctuation once the
 /// block is past half full. Times are snapped to frames, blocks never overlap and keep
 /// `gap_frames` between them.
@@ -327,14 +329,16 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
     let mut lines: Vec<usize> = vec![0];
     for i in 0..words.len() {
         let w = &words[i];
-        let len = w.text.chars().count();
+        let len = display_width(&w.text);
         if i > a {
             let prev = &words[i - 1];
+            // the space before the word, where the script has one
+            let sp = usize::from(needs_space(&prev.text, &w.text));
             let cur = *lines.last().unwrap_or(&0);
-            let fits_line = cur + 1 + len <= max_chars;
+            let fits_line = cur + sp + len <= max_chars;
             let fits = fits_line || lines.len() < max_lines;
             let used: usize = lines.iter().sum::<usize>() + lines.len() - 1;
-            let sentence_end = prev.text.ends_with(['.', '?', '!']) && used * 2 >= cap_chars;
+            let sentence_end = prev.text.ends_with(['.', '?', '!', '。', '？', '！']) && used * 2 >= cap_chars;
             let brk =
                 !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || w.end - words[a].start > rules.max_duration || sentence_end;
             if brk {
@@ -345,7 +349,7 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
             }
             if fits_line {
                 if let Some(l) = lines.last_mut() {
-                    *l += 1 + len;
+                    *l += sp + len;
                 }
             } else {
                 lines.push(len);
@@ -365,10 +369,13 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
         let mut text_lines: Vec<String> = vec![String::new()];
         for w in &words[g.clone()] {
             let Some(l) = text_lines.last_mut() else { break };
+            let sp = needs_space(l, &w.text);
             if l.is_empty() {
                 l.push_str(&w.text);
-            } else if l.chars().count() + 1 + w.text.chars().count() <= max_chars {
-                l.push(' ');
+            } else if display_width(l) + usize::from(sp) + display_width(&w.text) <= max_chars {
+                if sp {
+                    l.push(' ');
+                }
                 l.push_str(&w.text);
             } else {
                 text_lines.push(w.text.clone());

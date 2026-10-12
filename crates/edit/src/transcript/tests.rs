@@ -295,3 +295,67 @@ fn captions_never_overlap_with_dense_words() {
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
 }
+
+/// Japanese words (one per token of the recogniser, no spaces) as sequence words `gap` seconds
+/// apart from 0 s.
+fn japanese(words: &[&str], each: f64) -> Vec<SeqWord> {
+    words
+        .iter()
+        .enumerate()
+        .map(|(i, t)| SeqWord {
+            text: t.to_string(),
+            start: s(i as f64 * each),
+            end: s((i + 1) as f64 * each - 0.02),
+            clip: ClipId(1),
+            item: MEDIA,
+            index: i,
+            track: 0,
+            speaker: None,
+            confidence: 1.0,
+        })
+        .collect()
+}
+
+/// Japanese captions: no spaces between words, full-width characters count two columns, and 。
+/// ends a sentence. (Before: "こんにちは。 今日 は 東京 …", lines twice as wide as asked for,
+/// and no break at 。.)
+#[test]
+fn japanese_captions_have_no_spaces_and_count_wide_characters() {
+    let w = japanese(
+        &["こんにちは。", "今日", "は", "東京", "の", "天気", "について", "お話し", "します。", "午後", "から", "雨", "が", "降る", "でしょう。"],
+        0.5,
+    );
+    // 26 columns = 13 full-width characters a line, one line
+    let rules = CaptionRules { max_chars: 26, lines: 1, ..Default::default() };
+    let b = caption_blocks(&w, &rules, R);
+    let text: Vec<&str> = b.iter().map(|x| x.text.as_str()).collect();
+    assert!(text.iter().all(|t| !t.contains(' ')), "{text:?}");
+    assert!(text.iter().all(|t| filmcraft_project::transcript::display_width(t) <= 26), "{text:?}");
+    assert_eq!(text.concat(), w.iter().map(|x| x.text.as_str()).collect::<String>(), "nothing lost, nothing added");
+    assert_eq!(text[0], "こんにちは。今日は東京の", "{text:?}");
+    assert!(b.len() >= 3, "{text:?}");
+    check_blocks(&b, &rules);
+    // two lines of 10 full-width characters
+    let two = CaptionRules { max_chars: 20, lines: 2, ..Default::default() };
+    let b = caption_blocks(&w, &two, R);
+    let text: Vec<&str> = b.iter().map(|x| x.text.as_str()).collect();
+    assert_eq!(
+        text,
+        [
+            "こんにちは。今日は
+東京の天気について",
+            "お話しします。午後
+から雨が降る",
+            "でしょう。"
+        ]
+    );
+    // a block ends at 。 once it is past half full (as at a full stop in English)
+    let short = japanese(&["今日は", "晴れ", "です。", "明日は", "雨", "でしょう。"], 0.5);
+    let b = caption_blocks(&short, &CaptionRules { max_chars: 20, lines: 1, ..Default::default() }, R);
+    assert_eq!(b.iter().map(|x| x.text.as_str()).collect::<Vec<_>>(), ["今日は晴れです。", "明日は雨でしょう。"]);
+    check_blocks(&b, &two);
+    // mixed text keeps its spaces between Latin words only
+    let m = japanese(&["FilmCraft", "is", "a", "動画", "編集", "ソフト", "です。"], 0.4);
+    let b = caption_blocks(&m, &CaptionRules { max_chars: 60, lines: 1, ..Default::default() }, R);
+    assert_eq!(b[0].text, "FilmCraft is a動画編集ソフトです。");
+}

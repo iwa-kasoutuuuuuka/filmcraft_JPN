@@ -43,12 +43,24 @@ with timestamp decoding, language detection and word times from cross-attention 
 `filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
 
-Both are **optional features**, off by default and never built for the web:
+Both are Cargo features. The `filmcraft` and `filmcraft-cli` apps turn them **on by default**
+(`cargo build --no-default-features` builds without them); the library crates leave them off, and
+they are never built for the web:
 
 - `whisper` (on `filmcraft-speech`, `filmcraft-engine`, and the `filmcraft` / `filmcraft-cli`
   apps, where it also enables downloads): candle inference.
 - `download` (`speech-download` on the engine): HTTPS downloads with rustls + RustCrypto and the
   operating system's certificate verifier.
+
+The language is detected from the speech by default (Settings ▸ Media Analysis & Transcription ▸
+Enable language auto-detection); switch that off to always use the Default language.
+
+**Japanese and Chinese** are written without spaces, so there every token of the recogniser is a
+word with its own time (今日は / 東 / 京 / の / 天 / 気; a character split over two tokens stays
+whole, punctuation stays with the word before it). Text made from words has no spaces inside such
+text (`Transcript::text`, captions), captions count those characters as two columns of `maxChars`,
+and 。？！ end a sentence like . ? !. A caption line can still break inside a word, because the
+recogniser's tokens are smaller than words; there is no morphological analysis.
 
 Without `whisper`, `transcript.generate` fails with "speech-to-text is not available in this build";
 transcripts can still be imported with `transcript.set` and edited with every other command. Hosts
