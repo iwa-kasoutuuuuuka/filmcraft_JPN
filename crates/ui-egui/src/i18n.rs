@@ -333,6 +333,7 @@ fn tr_ja(s: &str) -> &str {
         "Delete Tracks…" => "トラックを削除…",
         "Normalize Mix Track…" => "ミックストラックをノーマライズ…",
         "Remove Silence" => "無音部分を削除",
+        "Censor Area (Mosaic / Blur)" => "範囲を隠す (モザイク / ぼかし)",
         "Simplify Sequence…" => "シーケンスを簡略化…",
         "Transcribe Sequence…" => "シーケンスを文字起こし…",
         "Join Through Edits" => "スルー編集を結合",
