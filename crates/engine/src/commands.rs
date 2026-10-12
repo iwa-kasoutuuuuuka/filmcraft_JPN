@@ -2211,6 +2211,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::silence::commands());
     v.extend(crate::censor::commands());
     v.extend(crate::text_style::commands());
+    v.extend(crate::vertical::commands());
     v.extend(crate::panels::commands());
     v.extend(crate::scopes::commands());
     v.extend(crate::remix::commands());

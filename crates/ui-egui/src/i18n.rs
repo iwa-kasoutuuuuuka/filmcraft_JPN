@@ -333,6 +333,7 @@ fn tr_ja(s: &str) -> &str {
         "Delete Tracks…" => "トラックを削除…",
         "Normalize Mix Track…" => "ミックストラックをノーマライズ…",
         "Remove Silence" => "無音部分を削除",
+        "Make Vertical Version" => "縦型バージョンを作成",
         "Apply Text Style" => "テキストスタイルを適用",
         "Ruby (Furigana)" => "ルビ (ふりがな)",
         "Subtitle: White, Black Outline" => "字幕: 白文字・黒フチ",

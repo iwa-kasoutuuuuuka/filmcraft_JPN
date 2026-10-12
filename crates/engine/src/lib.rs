@@ -51,6 +51,7 @@ pub mod sync;
 pub mod text_style;
 pub mod transcript;
 pub mod trim;
+pub mod vertical;
 pub mod voiceover;
 
 use std::sync::Arc;
@@ -936,6 +937,8 @@ mod text_style_tests;
 mod transcript_tests;
 #[cfg(test)]
 mod trim_tests;
+#[cfg(test)]
+mod vertical_tests;
 #[cfg(test)]
 mod vfx_tests;
 #[cfg(test)]
