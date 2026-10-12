@@ -45,6 +45,7 @@ pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod silence;
 pub mod sync;
 pub mod transcript;
 pub mod trim;
@@ -921,6 +922,8 @@ mod sequence_tools_tests;
 mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
+#[cfg(test)]
+mod silence_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

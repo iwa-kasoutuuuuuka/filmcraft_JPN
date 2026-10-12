@@ -332,6 +332,7 @@ fn tr_ja(s: &str) -> &str {
         "Extract" => "抽出",
         "Delete Tracks…" => "トラックを削除…",
         "Normalize Mix Track…" => "ミックストラックをノーマライズ…",
+        "Remove Silence" => "無音部分を削除",
         "Simplify Sequence…" => "シーケンスを簡略化…",
         "Transcribe Sequence…" => "シーケンスを文字起こし…",
         "Join Through Edits" => "スルー編集を結合",
