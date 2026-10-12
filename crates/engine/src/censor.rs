@@ -28,7 +28,7 @@ const CMD: &str = "clip.censor";
 pub(crate) fn commands() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: CMD,
-        label: "Censor Area (Mosaic / Blur)",
+        label: "Censor Area (Mosaic / Blur)…",
         menu: &["Clip"],
         shortcut: None,
         params: r#"{"clip":id?,"style":"mosaic|blur"="mosaic","shape":"ellipse|rectangle"="ellipse","center":[x,y]?,"size":[w,h]?,"strength":1..100=50,"feather":px?,"track":"none|forward|backward|both"="none","wait":bool=false}"#,

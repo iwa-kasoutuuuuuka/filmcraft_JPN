@@ -62,6 +62,9 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "clip.automateToSequence" => ("Automate To Sequence", "automate", "OK"),
         "clip.sceneEditDetection" => ("Scene Edit Detection", "sceneDetect", "Analyze"),
         "sequence.normalizeMixTrack" => ("Normalize Mix Track", "normalizeMix", "OK"),
+        "sequence.removeSilence" => ("Remove Silence", "removeSilence", "Remove"),
+        "sequence.makeVertical" => ("Make Vertical Version", "makeVertical", "Create"),
+        "clip.censor" => ("Censor Area", "censor", "OK"),
         "sequence.simplify" => ("Simplify Sequence", "simplify", "Simplify"),
         "sequence.transcribe" => ("Transcribe Sequence", "transcribe", "Transcribe"),
         "file.saveAsTemplate" => ("Save as Template", "saveTemplate", "Save"),
@@ -84,6 +87,9 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "clip.automateToSequence" => "clip.automateToSequence",
         "clip.sceneEditDetection" => "clip.sceneEditDetection",
         "sequence.normalizeMixTrack" => "sequence.normalizeMixTrack",
+        "sequence.removeSilence" => "sequence.removeSilence",
+        "sequence.makeVertical" => "sequence.makeVertical",
+        "clip.censor" => "clip.censor",
         "sequence.simplify" => "sequence.simplify",
         "sequence.transcribe" => "sequence.transcribe",
         "file.saveAsTemplate" => "file.saveAsTemplate",
@@ -319,6 +325,9 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         ),
         "clip.sceneEditDetection" => (json!({"applyCuts": true, "createSubclips": false, "generateMarkers": false, "sensitivity": 50.0}), Value::Null),
         "sequence.normalizeMixTrack" => (json!({"db": 0.0}), Value::Null),
+        "sequence.removeSilence" => (json!({"thresholdDb": -40.0, "minSeconds": 0.5, "keepSeconds": 0.1}), Value::Null),
+        "sequence.makeVertical" => (json!({"aspect": "9:16", "mode": "follow"}), Value::Null),
+        "clip.censor" => (json!({"style": "mosaic", "shape": "ellipse", "strength": 50.0, "track": "none"}), Value::Null),
         "sequence.simplify" => {
             let name = s.state.active_sequence.and_then(|q| s.project.item(q)).map(|i| format!("{} (Simplified)", i.name)).unwrap_or_default();
             (
@@ -692,6 +701,46 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     });
                 }
                 "sequence.normalizeMixTrack" => number(ui, &mut elems, pre, p, "db", "Normalize Mix Track to:", -96.0..=24.0, " dB"),
+                "sequence.removeSilence" => {
+                    number(ui, &mut elems, pre, p, "thresholdDb", "Quieter than:", -96.0..=0.0, " dB");
+                    number(ui, &mut elems, pre, p, "minSeconds", "Lasting at least:", 0.05..=600.0, " s");
+                    number(ui, &mut elems, pre, p, "keepSeconds", "Keep around sound:", 0.0..=60.0, " s");
+                    ui.label(RichText::new(crate::i18n::tr_ui("Silent stretches of the mix are removed on every unlocked track.")).weak());
+                }
+                "sequence.makeVertical" => {
+                    radios(ui, &mut elems, pre, p, "aspect", "Aspect:", &[("9:16", "Vertical 9:16"), ("1:1", "Square 1:1"), ("4:5", "Vertical 4:5")]);
+                    radios(
+                        ui,
+                        &mut elems,
+                        pre,
+                        p,
+                        "mode",
+                        "Framing:",
+                        &[("follow", "Follow the subject"), ("fill", "Center crop"), ("blur", "Blurred background")],
+                    );
+                    ui.label(RichText::new(crate::i18n::tr_ui("A new sequence nests this one; the original is not changed.")).weak());
+                }
+                "clip.censor" => {
+                    radios(ui, &mut elems, pre, p, "style", "Style:", &[("mosaic", "Mosaic"), ("blur", "Blur")]);
+                    radios(ui, &mut elems, pre, p, "shape", "Shape:", &[("ellipse", "Ellipse"), ("rectangle", "Rectangle")]);
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::tr_ui("Strength:"));
+                        let mut v = p["strength"].as_f64().unwrap_or(50.0);
+                        let r = ui.add(egui::Slider::new(&mut v, 1.0..=100.0));
+                        push(&mut elems, "censor.strength", &r, "Strength");
+                        p["strength"] = json!(v);
+                    });
+                    radios(
+                        ui,
+                        &mut elems,
+                        pre,
+                        p,
+                        "track",
+                        "Track:",
+                        &[("none", "Do not track"), ("forward", "Forward"), ("backward", "Backward"), ("both", "Both directions")],
+                    );
+                    ui.label(RichText::new(crate::i18n::tr_ui("The area appears in the middle of the picture; drag it on the Program monitor.")).weak());
+                }
                 "sequence.simplify" => {
                     text(ui, &mut elems, pre, p, "name", "Sequence Name:", 240.0);
                     ui.label(RichText::new(crate::i18n::t("Remove", "削除")).strong());

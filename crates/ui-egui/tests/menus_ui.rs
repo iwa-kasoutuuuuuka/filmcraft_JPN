@@ -268,3 +268,82 @@ fn clip_and_sequence_dialogs() {
     d.click("properties.ok");
     assert!(!d.dialog_open());
 }
+
+/// The dialogs of the features of this edition: Remove Silence, Make Vertical Version and Censor
+/// Area open from their menu items with the defaults, their controls are reachable by automation
+/// id, Cancel changes nothing and OK runs the command with what the dialog holds.
+#[test]
+fn silence_vertical_and_censor_dialogs() {
+    let mut d = Driver::new();
+    let menus = d.ok("ui.menu.list", json!({}));
+    let find = |id: &str| menus.as_array().unwrap().iter().find(|m| m["id"] == id).cloned().unwrap_or_else(|| panic!("{id} not in menus"));
+    assert_eq!(find("sequence.removeSilence")["label"], "Remove Silence…");
+    assert_eq!(find("sequence.makeVertical")["path"], json!(["Sequence"]));
+    assert_eq!(find("clip.censor")["label"], "Censor Area (Mosaic / Blur)…");
+
+    // ---- Remove Silence: Cancel leaves the sequence alone; OK with a threshold above the mix removes it all
+    let before = d.app().session.active_sequence().unwrap().duration();
+    assert_eq!(d.menu("sequence.removeSilence")["dialog"], "removeSilence");
+    for id in ["removeSilence.thresholdDb", "removeSilence.minSeconds", "removeSilence.keepSeconds", "removeSilence.ok", "removeSilence.cancel"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("removeSilence.cancel");
+    assert!(!d.dialog_open());
+    assert_eq!(d.app().session.active_sequence().unwrap().duration(), before);
+    d.menu("sequence.removeSilence");
+    d.ok("ui.set", json!({"menuDialog": {"thresholdDb": 0.0, "minSeconds": 0.2, "keepSeconds": 0.0}}));
+    d.click("removeSilence.ok");
+    assert!(!d.dialog_open());
+    assert!(d.app().session.active_sequence().unwrap().duration() < before, "everything below 0 dB counts as silence");
+    assert_eq!(d.app().session.history.undo.last().unwrap().0, "Remove Silence");
+    d.exec("edit.undo", json!({}));
+    assert_eq!(d.app().session.active_sequence().unwrap().duration(), before);
+
+    // ---- Censor Area: needs a video clip; the dialog's choices reach the command
+    d.exec("timeline.select", json!({"clips": []}));
+    assert_eq!(d.call("ui.menu.invoke", json!({"id": "clip.censor"}))["ok"], false, "nothing selected");
+    let c = d.app().session.active_sequence().unwrap().video_tracks[0].items[0].id;
+    d.exec("timeline.select", json!({"clips": [c.0]}));
+    assert_eq!(d.menu("clip.censor")["dialog"], "censor");
+    for id in ["censor.style.mosaic", "censor.style.blur", "censor.shape.rectangle", "censor.strength", "censor.track.none", "censor.track.both", "censor.ok"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("censor.style.blur");
+    d.click("censor.shape.rectangle");
+    d.click("censor.ok");
+    assert!(!d.dialog_open());
+    let it = d.app().session.active_sequence().unwrap().find_item(c).unwrap().1.clone();
+    let blur = it.effects.iter().find(|e| e.effect == "gaussian_blur").expect("the blur was applied");
+    assert_eq!(blur.masks.len(), 1, "with its mask");
+    assert!(it.effects.iter().all(|e| e.effect != "mosaic"));
+    assert_eq!(d.app().session.history.undo.last().unwrap().0, "Censor Area");
+
+    // ---- Make Vertical Version: a square, centre-cropped sequence that nests this one
+    let src = d.app().session.state.active_sequence.unwrap();
+    assert_eq!(d.menu("sequence.makeVertical")["dialog"], "makeVertical");
+    for id in [
+        "makeVertical.aspect.9:16",
+        "makeVertical.aspect.1:1",
+        "makeVertical.aspect.4:5",
+        "makeVertical.mode.follow",
+        "makeVertical.mode.blur",
+        "makeVertical.ok",
+    ] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("makeVertical.aspect.1:1");
+    d.click("makeVertical.mode.fill");
+    d.click("makeVertical.ok");
+    assert!(!d.dialog_open());
+    let active = d.app().session.state.active_sequence.unwrap();
+    assert_ne!(active, src);
+    let q = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!((q.settings.width, q.settings.height), (1080, 1080));
+    assert_eq!(q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>(), 1);
+    assert_eq!(d.app().session.project.item(active).unwrap().name, "Main Edit (Square 1x1)");
+
+    // with parameters the commands run directly, without a dialog (agents, scripts)
+    d.exec("edit.undo", json!({}));
+    let r = d.exec("sequence.removeSilence", json!({"action": "detect"}));
+    assert!(r["found"].is_u64() && !d.dialog_open(), "{r}");
+}

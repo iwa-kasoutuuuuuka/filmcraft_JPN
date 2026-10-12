@@ -27,7 +27,7 @@ const MAX_LISTED: usize = 1000;
 pub(crate) fn commands() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: CMD,
-        label: "Remove Silence",
+        label: "Remove Silence…",
         menu: &["Sequence"],
         shortcut: None,
         params: r#"{"thresholdDb":-96..0=-40,"minSeconds":f=0.5,"keepSeconds":f=0.1,"action":"ripple|detect"="ripple"}"#,

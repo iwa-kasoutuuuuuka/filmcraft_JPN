@@ -29,7 +29,7 @@ const BACKGROUND_BLUR: f64 = 0.04;
 pub(crate) fn commands() -> Vec<CommandSpec> {
     vec![CommandSpec {
         id: CMD,
-        label: "Make Vertical Version",
+        label: "Make Vertical Version…",
         menu: &["Sequence"],
         shortcut: None,
         params: r#"{"aspect":"9:16|1:1|4:5"="9:16","mode":"follow|fill|blur"="follow","name":str?}"#,

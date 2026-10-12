@@ -149,6 +149,9 @@ fn screens() -> Vec<(&'static str, String)> {
         "sequence.deleteTracks",
         "audio.voiceover.settings",
         "trim.monitor",
+        "sequence.removeSilence",
+        "sequence.makeVertical",
+        "clip.censor",
     ] {
         v.push(("dialog", dialog.to_string()));
     }

@@ -332,7 +332,9 @@ fn tr_ja(s: &str) -> &str {
         "Extract" => "抽出",
         "Delete Tracks…" => "トラックを削除…",
         "Normalize Mix Track…" => "ミックストラックをノーマライズ…",
+        "Remove Silence…" => "無音部分を削除…",
         "Remove Silence" => "無音部分を削除",
+        "Make Vertical Version…" => "縦型バージョンを作成…",
         "Make Vertical Version" => "縦型バージョンを作成",
         "Apply Text Style" => "テキストスタイルを適用",
         "Ruby (Furigana)" => "ルビ (ふりがな)",
@@ -344,7 +346,8 @@ fn tr_ja(s: &str) -> &str {
         "Band: White on Navy" => "帯: 白文字・紺",
         "Soft Shadow" => "ソフトシャドウ",
         "Glow: Cyan" => "グロー: シアン",
-        "Censor Area (Mosaic / Blur)" => "範囲を隠す (モザイク / ぼかし)",
+        "Censor Area (Mosaic / Blur)…" => "範囲を隠す (モザイク / ぼかし)…",
+        "Censor Area" => "範囲を隠す",
         "Simplify Sequence…" => "シーケンスを簡略化…",
         "Transcribe Sequence…" => "シーケンスを文字起こし…",
         "Join Through Edits" => "スルー編集を結合",
@@ -1675,6 +1678,35 @@ pub fn tr_ui(s: &str) -> &str {
 fn tr_ui_ja(s: &str) -> &str {
     match s {
         "Furigana from 《 》 marks" => "《 》の読みをふりがなにする",
+        "Create" => "作成",
+        "Quieter than:" => "次より小さい音量:",
+        "Lasting at least:" => "次の長さ以上続く:",
+        "Keep around sound:" => "音の前後に残す:",
+        "Silent stretches of the mix are removed on every unlocked track." => "ミックスの無音区間を、ロックされていない全トラックから削除します。",
+        "Aspect:" => "縦横比:",
+        "Framing:" => "フレーミング:",
+        "Vertical 9:16" => "縦型 9:16",
+        "Square 1:1" => "正方形 1:1",
+        "Vertical 4:5" => "縦型 4:5",
+        "Follow the subject" => "被写体を追う",
+        "Center crop" => "中央を切り出す",
+        "Blurred background" => "余白をぼかしで埋める",
+        "A new sequence nests this one; the original is not changed." => {
+            "このシーケンスを入れ子にした新しいシーケンスを作ります。元のシーケンスは変更しません。"
+        }
+        "Style:" => "種類:",
+        "Shape:" => "形:",
+        "Strength:" => "強さ:",
+        "Track:" => "追従:",
+        "Mosaic" => "モザイク",
+        "Blur" => "ぼかし",
+        "Do not track" => "追従しない",
+        "Forward" => "順方向",
+        "Backward" => "逆方向",
+        "Both directions" => "両方向",
+        "The area appears in the middle of the picture; drag it on the Program monitor." => {
+            "範囲は画面中央に表示されます。プログラムモニター上でドラッグして合わせてください。"
+        }
         "Read" => "読み取り",
         "Latch" => "ラッチ",
         "Touch" => "タッチ",
