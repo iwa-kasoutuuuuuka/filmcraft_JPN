@@ -175,3 +175,25 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+/// Speech models belong to the session's data directory. Before, `transcript.models` and
+/// `transcript.downloadModel` used the default directory even for a session started with another
+/// one (`--data-dir`), so its downloads landed in the user's own application data.
+#[test]
+fn models_live_in_the_sessions_data_directory() {
+    let dir = crate::media_test_util::tmp_dir("speech-models-dir");
+    let (mut s, _, _) = session();
+    s.prefs_path = Some(dir.join("preferences.json"));
+    assert_eq!(crate::transcript::models_dir(&s), Some(dir.join("models")));
+    let m = s.execute("transcript.models", json!({})).unwrap();
+    assert_eq!(std::path::Path::new(m["dir"].as_str().unwrap()), dir.join("models"), "{m}");
+    assert!(m["models"].as_array().unwrap().iter().all(|x| x["installed"] == false), "nothing is installed in a fresh directory");
+    // an explicit data directory (the CLI's `--data-dir`) wins over where the preferences are
+    let other = crate::media_test_util::tmp_dir("speech-models-dir-2");
+    s.data_dir = Some(other.clone());
+    assert_eq!(crate::transcript::models_dir(&s), Some(other.join("models")));
+    // a session without a data directory of its own uses the default one
+    s.data_dir = None;
+    s.prefs_path = None;
+    assert_eq!(crate::transcript::models_dir(&s), crate::autosave::default_data_dir().map(|d| d.join("models")));
+}

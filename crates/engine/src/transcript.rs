@@ -29,9 +29,17 @@ fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], pa
     CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal }
 }
 
-/// Where downloaded speech models live (`<data dir>/models`).
-pub fn models_dir() -> Option<std::path::PathBuf> {
-    crate::autosave::default_data_dir().map(|d| d.join("models"))
+/// Where downloaded speech models live: `<data dir>/models`, in the session's data directory
+/// (`Session::data_dir`: `--data-dir`; else the one its preferences are in), else the default one.
+/// (It used to be the default directory whatever the session was given, so a session pointed at
+/// another directory downloaded its models into the user's own.)
+pub fn models_dir(s: &Session) -> Option<std::path::PathBuf> {
+    let data = s
+        .data_dir
+        .clone()
+        .or_else(|| s.prefs_path.as_deref().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf))
+        .or_else(crate::autosave::default_data_dir);
+    data.map(|d| d.join("models"))
 }
 
 /// Whether this build can transcribe with Whisper (feature `whisper`).
@@ -127,7 +135,7 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
             "speech-to-text is not available in this build (built without the `whisper` feature); import a transcript with transcript.set instead".into(),
         ));
     }
-    let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
+    let dir = models_dir(s).ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
     filmcraft_speech::load(&dir, model).map_err(speech_err)
 }
 
@@ -388,8 +396,8 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"track": tid.0, "captions": n}))
 }
 
-fn models(_: &mut Session, _: &Value) -> Result<Value> {
-    let dir = models_dir();
+fn models(s: &mut Session, _: &Value) -> Result<Value> {
+    let dir = models_dir(s);
     Ok(json!({
         "available": filmcraft_speech::available(),
         "default": filmcraft_speech::models::DEFAULT_MODEL,
@@ -404,10 +412,10 @@ fn models(_: &mut Session, _: &Value) -> Result<Value> {
 
 /// Download a catalogue model into `<data dir>/models` (feature `speech-download`). Hosts show
 /// the size, source and licence (`transcript.models`) and ask before running this.
-fn download_model(_: &mut Session, p: &Value) -> Result<Value> {
+fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "model").unwrap_or(filmcraft_speech::models::DEFAULT_MODEL);
     let m = filmcraft_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))?;
-    let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
+    let dir = models_dir(s).ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
     #[cfg(feature = "speech-download")]
     {
         filmcraft_speech::models::download(&dir, m, &mut |_, _, _| true).map_err(speech_err)?;

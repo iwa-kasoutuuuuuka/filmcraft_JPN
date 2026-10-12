@@ -317,6 +317,9 @@ pub struct Session {
     /// User preferences (`prefs.*` commands) and where they persist (None = not persisted).
     pub prefs: autosave::Preferences,
     pub prefs_path: Option<std::path::PathBuf>,
+    /// The data directory this session was given (`--data-dir`; None = the default one,
+    /// `autosave::default_data_dir`). Downloaded speech models live under it.
+    pub data_dir: Option<std::path::PathBuf>,
     /// Auto-save ring + crash-recovery journal (native frontends start it; None = off).
     pub persistence: Option<autosave::Persistence>,
     /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
@@ -424,6 +427,7 @@ impl Session {
             jobs: Vec::new(),
             prefs: Default::default(),
             prefs_path: None,
+            data_dir: None,
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
@@ -487,6 +491,7 @@ impl Session {
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
+        self.data_dir = Some(cfg.data_dir.clone());
         self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
