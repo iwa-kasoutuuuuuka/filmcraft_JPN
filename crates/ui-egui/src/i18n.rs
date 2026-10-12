@@ -1674,6 +1674,7 @@ pub fn tr_ui(s: &str) -> &str {
 
 fn tr_ui_ja(s: &str) -> &str {
     match s {
+        "Furigana from 《 》 marks" => "《 》の読みをふりがなにする",
         "Read" => "読み取り",
         "Latch" => "ラッチ",
         "Touch" => "タッチ",

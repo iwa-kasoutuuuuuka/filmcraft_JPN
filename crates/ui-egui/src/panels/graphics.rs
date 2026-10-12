@@ -1255,7 +1255,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.check(&mut vui, "ligatures", "Ligatures");
             // ruby: 漢字《かんじ》 / ｜base《reading》 in the text is set as furigana
             let (_, mut vui) = cx.row(ui, crate::i18n::t("Ruby", "ルビ"));
-            cx.check(&mut vui, "ruby", "漢字《かんじ》");
+            cx.check(&mut vui, "ruby", "Furigana from 《 》 marks");
             // one-click looks (fill, outlines, band, shadow): graphics.textStyle
             let (_, mut vui) = cx.row(ui, crate::i18n::t("Text Style", "テキストスタイル"));
             let r = egui::ComboBox::from_id_salt(("text-style", cx.clip.0, cx.layer))
