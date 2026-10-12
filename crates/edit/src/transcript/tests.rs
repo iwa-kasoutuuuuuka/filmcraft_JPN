@@ -332,23 +332,14 @@ fn japanese_captions_have_no_spaces_and_count_wide_characters() {
     assert!(text.iter().all(|t| !t.contains(' ')), "{text:?}");
     assert!(text.iter().all(|t| filmcraft_project::transcript::display_width(t) <= 26), "{text:?}");
     assert_eq!(text.concat(), w.iter().map(|x| x.text.as_str()).collect::<String>(), "nothing lost, nothing added");
-    assert_eq!(text[0], "こんにちは。今日は東京の", "{text:?}");
-    assert!(b.len() >= 3, "{text:?}");
+    assert_eq!(text, ["こんにちは。今日は東京の", "天気についてお話しします。", "午後から雨が降るでしょう。"]);
     check_blocks(&b, &rules);
-    // two lines of 10 full-width characters
+    // two lines of 10 full-width characters: lines break between phrases
     let two = CaptionRules { max_chars: 20, lines: 2, ..Default::default() };
     let b = caption_blocks(&w, &two, R);
     let text: Vec<&str> = b.iter().map(|x| x.text.as_str()).collect();
-    assert_eq!(
-        text,
-        [
-            "こんにちは。今日は
-東京の天気について",
-            "お話しします。午後
-から雨が降る",
-            "でしょう。"
-        ]
-    );
+    // (天気についてお話しします。 is wider than a line, so that one phrase is broken at the line width)
+    assert_eq!(text, ["こんにちは。今日は\n東京の", "天気についてお話し\nします。", "午後から雨が\n降るでしょう。"]);
     // a block ends at 。 once it is past half full (as at a full stop in English)
     let short = japanese(&["今日は", "晴れ", "です。", "明日は", "雨", "でしょう。"], 0.5);
     let b = caption_blocks(&short, &CaptionRules { max_chars: 20, lines: 1, ..Default::default() }, R);
@@ -358,4 +349,73 @@ fn japanese_captions_have_no_spaces_and_count_wide_characters() {
     let m = japanese(&["FilmCraft", "is", "a", "動画", "編集", "ソフト", "です。"], 0.4);
     let b = caption_blocks(&m, &CaptionRules { max_chars: 60, lines: 1, ..Default::default() }, R);
     assert_eq!(b[0].text, "FilmCraft is a動画編集ソフトです。");
+}
+
+/// The recogniser's words are smaller than words (東 / 京 / の / 天 / 気 / に / つ / いて / お / 話):
+/// lines break between phrases, not inside them. (Before: "今日は東京の天気についてお" / "話します。".)
+#[test]
+fn japanese_captions_break_between_phrases() {
+    let w = japanese(
+        &[
+            "こんにちは。",
+            "今日は",
+            "東",
+            "京",
+            "の",
+            "天",
+            "気",
+            "に",
+            "つ",
+            "いて",
+            "お",
+            "話",
+            "します。",
+            "午",
+            "後",
+            "から",
+            "雨",
+            "が",
+            "降",
+            "る",
+            "でしょう。",
+        ],
+        0.3,
+    );
+    let rules = CaptionRules { max_chars: 26, lines: 1, ..Default::default() };
+    let b = caption_blocks(&w, &rules, R);
+    let text: Vec<&str> = b.iter().map(|x| x.text.as_str()).collect();
+    assert_eq!(text, ["こんにちは。今日は東京の", "天気についてお話します。", "午後から雨が降るでしょう。"]);
+    // no line ends inside 東京, 天気について or お話します
+    assert!(text.iter().all(|t| !t.ends_with('東') && !t.ends_with('お') && !t.ends_with("天気")), "{text:?}");
+    check_blocks(&b, &rules);
+    // every word is in exactly one caption, in order
+    assert_eq!(b.iter().map(|x| x.words.len()).sum::<usize>(), w.len());
+    assert!(b.windows(2).all(|p| p[0].words.end == p[1].words.start));
+
+    // the rules one by one
+    for (a, n, ok) in [
+        ("hello", "world", true),
+        ("です。", "今日", true),
+        ("雨、", "風", true),
+        ("天気", "に", false),
+        ("に", "つ", false),
+        ("東", "京", false),
+        ("スカイ", "ツリー", false),
+        ("お", "話", false),
+        ("ご", "案内", false),
+        ("について", "お", true),
+        ("の", "天", true),
+        ("は", "スカイ", true),
+        ("コーヒ", "ー", false),
+        ("東京", "Tower", true),
+        ("", "東", true),
+        ("東", "", true),
+    ] {
+        assert_eq!(may_break_between(a, n), ok, "{a:?} | {n:?}");
+    }
+    // a phrase wider than a line is still broken (never a line longer than asked for)
+    let long = japanese(&["あ", "い", "う", "え", "お", "か", "き", "く", "け", "こ"], 0.2);
+    let b = caption_blocks(&long, &CaptionRules { max_chars: 8, lines: 1, ..Default::default() }, R);
+    assert!(b.iter().all(|x| filmcraft_project::transcript::display_width(&x.text) <= 8), "{:?}", b.iter().map(|x| &x.text).collect::<Vec<_>>());
+    assert_eq!(b.iter().map(|x| x.text.as_str()).collect::<String>(), "あいうえおかきくけこ");
 }

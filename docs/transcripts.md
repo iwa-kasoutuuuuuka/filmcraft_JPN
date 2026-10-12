@@ -59,8 +59,15 @@ Enable language auto-detection); switch that off to always use the Default langu
 word with its own time (今日は / 東 / 京 / の / 天 / 気; a character split over two tokens stays
 whole, punctuation stays with the word before it). Text made from words has no spaces inside such
 text (`Transcript::text`, captions), captions count those characters as two columns of `maxChars`,
-and 。？！ end a sentence like . ? !. A caption line can still break inside a word, because the
-recogniser's tokens are smaller than words; there is no morphological analysis.
+and 。？！ end a sentence like . ? !. Caption lines break between phrases, by the usual
+line-breaking conventions and without a dictionary (`may_break_between`): a word starting with
+hiragana stays with the word before it (particles, verb endings), kanji stays with kanji and
+katakana with katakana, nothing breaks right after お / ご, and a line may always break after
+punctuation. A phrase wider than a line is broken at the line width. There is no morphological
+analysis, so a phrase the rules do not cover (two hiragana words in a row) can still be split.
+
+Models are kept in `<data dir>/models` of the session's data directory (`--data-dir`,
+`FILMCRAFT_DATA_DIR`, else the per-user application data folder).
 
 Without `whisper`, `transcript.generate` fails with "speech-to-text is not available in this build";
 transcripts can still be imported with `transcript.set` and edited with every other command. Hosts

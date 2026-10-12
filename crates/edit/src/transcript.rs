@@ -314,9 +314,86 @@ pub struct CaptionBlock {
     pub words: std::ops::Range<usize>,
 }
 
+fn is_hiragana(c: char) -> bool {
+    matches!(c as u32, 0x3041..=0x309F)
+}
+fn is_katakana(c: char) -> bool {
+    matches!(c as u32, 0x30A0..=0x30FF | 0xFF66..=0xFF9F)
+}
+fn is_kanji(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x323AF) || matches!(c, '々' | '〆' | 'ヶ')
+}
+
+/// Whether a caption line may break between two adjacent words of a transcript.
+///
+/// Where the script has spaces, at every space. In Japanese, the recogniser's words are smaller
+/// than words (東 / 京 / の / 天 / 気 / に / つ / いて), so the usual line-breaking conventions are
+/// applied to keep a phrase together, without a dictionary:
+///
+/// - after punctuation (。、！？) a line may always break;
+/// - a word starting with hiragana stays with the word before it (particles, verb endings:
+///   天気 + に + ついて), and so do the long-vowel mark and closing punctuation;
+/// - kanji stays with kanji and katakana with katakana (compounds: 東 + 京, スカイ + ツリー);
+/// - nothing breaks right after an honorific prefix (お + 話), which itself starts a phrase.
+pub fn may_break_between(prev: &str, next: &str) -> bool {
+    let (Some(a), Some(b)) = (prev.chars().next_back(), next.chars().next()) else { return true };
+    if needs_space(prev, next) || matches!(a, '。' | '、' | '！' | '？' | '!' | '?' | '.' | ',' | '」' | '）' | '・') {
+        return true;
+    }
+    if matches!(prev, "お" | "ご") {
+        return false;
+    }
+    // (the prefix itself starts a phrase: it does not hang on to the word before it)
+    if matches!(next, "お" | "ご") {
+        return true;
+    }
+    if is_hiragana(b) || matches!(b, 'ー' | '」' | '）' | '。' | '、' | '！' | '？') {
+        return false;
+    }
+    !((is_kanji(a) && is_kanji(b)) || (is_katakana(a) && is_katakana(b)))
+}
+
+/// The units captions are laid out in, as word index ranges: runs of words no line may break
+/// inside ([`may_break_between`]). A speaker change, a pause that starts a new caption and a unit
+/// wider than a line end a unit anyway.
+fn caption_units(words: &[SeqWord], rules: &CaptionRules, max_chars: usize) -> Vec<std::ops::Range<usize>> {
+    let mut units: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut width = 0usize;
+    for (i, w) in words.iter().enumerate() {
+        let len = display_width(&w.text);
+        let joins = i > 0
+            && words.get(i - 1).is_some_and(|p| !may_break_between(&p.text, &w.text) && p.speaker == w.speaker && w.start - p.end < rules.break_pause)
+            && width + len <= max_chars;
+        match units.last_mut() {
+            Some(u) if joins => {
+                u.end = i + 1;
+                width += len;
+            }
+            _ => {
+                units.push(i..i + 1);
+                width = len;
+            }
+        }
+    }
+    units
+}
+
+/// The text of a unit: its words joined as [`Transcript::text`] joins them.
+fn unit_text(words: &[SeqWord], u: &std::ops::Range<usize>) -> String {
+    let mut out = String::new();
+    for w in words.get(u.clone()).unwrap_or_default() {
+        if needs_space(&out, &w.text) {
+            out.push(' ');
+        }
+        out.push_str(&w.text);
+    }
+    out
+}
+
 /// Lay words out as caption blocks: words fill lines of at most `max_chars` columns (a longer
-/// single word gets a line of its own; Japanese and Chinese characters are two columns wide and
-/// are joined without spaces) and blocks of `lines` lines; a new block starts at a speaker change,
+/// single word gets a line of its own; Japanese and Chinese characters are two columns wide, are
+/// joined without spaces, and break only between phrases, see [`may_break_between`]) and blocks
+/// of `lines` lines; a new block starts at a speaker change,
 /// at a pause of `break_pause`, after `max_duration`, or after sentence-ending punctuation once the
 /// block is past half full. Times are snapped to frames, blocks never overlap and keep
 /// `gap_frames` between them.
@@ -324,25 +401,31 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
     let max_chars = rules.max_chars.max(1);
     let max_lines = rules.lines.max(1);
     let cap_chars = max_chars * max_lines;
-    let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+    // what is laid out: phrases (Japanese words that belong together), one word each elsewhere
+    let units = caption_units(words, rules, max_chars);
+    let texts: Vec<String> = units.iter().map(|u| unit_text(words, u)).collect();
+    let mut unit_groups: Vec<std::ops::Range<usize>> = Vec::new();
     let mut a = 0;
     let mut lines: Vec<usize> = vec![0];
-    for i in 0..words.len() {
-        let w = &words[i];
-        let len = display_width(&w.text);
+    for (i, (u, text)) in units.iter().zip(&texts).enumerate() {
+        let (Some(w), Some(last)) = (words.get(u.start), words.get(u.end.saturating_sub(1))) else { continue };
+        let len = display_width(text);
         if i > a {
-            let prev = &words[i - 1];
-            // the space before the word, where the script has one
-            let sp = usize::from(needs_space(&prev.text, &w.text));
+            let (Some(prev), Some(first)) = (units.get(i - 1).and_then(|p| words.get(p.end.saturating_sub(1))), units.get(a).and_then(|f| words.get(f.start)))
+            else {
+                continue;
+            };
+            // the space before the unit, where the script has one
+            let sp = usize::from(needs_space(&prev.text, text));
             let cur = *lines.last().unwrap_or(&0);
             let fits_line = cur + sp + len <= max_chars;
             let fits = fits_line || lines.len() < max_lines;
             let used: usize = lines.iter().sum::<usize>() + lines.len() - 1;
             let sentence_end = prev.text.ends_with(['.', '?', '!', '。', '？', '！']) && used * 2 >= cap_chars;
             let brk =
-                !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || w.end - words[a].start > rules.max_duration || sentence_end;
+                !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || last.end - first.start > rules.max_duration || sentence_end;
             if brk {
-                groups.push(a..i);
+                unit_groups.push(a..i);
                 a = i;
                 lines = vec![len];
                 continue;
@@ -358,27 +441,32 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
             lines = vec![len];
         }
     }
-    if a < words.len() {
-        groups.push(a..words.len());
+    if a < units.len() {
+        unit_groups.push(a..units.len());
     }
     // text, frame-snapped times
     let fd = rate.frame_duration();
     let gap = Tick(fd.0 * rules.gap_frames.max(0));
     let mut out: Vec<CaptionBlock> = Vec::new();
-    for g in groups {
+    for ug in unit_groups {
+        let (Some(first), Some(last)) = (units.get(ug.start), units.get(ug.end.saturating_sub(1))) else { continue };
+        let g = first.start..last.end;
+        if g.is_empty() || g.end > words.len() {
+            continue;
+        }
         let mut text_lines: Vec<String> = vec![String::new()];
-        for w in &words[g.clone()] {
+        for t in texts.get(ug.clone()).unwrap_or_default() {
             let Some(l) = text_lines.last_mut() else { break };
-            let sp = needs_space(l, &w.text);
+            let sp = needs_space(l, t);
             if l.is_empty() {
-                l.push_str(&w.text);
-            } else if display_width(l) + usize::from(sp) + display_width(&w.text) <= max_chars {
+                l.push_str(t);
+            } else if display_width(l) + usize::from(sp) + display_width(t) <= max_chars {
                 if sp {
                     l.push(' ');
                 }
-                l.push_str(&w.text);
+                l.push_str(t);
             } else {
-                text_lines.push(w.text.clone());
+                text_lines.push(t.clone());
             }
         }
         let start = rate.snap(words[g.start].start);
