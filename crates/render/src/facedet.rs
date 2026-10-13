@@ -14,6 +14,8 @@ const PROFILE: &str = include_str!("../assets/haarcascade_profileface.xml");
 const EYE: &str = include_str!("../assets/haarcascade_eye.xml");
 /// Overlapping eye hits needed before an eye is reported.
 const MIN_EYE_NEIGHBOURS: usize = 3;
+/// Share of the face box, from its top, in which the eyes are searched.
+const EYE_BAND: f64 = 0.65;
 /// Ratio between successive pyramid levels (OpenCV's scaleFactor is typically 1.1–1.3).
 const SCALE_STEP: f64 = 1.2;
 /// Overlapping hits needed before a face is reported (OpenCV's minNeighbors).
@@ -319,35 +321,43 @@ fn eye_cascade() -> Option<&'static Cascade> {
 }
 
 /// The two eyes of a face, as centres in the picture's pixels, left one first. `px` is a greyscale picture
-/// (`w`×`h`, values 0..1) and `face` a box in its pixels. Eyes are searched in the upper half of the box:
-/// the two largest detections that sit level with each other, a plausible distance apart and of similar size.
+/// (`w`×`h`, values 0..1) and `face` a box in its pixels. Eyes are searched in the upper part of the box:
+/// the largest pair of detections that sit level with each other, a plausible distance apart and of similar size.
 /// `None` unless such a pair is found.
 pub fn eyes_in(px: &[f32], w: usize, h: usize, face: Face) -> Option<[(f64, f64); 2]> {
     let eye = eye_cascade()?;
     if w.checked_mul(h) != Some(px.len()) {
         return None;
     }
-    // the upper half of the face box, clipped to the picture
+    // the upper part of the face box, clipped to the picture; more than half, so that the lower eye of a
+    // tilted head is not cut off
     let x0 = face.x.max(0.0).floor() as usize;
     let y0 = face.y.max(0.0).floor() as usize;
     let x1 = ((face.x + face.size).min(w as f64).floor() as usize).max(x0);
-    let y1 = ((face.y + face.size * 0.5).min(h as f64).floor() as usize).max(y0);
+    let y1 = ((face.y + face.size * EYE_BAND).min(h as f64).floor() as usize).max(y0);
     let (cw, ch) = (x1 - x0, y1 - y0);
     if cw < eye.window || ch < eye.window {
         return None;
     }
     let crop: Vec<f32> = (y0..y1).flat_map(|y| px[y * w + x0..y * w + x1].iter().copied()).collect();
     let eyes = scan(eye, &crop, cw, ch, MIN_EYE_NEIGHBOURS);
-    let first = *eyes.first()?;
+    // an eye is a modest part of a face: drop detections too small or too large to be one
+    let eyes: Vec<Face> = eyes.into_iter().filter(|e| e.size >= 0.1 * face.size && e.size <= 0.4 * face.size).collect();
     let centre = |e: &Face| (e.x + e.size / 2.0, e.y + e.size / 2.0);
-    let c1 = centre(&first);
-    let second = eyes.iter().skip(1).find(|e| {
-        let c2 = centre(e);
-        let (dx, dy) = ((c2.0 - c1.0).abs(), (c2.1 - c1.1).abs());
-        let ratio = e.size / first.size;
-        dy < 0.25 * face.size && dx > 0.15 * face.size && dx < 0.8 * face.size && (0.6..=1.6).contains(&ratio)
-    })?;
-    let c2 = centre(second);
+    // every pair that sits level, a plausible distance apart and of similar size; the largest such pair wins
+    let mut best: Option<(f64, (f64, f64), (f64, f64))> = None;
+    for (i, e1) in eyes.iter().enumerate() {
+        for e2 in &eyes[i + 1..] {
+            let (c1, c2) = (centre(e1), centre(e2));
+            let (dx, dy) = ((c2.0 - c1.0).abs(), (c2.1 - c1.1).abs());
+            let ratio = e2.size / e1.size;
+            let plausible = dy < 0.25 * face.size && dx > 0.15 * face.size && dx < 0.8 * face.size && (0.6..=1.6).contains(&ratio);
+            if plausible && best.is_none_or(|(s, _, _)| e1.size + e2.size > s) {
+                best = Some((e1.size + e2.size, c1, c2));
+            }
+        }
+    }
+    let (_, c1, c2) = best?;
     let (l, r) = if c1.0 <= c2.0 { (c1, c2) } else { (c2, c1) };
     Some([(x0 as f64 + l.0, y0 as f64 + l.1), (x0 as f64 + r.0, y0 as f64 + r.1)])
 }

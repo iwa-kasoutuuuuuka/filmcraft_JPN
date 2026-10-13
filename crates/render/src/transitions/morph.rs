@@ -123,12 +123,23 @@ pub(super) fn morph_cut(a: &Image, b: &Image, p: f32) -> Image {
     dissolve(&similarity(a, ma.at(p)), &similarity(b, mb.at(1.0 - p)), p as f32)
 }
 
-/// `img` moved by the similarity `s`; the identity returns the shot unchanged.
+/// `img` moved by the similarity `s`; the identity returns the shot unchanged. Where the moved shot no
+/// longer covers the frame, the shot as shot shows through, so a move never opens a transparent border.
 fn similarity(img: &Image, s: Sim) -> Image {
     if s == Sim::IDENTITY {
         return img.clone();
     }
-    img.transformed(img.w, img.h, &s.to_affine())
+    let mut moved = img.transformed(img.w, img.h, &s.to_affine());
+    // premultiplied "moved over original"
+    moved.px.par_chunks_mut(4).zip(img.px.par_chunks(4)).for_each(|(m, o)| {
+        let k = 1.0 - m[3];
+        if k > 0.0 {
+            for c in 0..4 {
+                m[c] += o[c] * k;
+            }
+        }
+    });
+    moved
 }
 
 /// Detections per shot, keyed by a hash of the shot's pixels. A transition asks for the same two shots on
@@ -260,6 +271,14 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_shot_still_covers_the_frame() {
+        // shrunk and shifted, an opaque shot would leave a transparent border; it must stay opaque
+        let img = flat(64, 48, 0.4);
+        let moved = similarity(&img, Sim { a: (0.7, 0.1), b: (9.0, -4.0) });
+        assert!(moved.px.chunks(4).all(|p| (p[3] - 1.0).abs() < 1e-5 && (p[0] - 0.4).abs() < 1e-5), "border left open");
+    }
+
+    #[test]
     fn the_ends_are_the_identity() {
         let s = Sim { a: (0.8, 0.3), b: (5.0, -7.0) };
         assert_eq!(s.at(0.0), Sim::IDENTITY);
@@ -294,6 +313,41 @@ mod tests {
             let got = morph_cut(&a, &b, p);
             let want = dissolve(&a, &b, p);
             assert_eq!(got.px, want.px, "p = {p}");
+        }
+    }
+
+    /// Runs on a real photograph (`FILMCRAFT_FACE_SAMPLE`): the second shot is the same picture turned by 8°
+    /// about its centre and zoomed to 90 %. The eyes must be found in both, and must coincide at the meeting.
+    #[test]
+    #[ignore]
+    fn aligns_a_turned_face() {
+        let path = std::env::var("FILMCRAFT_FACE_SAMPLE").expect("set FILMCRAFT_FACE_SAMPLE");
+        let src = image::open(path).expect("readable picture").to_rgba32f();
+        let (w, h) = (src.width() as usize, src.height() as usize);
+        let px: Vec<f32> = src.as_raw().chunks(4).flat_map(|p| [srgb_to_linear(p[0]), srgb_to_linear(p[1]), srgb_to_linear(p[2]), p[3]]).collect();
+        let a = Image { w, h, px };
+        let (k, th) = (0.9, 8f64.to_radians());
+        let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+        let (re, im) = (k * th.cos(), k * th.sin());
+        let turn = Sim { a: (re, im), b: (cx - (re * cx - im * cy), cy - (im * cx + re * cy)) };
+        let b = a.transformed(w, h, &turn.to_affine());
+        let sa = shot_in(&a).expect("face in shot A");
+        let sb = shot_in(&b).expect("face in the turned shot");
+        let (ea, eb) = (sa.eyes.expect("eyes in shot A"), sb.eyes.expect("eyes in the turned shot"));
+        for (x, y) in ea.iter().zip(eb.iter()) {
+            let e = apply(turn, *x);
+            eprintln!("eye {y:?}, expected ({:.1}, {:.1})", e.0, e.1);
+            assert!((e.0 - y.0).hypot(e.1 - y.1) < 5.0, "eye {y:?} vs expected {e:?}");
+        }
+        let (ma, mb) = meeting(&sa, &sb);
+        for i in 0..2 {
+            let (pa, pb) = (apply(ma, ea[i]), apply(mb, eb[i]));
+            assert!((pa.0 - pb.0).hypot(pa.1 - pb.1) < 1.0, "meeting: {pa:?} vs {pb:?}");
+        }
+        if let Ok(out) = std::env::var("FILMCRAFT_MORPH_OUT") {
+            let mid = morph_cut(&a, &b, 0.5);
+            let bytes: Vec<u8> = mid.px.chunks(4).flat_map(|p| [0, 1, 2].map(|c| (linear_to_srgb(p[c].clamp(0.0, 1.0)) * 255.0) as u8)).collect();
+            image::RgbImage::from_raw(w as u32, h as u32, bytes).expect("sized").save(out).expect("writable");
         }
     }
 
