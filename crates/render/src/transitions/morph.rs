@@ -1,6 +1,6 @@
-//! Morph Cut: a jump cut between two shots of the same subject. The incoming shot is scaled and moved so
-//! its face sits where the outgoing face is, and the two then dissolve while the incoming shot settles
-//! back into its own framing. Without a face in both shots it is a plain cross dissolve.
+//! Morph Cut: a jump cut between two shots of the same subject. Both shots move toward one meeting point,
+//! where their faces share a centre and a size, while they dissolve; each starts as shot and ends as shot
+//! at the other end. Without a face in both shots it is a plain cross dissolve.
 //!
 //! Faces come from the Haar cascade in [`crate::facedet`], found on a copy of each shot at most
 //! [`ANALYSIS_W`] pixels wide.
@@ -21,15 +21,29 @@ const ANALYSIS_W: usize = 320;
 /// The Morph Cut frame at progress `p` (0 = outgoing shot, 1 = incoming shot).
 pub(super) fn morph_cut(a: &Image, b: &Image, p: f32) -> Image {
     let (Some(fa), Some(fb)) = (face_in(a), face_in(b)) else { return dissolve(a, b, p) };
-    // the similarity that puts the incoming face on the outgoing one
-    let s = fa.size / fb.size;
-    let (ca, cb) = (fa.x + fa.size / 2.0, fa.y + fa.size / 2.0);
-    let (ia, ib) = (fb.x + fb.size / 2.0, fb.y + fb.size / 2.0);
-    let (tx, ty) = (ca - s * ia, cb - s * ib);
-    // k = 1 at the start (incoming face aligned), 0 at the end (incoming shot as shot)
-    let k = 1.0 - p as f64;
-    let m = Affine { a: 1.0 + (s - 1.0) * k, b: 0.0, c: 0.0, d: 1.0 + (s - 1.0) * k, e: tx * k, f: ty * k };
-    dissolve(a, &b.transformed(b.w, b.h, &m), p)
+    let centre = |f: &Face| (f.x + f.size / 2.0, f.y + f.size / 2.0);
+    let ((ax, ay), (bx, by)) = (centre(&fa), centre(&fb));
+    // both faces meet halfway: at the middle of the transition they share one centre and one size
+    let (tx, ty) = ((ax + bx) / 2.0, (ay + by) / 2.0);
+    let size = (fa.size * fb.size).sqrt();
+    // each shot's own similarity to the meeting point (scale, translation), and its share of the move
+    let (sa, sb) = (size / fa.size, size / fb.size);
+    let ta = (tx - sa * ax, ty - sa * ay);
+    let tb = (tx - sb * bx, ty - sb * by);
+    let p = p as f64;
+    // outgoing: identity at p = 0, its full move at p = 1 (where it has faded out)
+    let ma = (1.0 + (sa - 1.0) * p, ta.0 * p, ta.1 * p);
+    // incoming: its full move at p = 0, identity at p = 1 (where it is shown as shot)
+    let mb = (sb * (1.0 - p) + p, tb.0 * (1.0 - p), tb.1 * (1.0 - p));
+    dissolve(&similarity(a, ma), &similarity(b, mb), p as f32)
+}
+
+/// `img` moved by the similarity `(scale, tx, ty)`; the identity returns the shot unchanged.
+fn similarity(img: &Image, (s, tx, ty): (f64, f64, f64)) -> Image {
+    if s == 1.0 && tx == 0.0 && ty == 0.0 {
+        return img.clone();
+    }
+    img.transformed(img.w, img.h, &Affine { a: s, b: 0.0, c: 0.0, d: s, e: tx, f: ty })
 }
 
 /// Largest face per shot, keyed by a hash of the shot's pixels. A transition asks for the same two shots on
@@ -156,8 +170,12 @@ mod tests {
             let bytes: Vec<u8> = mid.px.chunks(4).flat_map(|p| [0, 1, 2].map(|c| (linear_to_srgb(p[c].clamp(0.0, 1.0)) * 255.0) as u8)).collect();
             image::RgbImage::from_raw(w as u32, h as u32, bytes).expect("sized").save(out).expect("writable");
         }
-        // at the start the incoming face lands on the outgoing one
-        let start = morph_cut(&a, &b, 0.0);
-        assert_eq!(start.px, a.px);
+        // the ends are the shots as shot
+        assert_eq!(morph_cut(&a, &b, 0.0).px, a.px);
+        assert_eq!(morph_cut(&a, &b, 1.0).px, b.px);
+        // at the middle both shots are part-way to the meeting point; print what the detector sees there
+        let meet = morph_cut(&a, &b, 0.5);
+        let f = face_in(&meet).expect("a face at the meeting point");
+        eprintln!("meeting face {f:?}");
     }
 }
