@@ -15,6 +15,8 @@ const PROFILE: &str = include_str!("../assets/haarcascade_profileface.xml");
 const SCALE_STEP: f64 = 1.2;
 /// Overlapping hits needed before a face is reported (OpenCV's minNeighbors).
 const MIN_NEIGHBOURS: usize = 3;
+/// The same for profile faces, which the profile detector fires on in backgrounds far more often.
+const PROFILE_NEIGHBOURS: usize = 8;
 /// Intersection-over-union above which two hits belong to the same face.
 const SAME_FACE: f64 = 0.4;
 
@@ -232,8 +234,8 @@ fn overlap(a: &Face, b: &Face) -> f64 {
 }
 
 /// Groups raw hits into faces: each hit joins the first face it overlaps (its running mean moves),
-/// and faces with fewer than [`MIN_NEIGHBOURS`] hits are dropped. Largest first.
-fn group(hits: &[Face]) -> Vec<Face> {
+/// and faces with fewer than `min_neighbours` hits are dropped. Largest first.
+fn group(hits: &[Face], min_neighbours: usize) -> Vec<Face> {
     let mut clusters: Vec<(Face, usize)> = Vec::new();
     for hit in hits {
         match clusters.iter().position(|(c, _)| overlap(c, hit) > SAME_FACE) {
@@ -248,13 +250,13 @@ fn group(hits: &[Face]) -> Vec<Face> {
             None => clusters.push((*hit, 1)),
         }
     }
-    let mut faces: Vec<Face> = clusters.into_iter().filter(|(_, n)| *n >= MIN_NEIGHBOURS).map(|(f, _)| f).collect();
+    let mut faces: Vec<Face> = clusters.into_iter().filter(|(_, n)| *n >= min_neighbours).map(|(f, _)| f).collect();
     faces.sort_by(|a, b| b.size.total_cmp(&a.size));
     faces
 }
 
 /// One cascade over the image pyramid, grouped into faces.
-fn scan(cascade: &Cascade, px: &[f32], w: usize, h: usize) -> Vec<Face> {
+fn scan(cascade: &Cascade, px: &[f32], w: usize, h: usize, min_neighbours: usize) -> Vec<Face> {
     let win = cascade.window;
     let mut hits = Vec::new();
     let mut scale = 1.0;
@@ -274,7 +276,7 @@ fn scan(cascade: &Cascade, px: &[f32], w: usize, h: usize) -> Vec<Face> {
         }
         scale *= SCALE_STEP;
     }
-    group(&hits)
+    group(&hits, min_neighbours)
 }
 
 /// Frontal and profile faces in a greyscale image (`px` row-major, values in 0..1), each largest first.
@@ -287,13 +289,13 @@ fn detect_by_pose(px: &[f32], w: usize, h: usize) -> (Vec<Face>, Vec<Face>) {
         return (Vec::new(), Vec::new());
     }
     let mirrored: Vec<f32> = (0..w * h).map(|i| px[(i / w) * w + (w - 1 - i % w)]).collect();
-    let mut side = scan(profile, px, w, h);
-    for mut f in scan(profile, &mirrored, w, h) {
+    let mut side = scan(profile, px, w, h, PROFILE_NEIGHBOURS);
+    for mut f in scan(profile, &mirrored, w, h, PROFILE_NEIGHBOURS) {
         f.x = w as f64 - f.x - f.size;
         side.push(f);
     }
     side.sort_by(|a, b| b.size.total_cmp(&a.size));
-    (scan(frontal, px, w, h), side)
+    (scan(frontal, px, w, h, MIN_NEIGHBOURS), side)
 }
 
 /// Faces in a greyscale image, largest first.
@@ -355,9 +357,29 @@ mod tests {
     fn grouping_needs_neighbours_and_merges_overlaps() {
         let hit = |x: f64| Face { x, y: 10.0, size: 24.0 };
         // three overlapping hits make one face; a lone hit is dropped
-        let faces = group(&[hit(10.0), hit(11.0), hit(10.5), Face { x: 200.0, y: 5.0, size: 30.0 }]);
+        let faces = group(&[hit(10.0), hit(11.0), hit(10.5), Face { x: 200.0, y: 5.0, size: 30.0 }], MIN_NEIGHBOURS);
         assert_eq!(faces.len(), 1);
         assert!((faces[0].x - 10.5).abs() < 0.6);
+    }
+
+    /// Runs the profile detector over a folder of PNG photographs of turned faces (`FILMCRAFT_PROFILE_DIR`);
+    /// the OpenCV samples `left01…left09` and `right01…right09` are such photographs. Two of them were checked
+    /// by eye on 2026-10-13: left06 and right06 show a profile face at the boxes below. The other photographs
+    /// show a face only partly turned, or none the profile model can see; any detection there was a monitor
+    /// or a shirt. Ignored by default: the photographs are not part of the repository.
+    #[test]
+    #[ignore]
+    fn detects_profile_faces_in_a_folder() {
+        let dir = std::env::var("FILMCRAFT_PROFILE_DIR").expect("set FILMCRAFT_PROFILE_DIR");
+        let checked = [("left06", (221.0, 117.0)), ("right06", (138.0, 133.0))];
+        for (name, (x, y)) in checked {
+            let img = image::open(format!("{dir}/{name}.png")).expect("readable png").to_luma32f();
+            let (w, h) = (img.width() as usize, img.height() as usize);
+            let (_, side) = detect_by_pose(img.as_raw(), w, h);
+            let best = side.first().unwrap_or_else(|| panic!("{name}: no profile face"));
+            eprintln!("{name}: profile face at ({:.0}, {:.0}), {:.0} px", best.x, best.y, best.size);
+            assert!((best.x - x).abs() < 25.0 && (best.y - y).abs() < 25.0, "{name}: face at ({}, {}), expected near ({x}, {y})", best.x, best.y);
+        }
     }
 
     /// Runs on a real photograph whose path is in `FILMCRAFT_FACE_SAMPLE` (PNG or JPEG, greyscale or
