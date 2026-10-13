@@ -5,6 +5,9 @@
 //! Faces come from the Haar cascade in [`crate::facedet`], found on a copy of each shot at most
 //! [`ANALYSIS_W`] pixels wide.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use filmcraft_color::{linear_to_srgb, luma709};
 use filmcraft_geom::Affine;
 use rayon::prelude::*;
@@ -29,11 +32,46 @@ pub(super) fn morph_cut(a: &Image, b: &Image, p: f32) -> Image {
     dissolve(a, &b.transformed(b.w, b.h, &m), p)
 }
 
+/// Largest face per shot, keyed by a hash of the shot's pixels. A transition asks for the same two shots on
+/// every frame, so the detector runs once per shot rather than once per frame.
+type FaceCache = Mutex<HashMap<u64, Option<Face>>>;
+fn face_cache() -> &'static FaceCache {
+    static C: OnceLock<FaceCache> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Hash of a shot's size and every pixel's bits (FNV-1a over the words).
+fn shot_key(img: &Image) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |v: u64| h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+    mix(img.w as u64);
+    mix(img.h as u64);
+    for v in &img.px {
+        mix(v.to_bits() as u64);
+    }
+    h
+}
+
 /// The largest face in a shot, in the shot's own pixels.
 fn face_in(img: &Image) -> Option<Face> {
     if img.w < 24 || img.h < 24 {
         return None;
     }
+    let key = shot_key(img);
+    if let Some(hit) = face_cache().lock().ok().and_then(|c| c.get(&key).copied()) {
+        return hit;
+    }
+    let found = detect_in(img);
+    if let Ok(mut c) = face_cache().lock() {
+        if c.len() > 64 {
+            c.clear();
+        }
+        c.insert(key, found);
+    }
+    found
+}
+
+fn detect_in(img: &Image) -> Option<Face> {
     let lw = ANALYSIS_W.min(img.w);
     let lh = ((img.h as f64) * lw as f64 / img.w as f64).round().max(1.0) as usize;
     let (sx, sy) = (img.w as f32 / lw as f32, img.h as f32 / lh as f32);
@@ -64,6 +102,16 @@ mod tests {
         let mut img = Image::new(w, h);
         img.px.chunks_mut(4).for_each(|p| p.copy_from_slice(&[v, v, v, 1.0]));
         img
+    }
+
+    #[test]
+    fn shot_key_tells_shots_apart_and_repeats() {
+        // same size, one pixel different: the key must differ; the same shot must give the same key
+        let (a, mut b) = (flat(40, 30, 0.2), flat(40, 30, 0.2));
+        assert_eq!(shot_key(&a), shot_key(&flat(40, 30, 0.2)));
+        b.px[1234] = 0.21;
+        assert_ne!(shot_key(&a), shot_key(&b));
+        assert_eq!(face_in(&a), face_in(&a));
     }
 
     #[test]
