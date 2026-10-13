@@ -7,7 +7,9 @@
 
 use filmcraft_color::{GradeSpace, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl, srgb_to_linear};
 use filmcraft_geom::{Affine, Vec2};
-use filmcraft_project::{EffectInstance, ParamValue};
+use std::sync::{Mutex, PoisonError};
+
+use filmcraft_project::{EffectInstance, ParamValue, effect_defs};
 use filmcraft_time::Tick;
 use rayon::prelude::*;
 
@@ -466,8 +468,33 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             let box_alpha = if e.effect == "timecode" { (f(e, "opacity", cx) / 100.0).clamp(0.0, 1.0) * 0.8 } else { 0.8 };
             crate::graphics::burn_text(img, &text, family, pos, px, box_alpha);
         }
-        _ => {}
+        _ => note_unhandled(&e.effect),
     }
+}
+
+/// Effect ids that reached the end of the dispatch with no implementation, in the order they were seen.
+static UNHANDLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Ids kept in [`UNHANDLED`]: ids come from project files, so the list is bounded.
+const UNHANDLED_MAX: usize = 256;
+
+/// Record an effect id that nothing renders. The effect is still a no-op, so the project round-trips;
+/// the record makes the gap visible ([`unhandled_effect_ids`]: a test holds the catalogue to none,
+/// and hosts can report ids a project brought). Intrinsic clip properties (no category, e.g. Motion)
+/// are applied elsewhere and are not recorded.
+fn note_unhandled(id: &str) {
+    if effect_defs().iter().any(|d| d.id == id && d.category.is_empty()) {
+        return;
+    }
+    let mut seen = UNHANDLED.lock().unwrap_or_else(PoisonError::into_inner);
+    if seen.len() < UNHANDLED_MAX && !seen.iter().any(|s| s == id) {
+        seen.push(id.to_string());
+    }
+}
+
+/// Effect ids recorded by [`note_unhandled`] so far.
+pub fn unhandled_effect_ids() -> Vec<String> {
+    UNHANDLED.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 /// Fill an opaque generated colour over the image at `op` opacity (Generate category).

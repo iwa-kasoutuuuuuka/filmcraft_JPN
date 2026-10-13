@@ -272,6 +272,32 @@ fn neutral_parameters_are_identity() {
     }
 }
 
+#[test]
+fn every_video_effect_has_an_implementation() {
+    // An effect with no renderer falls through to the no-op arm and is recorded; none may be.
+    // Intrinsic clip properties (no category) are applied outside the effect dispatch.
+    let img = picture(32, 24);
+    let c = cx();
+    for d in filmcraft_project::effect_defs().iter().filter(|d| d.kind == EffectKind::Video && !d.category.is_empty()) {
+        run(d.id, &d.instance(), &img, &c);
+    }
+    // (the record is process-wide: other tests may put ids of their own in it, so only the
+    // catalogue's ids are looked at)
+    let catalogue: Vec<&str> = filmcraft_project::effect_defs().iter().map(|d| d.id).collect();
+    let missing: Vec<String> = crate::effects::unhandled_effect_ids().into_iter().filter(|id| catalogue.contains(&id.as_str())).collect();
+    assert!(missing.is_empty(), "catalogue effects with no implementation: {missing:?}");
+    // an id nothing knows is a no-op that is recorded once, and the record stays bounded
+    let mut unknown = filmcraft_project::effect_defs()[0].instance();
+    for i in 0..600 {
+        unknown.effect = format!("no_such_effect_{i}");
+        let mut out = img.clone();
+        crate::effects::apply(&mut out, &unknown, &c);
+        assert_eq!(out.px, img.px, "an unknown effect changes nothing");
+    }
+    let seen = crate::effects::unhandled_effect_ids();
+    assert!(seen.iter().any(|id| id.starts_with("no_such_effect_")) && seen.len() <= 256, "{} ids recorded", seen.len());
+}
+
 fn enc_px(img: &Image, x: usize, y: usize) -> [f32; 4] {
     let p = img.get(x, y);
     let c = enc(Image::unpremul(p));
@@ -1020,6 +1046,156 @@ fn warp_stabilizer_removes_camera_jitter() {
     assert!(stabilizer_path(&env, 0.0, filmcraft_project::TrackMethod::Position, false).is_some());
 }
 
+/// Camera wobble with a perspective term: each frame shifts a little and tilts about the frame's
+/// middle row, which a similarity cannot undo.
+fn wobble(x: f64, y: f64, t: f64) -> [f32; 3] {
+    let f = (t * 24.0).round() as i64;
+    let (dx, dy) = ((hash01(f, 0, 0, 5) as f64 - 0.5) * 8.0, (hash01(f, 1, 0, 5) as f64 - 0.5) * 8.0);
+    let tilt = (hash01(f, 2, 0, 5) as f64 - 0.5) * 0.0016;
+    let d = 1.0 + tilt * (y - 64.0);
+    texture((x + dx) / d, (y + dy) / d)
+}
+
+#[test]
+fn warp_stabilizer_perspective_removes_projective_wobble() {
+    let (w, h) = (192, 128);
+    let mk = |now: f64| ClipEnv { w, h, fps: 24.0, secs: 1.0, now, key: 0xFACE, seq: (w as u32, h as u32), pic: wobble };
+    clear_stabilizer_cache();
+    let times = [3.0, 9.0, 15.0, 21.0];
+    let interior = |a: &Image, b: &Image| {
+        let mut s = 0.0f64;
+        let mut n = 0;
+        for y in 24..h - 24 {
+            for x in 24..w - 24 {
+                s += (a.get(x, y)[0] - b.get(x, y)[0]).abs() as f64;
+                n += 1;
+            }
+        }
+        s / n as f64
+    };
+    // summed disagreement with the first frame, for the raw clip and for each stabilizer method
+    let disagreement = |method: Option<u32>| {
+        let mut e = inst("warp_stabilizer");
+        set(&mut e, "result", ParamValue::Choice(1)); // No Motion
+        set(&mut e, "framing", ParamValue::Choice(0)); // Stabilize Only
+        if let Some(m) = method {
+            set(&mut e, "method", ParamValue::Choice(m));
+        }
+        let frames: Vec<Image> = times
+            .iter()
+            .map(|&t| {
+                let env = mk(t / 24.0);
+                let mut img = env.render(t / 24.0, 1.0);
+                if method.is_some() {
+                    crate::effects::apply(&mut img, &e, &FxCtx { seconds: t / 24.0, env: Some(&env), ..cx() });
+                }
+                img
+            })
+            .collect();
+        (1..frames.len()).map(|i| interior(&frames[0], &frames[i])).sum::<f64>()
+    };
+    let raw = disagreement(None);
+    let similarity = disagreement(Some(1));
+    let perspective = disagreement(Some(2));
+    assert!(perspective < raw * 0.25, "perspective {perspective} vs raw {raw}");
+    assert!(perspective < similarity, "perspective {perspective} should beat similarity {similarity}");
+}
+
+/// A rotation about the camera centre: pan (y), tilt (x), then roll (z), as a homography.
+fn rotation(pan: f64, tilt: f64, roll: f64) -> crate::track::Homography {
+    use crate::track::Homography;
+    let (sx, cx) = tilt.sin_cos();
+    let (sy, cy) = pan.sin_cos();
+    let (sz, cz) = roll.sin_cos();
+    let rx = Homography { m: [1.0, 0.0, 0.0, 0.0, cx, -sx, 0.0, sx, cx] };
+    let ry = Homography { m: [cy, 0.0, sy, 0.0, 1.0, 0.0, -sy, 0.0, cy] };
+    let rz = Homography { m: [cz, -sz, 0.0, sz, cz, 0.0, 0.0, 0.0, 1.0] };
+    rz.then_apply(&ry).then_apply(&rx)
+}
+
+/// Camera rotation jitter over a flat scene: the picture a pinhole camera (focal = frame width) takes of
+/// the plane as it pans, tilts and rolls by about 2° a frame.
+fn rotating(x: f64, y: f64, t: f64) -> [f32; 3] {
+    use crate::track::Homography;
+    let f = (t * 24.0).round() as i64;
+    let amp = 0.03;
+    let angle = |axis: u64| (hash01(f, axis as i64, 0, 7) as f64 - 0.5) * 2.0 * amp;
+    let (w, h) = (192.0, 128.0);
+    let k = Homography { m: [w, 0.0, w / 2.0, 0.0, w, h / 2.0, 0.0, 0.0, 1.0] };
+    // frame pixel → scene pixel: (K R K⁻¹)⁻¹
+    let g = k.then_apply(&rotation(angle(0), angle(1), angle(2))).then_apply(&k.inverse().unwrap());
+    let p = g.inverse().unwrap().apply(filmcraft_geom::Vec2::new(x, y)).unwrap();
+    texture(p.x, p.y)
+}
+
+/// Summed disagreement of the stabilised frames at `times` with the first one (interior pixels only).
+/// `method` is the Warp Stabilizer method index, or `None` for the raw clip.
+fn stabilised_disagreement(pic: fn(f64, f64, f64) -> [f32; 3], method: Option<u32>, times: &[f64]) -> f64 {
+    let (w, h) = (192, 128);
+    let mut e = inst("warp_stabilizer");
+    set(&mut e, "result", ParamValue::Choice(1)); // No Motion
+    set(&mut e, "framing", ParamValue::Choice(0)); // Stabilize Only
+    if let Some(m) = method {
+        set(&mut e, "method", ParamValue::Choice(m));
+    }
+    let frames: Vec<Image> = times
+        .iter()
+        .map(|&t| {
+            let env = ClipEnv { w, h, fps: 24.0, secs: 1.0, now: t / 24.0, key: 0xD00D, seq: (w as u32, h as u32), pic };
+            let mut img = env.render(t / 24.0, 1.0);
+            if method.is_some() {
+                crate::effects::apply(&mut img, &e, &FxCtx { seconds: t / 24.0, env: Some(&env), ..cx() });
+            }
+            img
+        })
+        .collect();
+    (1..frames.len())
+        .map(|i| {
+            let mut s = 0.0f64;
+            let mut n = 0;
+            for y in 24..h - 24 {
+                for x in 24..w - 24 {
+                    s += (frames[0].get(x, y)[0] - frames[i].get(x, y)[0]).abs() as f64;
+                    n += 1;
+                }
+            }
+            s / n as f64
+        })
+        .sum()
+}
+
+#[test]
+fn warp_stabilizer_subspace_removes_camera_rotation() {
+    clear_stabilizer_cache();
+    let times = [3.0, 9.0, 15.0, 21.0];
+    let raw = stabilised_disagreement(rotating, None, &times);
+    let subspace = stabilised_disagreement(rotating, Some(3), &times);
+    // Measured, not asserted: on this planar rotation the projective fit (Perspective) is still a little
+    // closer (about 0.011 vs 0.015). The rotation model's advantage on real 3-D shots is not tested here.
+    assert!(subspace < raw * 0.25, "subspace {subspace} vs raw {raw}");
+}
+
+#[test]
+fn focal_length_is_recovered_from_rotation_steps() {
+    use crate::track::Homography;
+    // steps between the orientations of a camera with focal 150 px that pans, tilts and rolls
+    let (w, h, f) = (192.0, 128.0, 150.0);
+    let k = Homography { m: [f, 0.0, w / 2.0, 0.0, f, h / 2.0, 0.0, 0.0, 1.0] };
+    let orient = |i: usize| {
+        let t = i as f64;
+        rotation(0.02 * (0.3 * t).sin(), 0.015 * (0.2 * t).cos(), 0.01 * (0.5 * t).sin())
+    };
+    let steps: Vec<Homography> = (1..30)
+        .map(|i| {
+            let rel = orient(i).then_apply(&orient(i - 1).inverse().unwrap());
+            k.then_apply(&rel).then_apply(&k.inverse().unwrap())
+        })
+        .collect();
+    let (est, fit) = super::temporal::estimate_focal(&steps, w, h).unwrap();
+    assert!((est - f).abs() / f < 0.08, "focal {est} vs {f} (fit {fit})");
+    assert!(fit < 1e-3, "fit {fit}");
+}
+
 #[test]
 fn auto_reframe_follows_the_subject() {
     fn subject(x: f64, y: f64, _t: f64) -> [f32; 3] {
@@ -1125,5 +1301,54 @@ mod pipeline {
         place(&mut p2, seq2, 0, ocean2, vec![echo]);
         let e = render_sequence(&p2, seq2, r.tick_of(30), RenderOptions::default(), &map2);
         assert!(e.px.iter().all(|v| v.is_finite()));
+    }
+}
+
+/// A Smoothness far beyond the slider (a damaged or hand-edited project) must not hang the
+/// stabilizer: the smoothing window is bounded by the clip. Before, the window grew with the value
+/// and the loop over it never finished.
+#[test]
+fn warp_stabilizer_survives_hostile_smoothness() {
+    let (w, h) = (96, 64);
+    for method in 0..4u32 {
+        for smoothness in [1e30, f64::MAX, f64::INFINITY, f64::NAN, -5.0, 0.0] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut e = inst("warp_stabilizer");
+                set(&mut e, "result", ParamValue::Choice(0)); // Smooth Motion
+                set(&mut e, "method", ParamValue::Choice(method));
+                set(&mut e, "smoothness", ParamValue::Float(smoothness));
+                let env = ClipEnv { w, h, fps: 24.0, secs: 0.5, now: 0.25, key: 0x5A00 + method as u64, seq: (w as u32, h as u32), pic: rotating };
+                let mut img = env.render(0.25, 1.0);
+                crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.25, env: Some(&env), ..cx() });
+                let _ = tx.send(img.px.iter().all(|v| v.is_finite()));
+            });
+            match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+                Ok(finite) => assert!(finite, "method {method}, smoothness {smoothness}: non-finite pixels"),
+                Err(_) => panic!("method {method}, smoothness {smoothness}: the stabilizer hung"),
+            }
+        }
+    }
+}
+
+#[test]
+fn stabilizer_methods_survive_degenerate_clips() {
+    // flat pictures have no features to track, and tiny clips have no room for a detector window
+    fn flat(_x: f64, _y: f64, _t: f64) -> [f32; 3] {
+        [0.5, 0.5, 0.5]
+    }
+    for (w, h) in [(192usize, 128usize), (8, 8), (1, 1)] {
+        for method in 0..=3u32 {
+            clear_stabilizer_cache();
+            let env = ClipEnv { w, h, fps: 24.0, secs: 0.5, now: 0.1, key: 0xF1A7 + w as u64, seq: (w as u32, h as u32), pic: flat };
+            let mut e = inst("warp_stabilizer");
+            set(&mut e, "method", ParamValue::Choice(method));
+            for framing in 0..4u32 {
+                set(&mut e, "framing", ParamValue::Choice(framing));
+                let mut img = env.render(0.1, 1.0);
+                crate::effects::apply(&mut img, &e, &FxCtx { seconds: 0.1, env: Some(&env), ..cx() });
+                assert!(img.px.iter().all(|v| v.is_finite()), "{w}x{h} method {method} framing {framing} produced non-finite pixels");
+            }
+        }
     }
 }

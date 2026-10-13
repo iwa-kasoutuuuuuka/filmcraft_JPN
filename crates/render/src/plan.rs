@@ -82,7 +82,7 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
 }
 
 fn simple_transition(id: &str) -> bool {
-    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white" | "morph_cut")
+    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
 }
 
 fn gpu_adjustment_ok(_project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, opts: RenderOptions) -> bool {

@@ -401,8 +401,9 @@ impl Prepared {
     }
 }
 
-/// Track the picture inside `region` (polygon in frame pixels) from `a` to `b`.
-pub fn track_step(a: &Prepared, b: &Prepared, region: &[Vec2], method: TrackMethod) -> Option<Step> {
+/// Features found in `a` inside `region`, and where each one went in `b` (forward–backward checked).
+/// Returns (features found, surviving pairs as (from, to)).
+fn track_pairs(a: &Prepared, b: &Prepared, region: &[Vec2]) -> Option<(usize, Vec<Vec2>, Vec<Vec2>)> {
     let feats = features(a.base(), region, MAX_FEATURES, 5.0);
     if feats.len() < 3 {
         return None;
@@ -417,16 +418,243 @@ pub fn track_step(a: &Prepared, b: &Prepared, region: &[Vec2], method: TrackMeth
         })
         .collect();
     let (src, dst): (Vec<Vec2>, Vec<Vec2>) = pairs.into_iter().unzip();
+    Some((feats.len(), src, dst))
+}
+
+/// Track the picture inside `region` (polygon in frame pixels) from `a` to `b`.
+pub fn track_step(a: &Prepared, b: &Prepared, region: &[Vec2], method: TrackMethod) -> Option<Step> {
+    let (features, src, dst) = track_pairs(a, b, region)?;
     let (transform, inliers) = fit_robust(method, &src, &dst)?;
     if inliers < 3 {
         return None;
     }
-    Some(Step { transform, features: feats.len(), tracked: src.len(), inliers })
+    Some(Step { transform, features, tracked: src.len(), inliers })
+}
+
+/// Track the picture inside `region` from `a` to `b` and fit a projective map (the Perspective method).
+pub fn track_homography_step(a: &Prepared, b: &Prepared, region: &[Vec2]) -> Option<Homography> {
+    let (_, src, dst) = track_pairs(a, b, region)?;
+    fit_homography_robust(&src, &dst).map(|(h, _)| h)
+}
+
+// ------------------------------------------------------------------ projective (Perspective)
+
+/// A projective map of the plane: `[x y 1]ᵀ ↦ H [x y 1]ᵀ`, row-major. Every constructor keeps the
+/// bottom-right entry at 1; a map with a zero bottom row is affine (see [`Homography::to_affine`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Homography {
+    pub m: [f64; 9],
+}
+
+impl Homography {
+    pub const IDENTITY: Homography = Homography { m: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
+
+    /// The same map as an affine transform (same convention as [`Affine`]).
+    pub fn from_affine(a: &Affine) -> Self {
+        Self { m: [a.a, a.c, a.e, a.b, a.d, a.f, 0.0, 0.0, 1.0] }
+    }
+
+    /// The affine transform, when there is no perspective term.
+    pub fn to_affine(&self) -> Option<Affine> {
+        let m = &self.m;
+        (m[6] == 0.0 && m[7] == 0.0).then(|| Affine { a: m[0], b: m[3], c: m[1], d: m[4], e: m[2], f: m[5] })
+    }
+
+    /// `self` after `o`: `o` is applied first, as [`Affine::then_apply`].
+    pub fn then_apply(&self, o: &Homography) -> Homography {
+        let (a, b) = (&self.m, &o.m);
+        let mut c = [0.0; 9];
+        for r in 0..3 {
+            for k in 0..3 {
+                c[r * 3 + k] = (0..3).map(|j| a[r * 3 + j] * b[j * 3 + k]).sum();
+            }
+        }
+        Homography { m: normalised(c) }
+    }
+
+    /// Where `p` lands, or `None` when it goes to infinity.
+    pub fn apply(&self, p: Vec2) -> Option<Vec2> {
+        let m = &self.m;
+        let w = m[6] * p.x + m[7] * p.y + m[8];
+        (w.abs() > 1e-12).then(|| Vec2::new((m[0] * p.x + m[1] * p.y + m[2]) / w, (m[3] * p.x + m[4] * p.y + m[5]) / w))
+    }
+
+    pub fn inverse(&self) -> Option<Homography> {
+        let m = &self.m;
+        let c00 = m[4] * m[8] - m[5] * m[7];
+        let c01 = m[5] * m[6] - m[3] * m[8];
+        let c02 = m[3] * m[7] - m[4] * m[6];
+        let det = m[0] * c00 + m[1] * c01 + m[2] * c02;
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let adj = [
+            c00,
+            m[2] * m[7] - m[1] * m[8],
+            m[1] * m[5] - m[2] * m[4],
+            c01,
+            m[0] * m[8] - m[2] * m[6],
+            m[2] * m[3] - m[0] * m[5],
+            c02,
+            m[1] * m[6] - m[0] * m[7],
+            m[0] * m[4] - m[1] * m[3],
+        ];
+        Some(Homography { m: normalised(adj) })
+    }
+}
+
+/// Scale so the bottom-right entry is 1 (left alone when that entry is ~0).
+fn normalised(m: [f64; 9]) -> [f64; 9] {
+    let s = m[8];
+    if s.abs() < 1e-12 { m } else { m.map(|v| v / s) }
+}
+
+/// Solve the 8×8 system held in an augmented matrix by Gauss–Jordan with partial pivoting.
+fn solve8(mut a: [[f64; 9]; 8]) -> Option<[f64; 8]> {
+    for col in 0..8 {
+        let piv = (col..8).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
+        if a[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        a.swap(col, piv);
+        let pivot_row = a[col];
+        for (r, row) in a.iter_mut().enumerate() {
+            if r != col {
+                let f = row[col] / pivot_row[col];
+                for k in col..9 {
+                    row[k] -= f * pivot_row[k];
+                }
+            }
+        }
+    }
+    let mut x = [0.0; 8];
+    for (i, xi) in x.iter_mut().enumerate() {
+        *xi = a[i][8] / a[i][i];
+    }
+    Some(x)
+}
+
+/// Hartley normalisation: a similarity that moves the points' centroid to the origin and their mean
+/// distance to √2. Returns the matrix and the normalised points.
+fn normaliser(pts: &[Vec2]) -> Option<([f64; 9], Vec<Vec2>)> {
+    let n = pts.len() as f64;
+    let (mx, my) = pts.iter().fold((0.0, 0.0), |(x, y), p| (x + p.x / n, y + p.y / n));
+    let md = pts.iter().map(|p| ((p.x - mx).powi(2) + (p.y - my).powi(2)).sqrt()).sum::<f64>() / n;
+    if md < 1e-9 {
+        return None;
+    }
+    let s = std::f64::consts::SQRT_2 / md;
+    let t = [s, 0.0, -s * mx, 0.0, s, -s * my, 0.0, 0.0, 1.0];
+    Some((t, pts.iter().map(|p| Vec2::new((p.x - mx) * s, (p.y - my) * s)).collect()))
+}
+
+/// Least-squares projective map `src` → `dst` (normalised DLT, Hartley & Zisserman §4.1), needing four
+/// or more pairs with no three collinear.
+pub fn fit_homography(src: &[Vec2], dst: &[Vec2]) -> Option<Homography> {
+    if src.len() < 4 || dst.len() != src.len() {
+        return None;
+    }
+    let (ts, ps) = normaliser(src)?;
+    let (td, pd) = normaliser(dst)?;
+    // Normal equations AᵀA h = Aᵀb for h = (h0..h7) with h8 = 1, held as an augmented 8×9 matrix.
+    let mut ata = [[0.0; 9]; 8];
+    for (s, d) in ps.iter().zip(&pd) {
+        let rows = [([s.x, s.y, 1.0, 0.0, 0.0, 0.0, -d.x * s.x, -d.x * s.y], d.x), ([0.0, 0.0, 0.0, s.x, s.y, 1.0, -d.y * s.x, -d.y * s.y], d.y)];
+        for (r, b) in rows {
+            for i in 0..8 {
+                for j in 0..8 {
+                    ata[i][j] += r[i] * r[j];
+                }
+                ata[i][8] += r[i] * b;
+            }
+        }
+    }
+    let h = solve8(ata)?;
+    let hn = Homography { m: [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1.0] };
+    let td_inv = Homography { m: td }.inverse()?;
+    Some(td_inv.then_apply(&hn).then_apply(&Homography { m: ts }))
+}
+
+/// RANSAC over four-point samples with the same 1 px threshold, then a refit on the inliers.
+/// Returns (map, inlier count).
+pub fn fit_homography_robust(src: &[Vec2], dst: &[Vec2]) -> Option<(Homography, usize)> {
+    let n = src.len();
+    if n < 4 || dst.len() != n {
+        return None;
+    }
+    let inliers_of = |m: &Homography| -> Vec<usize> { (0..n).filter(|&i| m.apply(src[i]).is_some_and(|q| (q - dst[i]).length() < RANSAC_THRESHOLD)).collect() };
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ n as u64);
+    let mut best: Vec<usize> = Vec::new();
+    for _ in 0..RANSAC_ITERS {
+        let mut idx = [0usize; 4];
+        for k in 0..4 {
+            loop {
+                let c = rng.below(n);
+                if !idx[..k].contains(&c) {
+                    idx[k] = c;
+                    break;
+                }
+            }
+        }
+        let s: Vec<Vec2> = idx.iter().map(|&q| src[q]).collect();
+        let d: Vec<Vec2> = idx.iter().map(|&q| dst[q]).collect();
+        let Some(m) = fit_homography(&s, &d) else { continue };
+        let inl = inliers_of(&m);
+        if inl.len() > best.len() {
+            best = inl;
+            if best.len() == n {
+                break;
+            }
+        }
+    }
+    if best.len() < 4 {
+        return None;
+    }
+    for _ in 0..2 {
+        let (s, d): (Vec<Vec2>, Vec<Vec2>) = best.iter().map(|&q| (src[q], dst[q])).unzip();
+        let m = fit_homography(&s, &d)?;
+        let inl = inliers_of(&m);
+        if inl.len() < best.len() {
+            break;
+        }
+        best = inl;
+    }
+    let (s, d): (Vec<Vec2>, Vec<Vec2>) = best.iter().map(|&q| (src[q], dst[q])).unzip();
+    fit_homography(&s, &d).map(|m| (m, best.len()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn homography_fit_recovers_a_projective_map() {
+        let h = Homography { m: [1.02, 0.05, 3.0, -0.03, 0.98, -2.0, 1e-4, -2e-4, 1.0] };
+        let src: Vec<Vec2> = (0..12).map(|i| Vec2::new((i % 4) as f64 * 40.0 + 5.0, (i / 4) as f64 * 30.0 + 7.0)).collect();
+        let dst: Vec<Vec2> = src.iter().map(|&p| h.apply(p).unwrap()).collect();
+        let f = fit_homography(&src, &dst).unwrap();
+        for (a, b) in f.m.iter().zip(&h.m) {
+            assert!((a - b).abs() < 1e-9, "{:?} vs {:?}", f.m, h.m);
+        }
+        // the inverse and composition round-trip
+        let back = f.inverse().unwrap().then_apply(&f);
+        for (a, b) in back.m.iter().zip(Homography::IDENTITY.m.iter()) {
+            assert!((a - b).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn homography_robust_fit_rejects_outliers() {
+        let h = Homography { m: [0.97, -0.02, -4.0, 0.01, 1.03, 2.5, -2e-4, 1e-4, 1.0] };
+        let src: Vec<Vec2> = (0..30).map(|i| Vec2::new((i % 6) as f64 * 40.0 + 5.0, (i / 6) as f64 * 35.0 + 7.0)).collect();
+        let dst: Vec<Vec2> =
+            src.iter().enumerate().map(|(i, &p)| if i % 4 == 0 { h.apply(p).unwrap() + Vec2::new(30.0, -25.0) } else { h.apply(p).unwrap() }).collect();
+        let (f, inliers) = fit_homography_robust(&src, &dst).unwrap();
+        assert!(inliers >= 20, "inliers {inliers}");
+        for (a, b) in f.m.iter().zip(&h.m) {
+            assert!((a - b).abs() < 1e-6, "{:?} vs {:?}", f.m, h.m);
+        }
+    }
 
     /// A deterministic texture: smooth blobs + fine detail.
     fn texture(u: f64, v: f64) -> f32 {
