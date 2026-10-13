@@ -192,7 +192,7 @@ fn gpu_lut_matches_cpu_tetrahedral() {
     }
 }
 
-fn test_masks(scale: f32) -> Vec<filmcraft_render::mask::FlatMask> {
+pub(crate) fn test_masks(scale: f32) -> Vec<filmcraft_render::mask::FlatMask> {
     use filmcraft_project::{Mask, MaskMode, MaskPath, ParamValue};
     let mut a = Mask::new("a", MaskPath::ellipse(Vec2::new(150.0, 90.0), Vec2::new(90.0, 55.0)));
     a.feather.value = ParamValue::Float(24.0);
@@ -323,23 +323,30 @@ fn gpu_adjustment_layer_matches_cpu() {
     let (w, h) = (160usize, 90usize);
     let bg = yuv_frame(w as u32, h as u32);
     let op = filmcraft_render::gpufx::FxOp::BrightnessContrast { br: 0.2, co: 1.3 };
-    let fx = Arc::new(filmcraft_render::plan::LayerFx { size: (w as u32, h as u32), decimation: 1, ops: vec![op] });
-    let plan = FramePlan::Layers {
-        width: w,
-        height: h,
-        layers: vec![
-            PlanLayer { frame: bg, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
-            PlanLayer::adjustment(Affine::IDENTITY, 0.8, Blend::Normal, fx),
-        ],
-    };
-    let cpu = execute_cpu(&plan).over_black_rgba8();
-    c.composite(&plan);
-    let (gw, gh, gpu) = c.read_output().expect("readback");
-    assert_eq!((gw as usize, gh as usize), (w, h));
-    let mut diffs: Vec<u32> =
-        cpu.chunks(4).zip(gpu.chunks(4)).map(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).unsigned_abs()).max().unwrap_or(0)).collect();
-    diffs.sort_unstable();
-    let p99 = diffs[diffs.len() * 99 / 100];
-    let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
-    assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}");
+    let plain = filmcraft_render::plan::LayerFx { size: (w as u32, h as u32), decimation: 1, ops: vec![op], ..Default::default() };
+    // … and the same effect limited by masks (in sequence pixels)
+    let masked = filmcraft_render::plan::LayerFx { masks: vec![test_masks(0.5)], ..plain.clone() };
+    let mut pictures = Vec::new();
+    for fx in [plain, masked] {
+        let plan = FramePlan::Layers {
+            width: w,
+            height: h,
+            layers: vec![
+                PlanLayer { frame: bg.clone(), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false },
+                PlanLayer::adjustment(Affine::IDENTITY, 0.8, Blend::Normal, Arc::new(fx)),
+            ],
+        };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (gw, gh, gpu) = c.read_output().expect("readback");
+        assert_eq!((gw as usize, gh as usize), (w, h));
+        let mut diffs: Vec<u32> =
+            cpu.chunks(4).zip(gpu.chunks(4)).map(|(a, b)| (0..3).map(|k| (a[k] as i32 - b[k] as i32).unsigned_abs()).max().unwrap_or(0)).collect();
+        diffs.sort_unstable();
+        let p99 = diffs[diffs.len() * 99 / 100];
+        let mean = diffs.iter().sum::<u32>() as f64 / diffs.len() as f64;
+        assert!(p99 <= 6 && mean < 1.5, "p99 {p99}, mean {mean}");
+        pictures.push(cpu);
+    }
+    assert!(pictures[0] != pictures[1], "the masks limit the adjustment");
 }

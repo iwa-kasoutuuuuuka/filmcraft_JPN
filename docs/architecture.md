@@ -259,12 +259,13 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   Correction, Levels, Extract, Invert, Posterize, Alpha Adjust, Gaussian Blur and Directional Blur
   (and their legacy aliases), Camera Blur, Sharpen, Unsharp Mask, Crop, Edge Feather, Transform,
   Horizontal / Vertical Flip, Mirror and Offset. When every enabled effect of a media clip is in
-  that set (unmasked, with finite parameters, and no Transform shrinking the picture below half
+  that set (with finite parameters, and no Transform shrinking the picture below half
   size, which the CPU pre-filters), the plan hands the GPU the clip's source with
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
-  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
+  placed like any layer. Effect masks and a clip's Opacity masks run there too (§5.3). Other
+  standard effects, adjustment layers with other effects or Opacity masks,
   nested sequences and non-dissolve transitions are rendered on the CPU for that layer or frame
   and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
   give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
@@ -459,7 +460,12 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   (the effect only applies inside); Opacity masks scale the clip's layer before Motion, so they
   follow the clip's transform. Adjustment-layer masks are in sequence pixels.
 - **GPU.** `filmcraft-gpu::GpuMask` evaluates the same coverage and mix in WGSL (compute), tested
-  to agree with the CPU within 3·10⁻⁶. Layers with masks are CPU-rendered images in frame plans.
+  to agree with the CPU within 3·10⁻⁶. In frame plans the masks of a media clip's GPU effects, of
+  its Opacity effect, and of an adjustment layer's GPU effects travel with the `LayerFx` as
+  flattened polygons; the effect stage keeps the image before a masked effect in one more working
+  texture and mixes by the coverage in a mask pass (`OP_MASK` in `fx.wgsl`, the same math), or
+  scales the layer for Opacity masks. A layer with more than 2048 mask points or 32 masks, and an
+  adjustment layer with Opacity masks, is rendered on the CPU.
 - **Editing.** `masks.*` commands (add / remove / set / moveVertex / translate / addVertex /
   removeVertex / toggleVertexSmooth / select / list); keyframe commands take `"mask": n`. The
   Program monitor overlay drags vertices, Bézier handles, the whole mask and the feather /

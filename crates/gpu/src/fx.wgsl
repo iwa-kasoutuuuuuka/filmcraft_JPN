@@ -15,8 +15,23 @@ struct U {
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var dst: texture_storage_2d<rgba32float, write>;
-// Unsharp Mask: the image before blurring.
+// Unsharp Mask: the image before blurring. Mask pass: the image before the masked effect.
 @group(0) @binding(3) var aux: texture_2d<f32>;
+
+// Mask pass (OP_MASK): the active masks, flattened to polygons in working-image pixels (the
+// layout and the math of `mask.wgsl`, the CPU reference is `filmcraft_render::mask`).
+struct MaskInfo {
+    start: u32,
+    len: u32,
+    mode: u32,
+    inverted: u32,
+    feather: f32,
+    expansion: f32,
+    opacity: f32,
+    _pad: f32,
+};
+@group(0) @binding(4) var<storage, read> mask_infos: array<MaskInfo>;
+@group(0) @binding(5) var<storage, read> mask_pts: array<vec2<f32>>;
 
 const OP_BRIGHTNESS_CONTRAST: u32 = 1u;
 const OP_PROC_AMP: u32 = 2u;
@@ -48,6 +63,7 @@ const OP_OFFSET: u32 = 29u;
 const OP_LUMETRI: u32 = 30u;
 const OP_MOSAIC: u32 = 31u;
 const OP_VIGNETTE: u32 = 32u;
+const OP_MASK: u32 = 33u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -352,11 +368,95 @@ fn color_op(op: u32, c: vec3<f32>) -> vec3<f32> {
     }
 }
 
+fn mask_falloff(s: f32, feather: f32) -> f32 {
+    let w = max(feather, 1.0);
+    let t = clamp(s / w + 0.5, 0.0, 1.0);
+    let smooth_t = t * t * (3.0 - 2.0 * t);
+    return t + (smooth_t - t) * min(feather, 1.0);
+}
+
+// MaskMode index: None 0, Add 1, Subtract 2, Intersect 3, Lighten 4, Darken 5, Difference 6.
+fn mask_combine(mode: u32, a: f32, m: f32) -> f32 {
+    switch mode {
+        case 1u: { return a + m - a * m; }
+        case 2u: { return a * (1.0 - m); }
+        case 3u: { return a * m; }
+        case 4u: { return max(a, m); }
+        case 5u: { return min(a, m); }
+        case 6u: { return a + m - 2.0 * a * m; }
+        default: { return a; }
+    }
+}
+
+fn mask_seg_dist2(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let d = b - a;
+    let q = p - a;
+    let l2 = dot(d, d);
+    var t = 0.0;
+    if l2 > 0.0 {
+        t = clamp(dot(q, d) / l2, 0.0, 1.0);
+    }
+    let e = q - d * t;
+    return dot(e, e);
+}
+
+fn mask_value(m: MaskInfo, p: vec2<f32>) -> f32 {
+    let band = abs(m.expansion) + max(m.feather, 1.0) * 0.5 + 1.0;
+    var sd = -band;
+    if m.len >= 3u {
+        var wind = 0;
+        var d2 = band * band;
+        for (var i = 0u; i < m.len; i++) {
+            let a = mask_pts[m.start + i];
+            let c = mask_pts[m.start + (i + 1u) % m.len];
+            if (a.y <= p.y) != (c.y <= p.y) {
+                let t = (p.y - a.y) / (c.y - a.y);
+                if a.x + (c.x - a.x) * t < p.x {
+                    if c.y > a.y { wind += 1; } else { wind -= 1; }
+                }
+            }
+            d2 = min(d2, mask_seg_dist2(p, a, c));
+        }
+        let d = sqrt(d2);
+        if wind != 0 { sd = d; } else { sd = -d; }
+    }
+    let c = mask_falloff(sd + m.expansion, m.feather);
+    if m.inverted != 0u {
+        return m.opacity * (1.0 - c);
+    }
+    return m.opacity * c;
+}
+
+// Combined coverage of the i1.x masks at a pixel centre (`mask::coverage`).
+fn mask_coverage(p: vec2<f32>) -> f32 {
+    let first = mask_infos[0].mode;
+    var acc = 0.0;
+    if first == 2u || first == 3u || first == 5u {
+        acc = 1.0;
+    }
+    for (var i = 0u; i < u.i1.x; i++) {
+        let m = mask_infos[i];
+        acc = clamp(mask_combine(m.mode, acc, mask_value(m, p)), 0.0, 1.0);
+    }
+    return acc;
+}
+
 // One output pixel of every op but the running-sum box blur.
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
     switch op {
+        case OP_MASK: {
+            let cov = mask_coverage(pc);
+            let e = ld(p);
+            // i1.y: Opacity masks scale the layer (`mask::scale_by`) …
+            if u.i1.y != 0u {
+                return e * cov;
+            }
+            // … effect masks mix the effect with the image before it (`mask::mix`)
+            let o = textureLoad(aux, p, 0);
+            return o + (e - o) * cov;
+        }
         case OP_INVERT_ALPHA: {
             let o = ld(p);
             let a = o.a;

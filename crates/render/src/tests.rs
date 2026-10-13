@@ -208,6 +208,68 @@ fn plan_matches_reference_renderer() {
     }
 }
 
+/// Masked effects and Opacity masks of a media clip stay GPU layers: the plan carries the masks
+/// flattened for the working image, and running it gives the reference renderer's picture.
+#[test]
+fn plan_keeps_masked_effects_as_gpu_layers() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::{Mask, MaskMode, MaskPath};
+    let (mut p, red, ocean, seq, map) = setup();
+    let bottom = place(&mut p, seq, 0, ocean, 0, 48);
+    let top = place(&mut p, seq, 1, red, 0, 48);
+    let (sw, sh) = {
+        let s = p.sequence(seq).unwrap();
+        (s.settings.width as f64, s.settings.height as f64)
+    };
+    let mut blur = filmcraft_project::find_effect("gaussian_blur").unwrap().instance();
+    blur.params.get_mut("blurriness").unwrap().value = ParamValue::Float(30.0);
+    let mut spot = Mask::new("spot", MaskPath::ellipse(Vec2::new(sw * 0.4, sh * 0.5), Vec2::new(sw * 0.25, sh * 0.3)));
+    spot.feather.value = ParamValue::Float(12.0);
+    blur.masks.push(spot.clone());
+    let mut hole = Mask::new("hole", MaskPath::rect(sw * 0.3, sh * 0.3, sw * 0.5, sh * 0.6));
+    hole.mode = MaskMode::Subtract;
+    blur.masks.push(hole);
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(bottom).unwrap();
+        it.effects.push(blur);
+        let (_, it) = s.find_item_mut(top).unwrap();
+        it.effect_mut("opacity").unwrap().masks.push(spot);
+        it.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
+    }
+    let r = FrameRate::FPS_24;
+    for scale in [1.0, 0.5] {
+        let opts = RenderOptions { scale, ..Default::default() };
+        let reference = render_sequence(&p, seq, r.tick_of(12), opts, &map);
+        let plan = plan::plan_frame(&p, seq, r.tick_of(12), opts, &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("masked clips should be GPU-drawable") };
+        let fx: Vec<&plan::LayerFx> = layers.iter().filter_map(|l| l.fx.as_deref()).collect();
+        assert_eq!(fx.len(), 2, "both clips run the effect stage");
+        assert!(fx[0].masks.len() == 1 && fx[0].masks[0].len() == 2 && fx[0].opacity_masks.is_empty());
+        assert!(fx[1].ops.is_empty() && fx[1].opacity_masks.len() == 1);
+        let got = plan::execute_cpu(&plan);
+        assert_eq!((got.w, got.h), (reference.w, reference.h));
+        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(max < 0.02, "scale {scale}: max diff {max}");
+    }
+    // a mask with more points than the GPU evaluates per pixel: that clip is a CPU image again
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(top).unwrap();
+        let pts: Vec<Vec2> = (0..plan::MAX_GPU_MASK_POINTS + 8)
+            .map(|i| Vec2::new(sw * 0.5 + (i as f64 * 0.37).cos() * sw * 0.3, sh * 0.5 + (i as f64 * 0.37).sin() * sh * 0.3))
+            .collect();
+        it.effect_mut("opacity").unwrap().masks.push(Mask::new("many", MaskPath::polygon(&pts)));
+    }
+    let opts = RenderOptions::default();
+    let plan = plan::plan_frame(&p, seq, r.tick_of(12), opts, &map);
+    let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("layers") };
+    assert_eq!(layers.iter().filter(|l| l.fx.is_some()).count(), 1, "the clip with too many mask points is rendered on the CPU");
+    let (got, reference) = (plan::execute_cpu(&plan), render_sequence(&p, seq, r.tick_of(12), opts, &map));
+    let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(max < 0.02, "max diff {max}");
+}
+
 /// A project with a 4 s bars-and-tone clip (1 kHz at −20 dBFS) on A1, with extra audio effects.
 fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap) {
     let mut p = Project::new("fx");

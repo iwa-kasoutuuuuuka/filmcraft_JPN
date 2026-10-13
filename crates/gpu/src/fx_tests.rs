@@ -231,7 +231,7 @@ fn gpu_effects_match_cpu_exactly() {
         assert!(op.gpu_ok(), "{id} {params:?}: not GPU-capable");
         let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
         op.apply(&mut cpu);
-        let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op] };
+        let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op], ..Default::default() };
         let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
 
         let (worst, flips) = compare(&cpu.px, &gpu);
@@ -284,11 +284,64 @@ fn gpu_effect_chains_match_cpu() {
             op.apply(&mut cpu);
         }
         let names: Vec<&str> = chain.iter().map(|e| e.effect.as_str()).collect();
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops, ..Default::default() }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         eprintln!("{names:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
         assert!(worst < EXACT * 2.0 && flips == 0.0, "{names:?}: {worst}, {flips}");
     }
+}
+
+/// Effects limited by masks, and Opacity masks, against `LayerFx::apply`: the mask pass keeps the
+/// image before the effect (also while Unsharp keeps its own original) and mixes by the coverage.
+#[test]
+fn masked_effects_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (320u32, 180u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let all = crate::tests::test_masks(1.0);
+    let one = || all.iter().take(1).cloned().collect::<Vec<_>>();
+    let chain = [
+        effect("gaussian_blur", &[("blurriness", fl(40.0))]),
+        effect("tint", &[("amount", fl(80.0))]),
+        effect("unsharp_mask", &[("amount", fl(200.0)), ("radius", fl(4.0))]),
+        // no passes: its masks must not start a mix
+        effect("gaussian_blur", &[("blurriness", fl(0.0))]),
+        effect("invert", &[]),
+    ];
+    let ops: Vec<FxOp> = chain.iter().filter_map(|e| FxOp::eval(e, &cx(Tick::ZERO, 1.0), w as usize, h as usize)).collect();
+    assert!(ops.len() == chain.len() && ops.iter().all(FxOp::gpu_ok));
+    let unmasked = LayerFx { size: (w, h), decimation: 1, ops: ops.clone(), ..Default::default() };
+    let cases = [
+        ("every effect", LayerFx { masks: vec![all.clone(), one(), all.clone(), one(), all.clone()], ..unmasked.clone() }),
+        ("some effects and opacity", LayerFx { masks: vec![one(), Vec::new(), all.clone()], opacity_masks: all.clone(), ..unmasked.clone() }),
+        ("opacity only", LayerFx { ops: Vec::new(), opacity_masks: one(), ..unmasked.clone() }),
+        ("blur only", LayerFx { ops: ops.iter().take(1).cloned().collect(), masks: vec![all.clone()], ..unmasked.clone() }),
+    ];
+    let mut plain = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+    unmasked.apply(&mut plain);
+    for (name, fx) in cases {
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        fx.apply(&mut cpu);
+        assert!(cpu.px != plain.px && cpu.px != px, "{name}: the masks change the picture");
+        let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        eprintln!("masked, {name}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+        assert!(worst < 5e-4 && flips == 0.0, "{name}: {worst}, {flips}");
+    }
+    // a mask without points covers nothing (or everything, inverted): never an out-of-range read
+    let mut empty = all.iter().take(1).cloned().collect::<Vec<_>>();
+    empty.iter_mut().for_each(|m| m.pts.clear());
+    let fx = LayerFx { masks: vec![empty], ..unmasked.clone() };
+    let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+    fx.apply(&mut cpu);
+    let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
+    let (worst, flips) = compare(&cpu.px, &gpu);
+    assert!(worst < 5e-4 && flips == 0.0, "empty mask: {worst}, {flips}");
 }
 
 /// Keyframed parameters are evaluated at the layer's time on the CPU: the GPU result follows them.
@@ -318,7 +371,7 @@ fn keyframed_effects_follow_time() {
         for op in &ops {
             op.apply(&mut cpu);
         }
-        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops }).expect("effect image");
+        let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops, ..Default::default() }).expect("effect image");
         let (worst, flips) = compare(&cpu.px, &gpu);
         assert!(worst < EXACT && flips == 0.0, "t = {s}: {worst}, {flips}");
         assert_ne!(last.as_ref(), Some(&gpu), "t = {s}: the keyframes change the picture");
@@ -374,11 +427,11 @@ fn hostile_parameters_are_bounded() {
         FxOp::eval(&effect("directional_blur", &[("length", fl(1e30))]), &cx(Tick::ZERO, 1.0), w, h).expect("op"),
     ];
     let t0 = std::time::Instant::now();
-    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, ops }).expect("effect image");
+    let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w as u32, h as u32), decimation: 1, ops, ..Default::default() }).expect("effect image");
     assert!(t0.elapsed().as_secs() < 30);
     assert_eq!(gpu.len(), w * h * 4);
     // a working image larger than any texture is refused, not attempted
-    assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, ops: vec![FxOp::BlackWhite] }).is_none());
+    assert!(c.effect_image(&frame, &LayerFx { size: (1 << 20, 4), decimation: 1, ops: vec![FxOp::BlackWhite], ..Default::default() }).is_none());
 }
 
 /// Layers with effect chains in a composited plan — YUV and RGBA sources, a decimated working
@@ -418,7 +471,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::IDENTITY,
                     opacity: 1.0,
                     blend: Blend::Normal,
-                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 2, ops: ops(&chain_c, 320, 180, 0.5) })),
+                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 2, ops: ops(&chain_c, 320, 180, 0.5), ..Default::default() })),
                     is_adjustment: false,
                 },
                 PlanLayer {
@@ -426,7 +479,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::motion(Vec2::new(170.0, 95.0), Vec2::new(1.1, 1.1), 17.0, Vec2::new(80.0, 60.0)),
                     opacity: 0.8,
                     blend: mode,
-                    fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, ops: ops(&chain_a, 160, 120, 1.0) })),
+                    fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, ops: ops(&chain_a, 160, 120, 1.0), ..Default::default() })),
                     is_adjustment: false,
                 },
                 PlanLayer::new(ramp.clone(), Affine::translate(10.0, 20.0), 0.5, Blend::Normal),
@@ -435,7 +488,7 @@ fn gpu_effect_layers_match_cpu_plan() {
                     matrix: Affine::motion(Vec2::new(250.0, 70.0), Vec2::new(0.45, 0.45), -9.0, Vec2::new(160.0, 90.0)),
                     opacity: 0.7,
                     blend: mode,
-                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 1, ops: ops(&chain_b, 320, 180, 1.0) })),
+                    fx: Some(Arc::new(LayerFx { size: (320, 180), decimation: 1, ops: ops(&chain_b, 320, 180, 1.0), ..Default::default() })),
                     is_adjustment: false,
                 },
             ],
@@ -462,7 +515,7 @@ fn plain_layers_skip_the_effect_stage() {
     let plan = FramePlan::Layers { width: 64, height: 36, layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)] };
     c.composite(&plan);
     assert!(c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
-    let fx = LayerFx { size: (64, 36), decimation: 1, ops: vec![FxOp::BlackWhite] };
+    let fx = LayerFx { size: (64, 36), decimation: 1, ops: vec![FxOp::BlackWhite], ..Default::default() };
     let with = FramePlan::Layers {
         width: 64,
         height: 36,
@@ -493,7 +546,7 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         layers: vec![
             PlanLayer::new(yuv_frame(200, 150), Affine::IDENTITY, 1.0, Blend::Normal),
             PlanLayer {
-                fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, ops })),
+                fx: Some(Arc::new(LayerFx { size: (160, 120), decimation: 1, ops, ..Default::default() })),
                 is_adjustment: false,
                 ..PlanLayer::new(
                     ramp_layer(160, 120, 2),

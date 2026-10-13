@@ -3,10 +3,16 @@
 //! A layer with effects is first drawn from its source (YUV planes or RGBA, through the
 //! compositor's own `fs` shader, so decoding is the same as for a plain layer) into a working
 //! texture of the size the CPU decodes it at; each [`FxOp`] then runs as compute passes that
-//! ping-pong between two working textures (three for Unsharp Mask, which keeps the original);
-//! the last one is drawn into the accumulator with the layer's matrix, opacity and blend mode
-//! like any RGBA layer. Working textures are `Rgba32Float` (the CPU reference's precision) and
-//! pooled per size; layers without effects never touch any of this.
+//! ping-pong between two working textures (one more for Unsharp Mask, which keeps the original,
+//! and one more for an effect with masks, which keeps the image before it); the last one is drawn
+//! into the accumulator with the layer's matrix, opacity and blend mode like any RGBA layer.
+//! Working textures are `Rgba32Float` (the CPU reference's precision) and pooled per size; layers
+//! without effects never touch any of this.
+//!
+//! Masks ([`LayerFx::masks`], [`LayerFx::opacity_masks`]) are one more pass each: the coverage of
+//! the flattened polygons is evaluated per pixel (the math of `mask.wgsl` and
+//! `filmcraft_render::mask`) and mixes the effect's result with the image before it, or scales
+//! the layer for Opacity masks.
 //!
 //! Box blurs (Gaussian Blur, Camera Blur, the blur inside Unsharp / Sharpen) run per pixel for
 //! radii up to [`BOX_PER_PIXEL_MAX`] and as a running sum per row / column above, so a huge
@@ -15,6 +21,7 @@
 use std::collections::{HashMap, HashSet};
 
 use filmcraft_render::gpufx::FxOp;
+use filmcraft_render::mask::FlatMask;
 use filmcraft_render::plan::LayerFx;
 
 /// Working texture format.
@@ -52,6 +59,7 @@ const OP_OFFSET: u32 = 29;
 const OP_LUMETRI: u32 = 30;
 const OP_MOSAIC: u32 = 31;
 const OP_VIGNETTE: u32 = 32;
+const OP_MASK: u32 = 33;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -61,6 +69,8 @@ pub(crate) struct FxStage {
     bgl: wgpu::BindGroupLayout,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
     source: wgpu::RenderPipeline,
+    /// Bound as the mask buffers of the passes without masks.
+    no_masks: wgpu::Buffer,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
 }
@@ -93,6 +103,10 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
+    /// First pass of an effect with masks: the image it reads stays untouched until the mix.
+    mask_begin: bool,
+    /// The mask pass: these masks' coverage mixes the image with the kept one (or scales it).
+    masks: Option<Vec<FlatMask>>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -100,7 +114,35 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, mask_begin: false, masks: None }
+}
+
+/// The mask pass over `masks` (None without an active mask). `scale`: multiply the image by the
+/// coverage (Opacity masks) instead of mixing it with the kept image.
+fn mask_step(masks: &[FlatMask], scale: bool) -> Option<Step> {
+    let active: Vec<FlatMask> = masks.iter().filter(|m| m.mode.index() != 0).cloned().collect();
+    if active.is_empty() {
+        return None;
+    }
+    let mut s = step(OP_MASK, [active.len() as u32, scale as u32, 0, 0], &[]);
+    s.masks = Some(active);
+    Some(s)
+}
+
+/// Every pass of a layer's stage, in order.
+fn all_steps(fx: &LayerFx) -> Vec<Step> {
+    let mut all = Vec::new();
+    for (i, op) in fx.ops.iter().enumerate() {
+        let mut own = steps(op);
+        // (an op without passes changes nothing, masked or not)
+        if let (Some(first), Some(mix)) = (own.first_mut(), fx.masks.get(i).and_then(|m| mask_step(m, false))) {
+            first.mask_begin = true;
+            own.push(mix);
+        }
+        all.append(&mut own);
+    }
+    all.extend(mask_step(&fx.opacity_masks, true));
+    all
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -194,11 +236,13 @@ fn steps(op: &FxOp) -> Vec<Step> {
 }
 
 impl FxStage {
-    /// Whether `device` can run the stage: compute shaders with 16×16 workgroups and a storage
-    /// texture (WebGL2-class devices can't; they render effects on the CPU).
+    /// Whether `device` can run the stage: compute shaders with 16×16 workgroups, a storage
+    /// texture and two storage buffers (WebGL2-class devices can't; they render effects on the
+    /// CPU).
     pub(crate) fn supported(device: &wgpu::Device) -> bool {
         let l = device.limits();
         l.max_storage_textures_per_shader_stage >= 1
+            && l.max_storage_buffers_per_shader_stage >= 2
             && l.max_compute_invocations_per_workgroup >= 256
             && l.max_compute_workgroup_size_x >= 64
             && l.max_compute_workgroup_size_y >= 16
@@ -220,6 +264,18 @@ impl FxStage {
             },
             count: None,
         };
+        let masks = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let no_masks = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx-no-masks"),
+            size: 32,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fx"),
             entries: &[
@@ -241,6 +297,8 @@ impl FxStage {
                     count: None,
                 },
                 tex(3),
+                masks(4),
+                masks(5),
             ],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("fx"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
@@ -275,7 +333,7 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
+        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, no_masks, pool: HashMap::new(), used: HashSet::new() }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -330,29 +388,47 @@ impl FxStage {
         source_bg: wgpu::BindGroup,
         dummy: &wgpu::TextureView,
     ) -> Option<FxJob> {
+        use wgpu::util::DeviceExt;
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
         let max = device.limits().max_texture_dimension_2d;
         if w > max || h > max {
             return None;
         }
-        let all: Vec<Step> = fx.ops.iter().flat_map(steps).collect();
-        let n = if all.iter().any(|s| s.combine) { 3 } else { 2 };
+        let all = all_steps(fx);
+        let n = 2 + usize::from(all.iter().any(|s| s.combine)) + usize::from(all.iter().any(|s| s.mask_begin));
         let targets = self.targets(device, (w, h), n);
         let views: Vec<wgpu::TextureView> = targets.iter().map(|t| t.1.clone()).collect();
         let mut dispatches = Vec::with_capacity(all.len());
         let mut cur = 0usize;
         // Unsharp: the image its blur started from (kept while its blur passes run)
         let mut orig: Option<usize> = None;
+        // an effect with masks: the image it started from (kept until the mix)
+        let mut before: Option<usize> = None;
         for s in &all {
+            if s.mask_begin {
+                before = Some(cur);
+            }
             // (an Unsharp without blur passes, radius 0, combines the original with itself)
             if (s.unsharp_blur || s.combine) && orig.is_none() {
                 orig = Some(cur);
             }
             let keep = if s.unsharp_blur || s.combine { orig } else { None };
-            let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
-            let aux = match (s.combine, orig) {
-                (true, Some(o)) => views.get(o)?,
+            let dst = (0..n).find(|k| *k != cur && Some(*k) != keep && Some(*k) != before)?;
+            let aux = match (s.combine, orig, s.masks.is_some(), before) {
+                (true, Some(o), ..) => views.get(o)?,
+                (_, _, true, Some(b)) => views.get(b)?,
                 _ => dummy,
+            };
+            let mask_buffers = s.masks.as_ref().map(|m| {
+                let (infos, pts) = crate::mask::pack(&m.iter().collect::<Vec<_>>());
+                let init = |contents: &[u8]| {
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("fx-masks"), contents, usage: wgpu::BufferUsages::STORAGE })
+                };
+                (init(&infos), init(&pts))
+            });
+            let (infos, pts) = match &mask_buffers {
+                Some((i, p)) => (i, p),
+                None => (&self.no_masks, &self.no_masks),
             };
             let mut bytes = Vec::with_capacity(96);
             for v in [s.code, w, h, 0].iter().chain(&s.i1) {
@@ -376,6 +452,8 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(views.get(cur)?) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(views.get(dst)?) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
+                    wgpu::BindGroupEntry { binding: 4, resource: infos.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: pts.as_entire_binding() },
                 ],
             });
             let groups = if s.run {
@@ -388,6 +466,9 @@ impl FxStage {
             cur = dst;
             if s.combine {
                 orig = None;
+            }
+            if s.masks.is_some() {
+                before = None;
             }
         }
         Some(FxJob {
