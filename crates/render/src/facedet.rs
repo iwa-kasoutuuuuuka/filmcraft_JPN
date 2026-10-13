@@ -17,6 +17,8 @@ const SCALE_STEP: f64 = 1.2;
 const MIN_NEIGHBOURS: usize = 3;
 /// The same for profile faces, which the profile detector fires on in backgrounds far more often.
 const PROFILE_NEIGHBOURS: usize = 8;
+/// Largest detector window a model may ask for, in pixels (the bundled ones are 24 and 20).
+const MAX_WINDOW: usize = 256;
 /// Intersection-over-union above which two hits belong to the same face.
 const SAME_FACE: f64 = 0.4;
 
@@ -118,7 +120,8 @@ fn load(xml: &str) -> Option<Cascade> {
     let root = parse_xml(xml)?;
     // the models are square; the file's <width> is the window side
     let window = *numbers(&find(&root, "width")?.text).first()? as usize;
-    if window == 0 {
+    // (a window that is not a small square is not one of these models; its area is computed below)
+    if window == 0 || window > MAX_WINDOW {
         return None;
     }
     let mut features = Vec::new();
@@ -343,6 +346,9 @@ mod tests {
         // the real model with one rectangle pushed out of the window
         let bad = FRONTAL.replacen("6 4 12 9 -1.", "6 4 30 9 -1.", 1);
         assert!(bad != FRONTAL && load(&bad).is_none());
+        // a window no model has
+        assert!(load(&FRONTAL.replacen("<width>24</width>", "<width>1e300</width>", 1)).is_none());
+        assert!(load(&FRONTAL.replacen("<width>24</width>", "<width>0</width>", 1)).is_none());
         // cut in the middle, at many places
         for cut in (1..40).map(|i| FRONTAL.len() * i / 40) {
             let end = (0..=cut).rev().find(|i| FRONTAL.is_char_boundary(*i)).unwrap_or(0);
@@ -384,9 +390,9 @@ mod tests {
 
     /// Runs on a real photograph whose path is in `FILMCRAFT_FACE_SAMPLE` (PNG or JPEG, greyscale or
     /// RGB). Ignored by default because no photograph is part of the repository. Checked by hand on
-    /// 2026-10-13 with NASA's portrait of Neil Armstrong (public domain, 960×1200): the largest of
-    /// ten detections is the face, at (490, 237) and 186 px; the other nine are false positives on
-    /// the suit and the background, all smaller.
+    /// 2026-10-13 with NASA's portrait of Neil Armstrong (public domain, 960×1200): `largest` is the
+    /// frontal detection on the face, at (490, 237) and 186 px. `detect` also lists a profile hit
+    /// around the same head and smaller false positives on the suit and the background.
     #[test]
     #[ignore]
     fn detects_a_face_in_a_photograph() {
@@ -395,6 +401,6 @@ mod tests {
         let (w, h) = (img.width() as usize, img.height() as usize);
         let faces = detect(img.as_raw(), w, h);
         assert!(!faces.is_empty(), "no face found in {w}x{h}");
-        eprintln!("faces: {faces:?}");
+        eprintln!("largest: {:?}; {} detections: {faces:?}", largest(img.as_raw(), w, h), faces.len());
     }
 }
