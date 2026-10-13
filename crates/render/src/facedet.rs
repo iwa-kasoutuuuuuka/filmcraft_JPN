@@ -1,15 +1,16 @@
-//! Frontal face detection for Morph Cut: the Viola–Jones cascade shipped with OpenCV
-//! (`haarcascade_frontalface_default.xml`, by Rainer Lienhart, Intel licence — see ATTRIBUTION.md).
+//! Face detection for Morph Cut: the Viola–Jones cascades shipped with OpenCV, frontal
+//! (`haarcascade_frontalface_default.xml`, by Rainer Lienhart) and profile (`haarcascade_profileface.xml`,
+//! by David Bradley and Princeton University); both under the Intel licence — see ATTRIBUTION.md.
 //!
-//! The model is a 24×24 upright detector of 25 stages, each a sum of decision stumps over Haar-like
-//! rectangle features. It is evaluated on an image pyramid with integral images (Viola & Jones 2001),
-//! variance-normalised as in Lienhart & Maydt (2002), and overlapping hits are grouped into faces.
+//! Each model is an upright detector of stumps over Haar-like rectangle features, 24×24 for frontal and
+//! 20×20 for profile faces. It is evaluated on an image pyramid with integral images (Viola & Jones 2001),
+//! variance-normalised as in Lienhart & Maydt (2002). Profile faces are searched on the picture and on its
+//! mirror image, so both sides are found. Overlapping hits are grouped into faces.
 
 use std::sync::OnceLock;
 
-const MODEL: &str = include_str!("../assets/haarcascade_frontalface_default.xml");
-/// The detector's window, in pixels of the level it runs on.
-const WIN: usize = 24;
+const FRONTAL: &str = include_str!("../assets/haarcascade_frontalface_default.xml");
+const PROFILE: &str = include_str!("../assets/haarcascade_profileface.xml");
 /// Ratio between successive pyramid levels (OpenCV's scaleFactor is typically 1.1–1.3).
 const SCALE_STEP: f64 = 1.2;
 /// Overlapping hits needed before a face is reported (OpenCV's minNeighbors).
@@ -41,14 +42,17 @@ struct Stage {
 }
 
 struct Cascade {
+    /// Side of the square detector window, in pixels of the level it runs on.
+    window: usize,
     features: Vec<Vec<Rect>>,
     stages: Vec<Stage>,
 }
 
-/// The cascade, parsed once. `None` if the bundled model cannot be read (it always can; see the tests).
-fn cascade() -> Option<&'static Cascade> {
-    static C: OnceLock<Option<Cascade>> = OnceLock::new();
-    C.get_or_init(|| load(MODEL)).as_ref()
+/// The frontal and profile cascades, parsed once. `None` if a bundled model cannot be read (they always can;
+/// see the tests).
+fn cascades() -> Option<&'static [Cascade; 2]> {
+    static C: OnceLock<Option<[Cascade; 2]>> = OnceLock::new();
+    C.get_or_init(|| Some([load(FRONTAL)?, load(PROFILE)?])).as_ref()
 }
 
 /// A minimal XML element tree: enough for OpenCV's cascade files (no attributes, no entities).
@@ -110,12 +114,25 @@ fn numbers(text: &str) -> Vec<f64> {
 
 fn load(xml: &str) -> Option<Cascade> {
     let root = parse_xml(xml)?;
+    // the models are square; the file's <width> is the window side
+    let window = *numbers(&find(&root, "width")?.text).first()? as usize;
+    if window == 0 {
+        return None;
+    }
     let mut features = Vec::new();
     for f in &find(&root, "features")?.children {
         let mut rects = Vec::new();
         for r in &find(f, "rects")?.children {
             let v = numbers(&r.text);
-            rects.push((*v.first()? as usize, *v.get(1)? as usize, *v.get(2)? as usize, *v.get(3)? as usize, *v.get(4)?));
+            let (x, y, w, h) = (*v.first()?, *v.get(1)?, *v.get(2)?, *v.get(3)?);
+            // inside the window, or the model is not one this evaluator can run (`rect` indexes the
+            // integral image with these)
+            let win = window as f64;
+            let inside = [x, y, w, h].iter().all(|n| n.is_finite() && *n >= 0.0 && *n <= win) && x + w <= win && y + h <= win;
+            if !inside {
+                return None;
+            }
+            rects.push((x as usize, y as usize, w as usize, h as usize, *v.get(4)?));
         }
         features.push(rects);
     }
@@ -134,7 +151,7 @@ fn load(xml: &str) -> Option<Cascade> {
         }
         stages.push(Stage { threshold, stumps });
     }
-    (!stages.is_empty()).then_some(Cascade { features, stages })
+    (!stages.is_empty()).then_some(Cascade { window, features, stages })
 }
 
 /// Sum over the rectangle `(x, y, w, h)` from an integral image with row stride `stride`.
@@ -163,9 +180,10 @@ fn integrals(px: &[f32], w: usize, h: usize) -> (Vec<f64>, Vec<f64>) {
 impl Cascade {
     /// Whether the window at (x, y) of a level passes every stage.
     fn accepts(&self, sum: &[f64], sq: &[f64], stride: usize, x: usize, y: usize) -> bool {
-        let area = (WIN * WIN) as f64;
-        let s = rect(sum, stride, x, y, WIN, WIN);
-        let q = rect(sq, stride, x, y, WIN, WIN);
+        let win = self.window;
+        let area = (win * win) as f64;
+        let s = rect(sum, stride, x, y, win, win);
+        let q = rect(sq, stride, x, y, win, win);
         let var = q / area - (s / area).powi(2);
         if var <= 1e-12 {
             return false;
@@ -235,25 +253,22 @@ fn group(hits: &[Face]) -> Vec<Face> {
     faces
 }
 
-/// Faces in a greyscale image (`px` row-major, values in 0..1), largest first.
-pub fn detect(px: &[f32], w: usize, h: usize) -> Vec<Face> {
-    let Some(cascade) = cascade() else { return Vec::new() };
-    if px.len() != w * h {
-        return Vec::new();
-    }
+/// One cascade over the image pyramid, grouped into faces.
+fn scan(cascade: &Cascade, px: &[f32], w: usize, h: usize) -> Vec<Face> {
+    let win = cascade.window;
     let mut hits = Vec::new();
     let mut scale = 1.0;
     loop {
         let (lw, lh) = ((w as f64 / scale).floor() as usize, (h as f64 / scale).floor() as usize);
-        if lw < WIN || lh < WIN {
+        if lw < win || lh < win {
             break;
         }
         let level = resample(px, w, h, lw, lh);
         let (sum, sq) = integrals(&level, lw, lh);
-        for y in 0..=lh - WIN {
-            for x in 0..=lw - WIN {
+        for y in 0..=lh - win {
+            for x in 0..=lw - win {
                 if cascade.accepts(&sum, &sq, lw + 1, x, y) {
-                    hits.push(Face { x: x as f64 * scale, y: y as f64 * scale, size: WIN as f64 * scale });
+                    hits.push(Face { x: x as f64 * scale, y: y as f64 * scale, size: win as f64 * scale });
                 }
             }
         }
@@ -262,9 +277,38 @@ pub fn detect(px: &[f32], w: usize, h: usize) -> Vec<Face> {
     group(&hits)
 }
 
-/// The largest face in the image, if there is one.
+/// Frontal and profile faces in a greyscale image (`px` row-major, values in 0..1), each largest first.
+/// Frontal faces are searched on the picture; profile faces on the picture and on its mirror image, which
+/// turns one profile into the other.
+fn detect_by_pose(px: &[f32], w: usize, h: usize) -> (Vec<Face>, Vec<Face>) {
+    let Some([frontal, profile]) = cascades() else { return (Vec::new(), Vec::new()) };
+    // (sizes come from the caller: a product that overflows is not a picture)
+    if w.checked_mul(h) != Some(px.len()) || w == 0 || h == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let mirrored: Vec<f32> = (0..w * h).map(|i| px[(i / w) * w + (w - 1 - i % w)]).collect();
+    let mut side = scan(profile, px, w, h);
+    for mut f in scan(profile, &mirrored, w, h) {
+        f.x = w as f64 - f.x - f.size;
+        side.push(f);
+    }
+    side.sort_by(|a, b| b.size.total_cmp(&a.size));
+    (scan(frontal, px, w, h), side)
+}
+
+/// Faces in a greyscale image, largest first.
+pub fn detect(px: &[f32], w: usize, h: usize) -> Vec<Face> {
+    let (mut faces, side) = detect_by_pose(px, w, h);
+    faces.extend(side);
+    faces.sort_by(|a, b| b.size.total_cmp(&a.size));
+    faces
+}
+
+/// The largest face in the image, if there is one. A frontal face is preferred to a profile: the profile
+/// detector also fires on textured backgrounds, and a larger false profile must not win over a real face.
 pub fn largest(px: &[f32], w: usize, h: usize) -> Option<Face> {
-    detect(px, w, h).into_iter().next()
+    let (frontal, side) = detect_by_pose(px, w, h);
+    frontal.into_iter().next().or_else(|| side.into_iter().next())
 }
 
 #[cfg(test)]
@@ -274,10 +318,12 @@ mod tests {
     #[test]
     fn bundled_model_parses_to_the_opencv_frontal_cascade() {
         // OpenCV's haarcascade_frontalface_default: 25 stages over 2913 upright features
-        let c = cascade().expect("model parses");
+        let [c, profile] = cascades().expect("models parse");
+        assert_eq!((profile.window, profile.stages.len()), (20, 26));
         assert_eq!(c.stages.len(), 25);
         assert_eq!(c.features.len(), 2913);
-        assert!(c.features.iter().all(|f| f.iter().all(|r| r.0 + r.2 <= WIN && r.1 + r.3 <= WIN)));
+        assert_eq!(c.window, 24);
+        assert!(c.features.iter().all(|f| f.iter().all(|r| r.0 + r.2 <= c.window && r.1 + r.3 <= c.window)));
     }
 
     #[test]
@@ -285,6 +331,24 @@ mod tests {
         assert!(detect(&vec![0.5; 120 * 90], 120, 90).is_empty());
         assert!(detect(&[], 0, 0).is_empty());
         assert!(detect(&[0.0; 10], 5, 2).is_empty());
+    }
+
+    /// A model whose rectangles leave the window, or that is cut short, is refused when it is
+    /// loaded: nothing indexes outside the integral image later.
+    #[test]
+    fn damaged_models_are_refused() {
+        assert!(load("").is_none() && load("<a><b></a>").is_none() && load("<opencv_storage></opencv_storage>").is_none());
+        // the real model with one rectangle pushed out of the window
+        let bad = FRONTAL.replacen("6 4 12 9 -1.", "6 4 30 9 -1.", 1);
+        assert!(bad != FRONTAL && load(&bad).is_none());
+        // cut in the middle, at many places
+        for cut in (1..40).map(|i| FRONTAL.len() * i / 40) {
+            let end = (0..=cut).rev().find(|i| FRONTAL.is_char_boundary(*i)).unwrap_or(0);
+            let _ = load(&FRONTAL[..end]);
+        }
+        // sizes that do not describe the buffer
+        assert!(detect(&[0.0; 16], usize::MAX, 2).is_empty());
+        assert!(detect(&[0.0; 16], 4, 5).is_empty());
     }
 
     #[test]
@@ -296,8 +360,11 @@ mod tests {
         assert!((faces[0].x - 10.5).abs() < 0.6);
     }
 
-    /// Runs on a real photograph whose path is in `FILMCRAFT_FACE_SAMPLE` (a PNG, greyscale or RGB).
-    /// Ignored by default because the photograph is not part of the repository.
+    /// Runs on a real photograph whose path is in `FILMCRAFT_FACE_SAMPLE` (PNG or JPEG, greyscale or
+    /// RGB). Ignored by default because no photograph is part of the repository. Checked by hand on
+    /// 2026-10-13 with NASA's portrait of Neil Armstrong (public domain, 960×1200): the largest of
+    /// ten detections is the face, at (490, 237) and 186 px; the other nine are false positives on
+    /// the suit and the background, all smaller.
     #[test]
     #[ignore]
     fn detects_a_face_in_a_photograph() {
@@ -309,4 +376,3 @@ mod tests {
         eprintln!("faces: {faces:?}");
     }
 }
-
