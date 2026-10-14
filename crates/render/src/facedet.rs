@@ -12,6 +12,9 @@ use std::sync::OnceLock;
 const FRONTAL: &str = include_str!("../assets/haarcascade_frontalface_default.xml");
 const PROFILE: &str = include_str!("../assets/haarcascade_profileface.xml");
 const EYE: &str = include_str!("../assets/haarcascade_eye.xml");
+const SMILE: &str = include_str!("../assets/haarcascade_smile.xml");
+/// Overlapping smile hits needed before a mouth is reported.
+const MIN_MOUTH_NEIGHBOURS: usize = 4;
 /// Overlapping eye hits needed before an eye is reported.
 const MIN_EYE_NEIGHBOURS: usize = 3;
 /// Share of the face box, from its top, in which the eyes are searched.
@@ -35,8 +38,16 @@ pub struct Face {
     pub size: f64,
 }
 
-/// A weighted rectangle inside the window: (x, y, width, height, weight).
+/// A weighted rectangle inside the window: (x, y, width, height, weight). For a tilted feature (45 degrees)
+/// the top corner is (x, y), the arms run to (x - h, y + h) and (x + w, y + w), and the fourth corner is
+/// (x + w - h, y + w + h).
 type Rect = (usize, usize, usize, usize, f64);
+
+/// The rectangles of one Haar-like feature, and whether they are tilted by 45 degrees.
+struct Feature {
+    rects: Vec<Rect>,
+    tilted: bool,
+}
 
 struct Stump {
     feature: usize,
@@ -51,9 +62,10 @@ struct Stage {
 }
 
 struct Cascade {
-    /// Side of the square detector window, in pixels of the level it runs on.
-    window: usize,
-    features: Vec<Vec<Rect>>,
+    /// Detector window, in pixels of the level it runs on (the smile model is wider than it is high).
+    win_w: usize,
+    win_h: usize,
+    features: Vec<Feature>,
     stages: Vec<Stage>,
 }
 
@@ -123,28 +135,29 @@ fn numbers(text: &str) -> Vec<f64> {
 
 fn load(xml: &str) -> Option<Cascade> {
     let root = parse_xml(xml)?;
-    // the models are square; the file's <width> is the window side
-    let window = *numbers(&find(&root, "width")?.text).first()? as usize;
-    // (a window that is not a small square is not one of these models; its area is computed below)
-    if window == 0 || window > MAX_WINDOW {
+    let win_w = *numbers(&find(&root, "width")?.text).first()? as usize;
+    let win_h = *numbers(&find(&root, "height")?.text).first()? as usize;
+    if win_w == 0 || win_h == 0 || win_w > MAX_WINDOW || win_h > MAX_WINDOW {
         return None;
     }
     let mut features = Vec::new();
     for f in &find(&root, "features")?.children {
+        let tilted = find(f, "tilted").and_then(|t| numbers(&t.text).first().copied()).is_some_and(|v| v != 0.0);
         let mut rects = Vec::new();
         for r in &find(f, "rects")?.children {
             let v = numbers(&r.text);
             let (x, y, w, h) = (*v.first()?, *v.get(1)?, *v.get(2)?, *v.get(3)?);
-            // inside the window, or the model is not one this evaluator can run (`rect` indexes the
-            // integral image with these)
-            let win = window as f64;
-            let inside = [x, y, w, h].iter().all(|n| n.is_finite() && *n >= 0.0 && *n <= win) && x + w <= win && y + h <= win;
-            if !inside {
+            // inside the window, or the model is not one this evaluator can run: `rect` and `tilted_sum`
+            // index the integral images with these
+            let (ww, wh) = (win_w as f64, win_h as f64);
+            let finite = [x, y, w, h].iter().all(|n| n.is_finite() && *n >= 0.0);
+            let fits = if tilted { x >= h && x + w <= ww && y + w + h <= wh } else { x + w <= ww && y + h <= wh };
+            if !(finite && fits) {
                 return None;
             }
             rects.push((x as usize, y as usize, w as usize, h as usize, *v.get(4)?));
         }
-        features.push(rects);
+        features.push(Feature { rects, tilted });
     }
     let mut stages = Vec::new();
     for s in &find(&root, "stages")?.children {
@@ -161,7 +174,7 @@ fn load(xml: &str) -> Option<Cascade> {
         }
         stages.push(Stage { threshold, stumps });
     }
-    (!stages.is_empty()).then_some(Cascade { window, features, stages })
+    (!stages.is_empty()).then_some(Cascade { win_w, win_h, features, stages })
 }
 
 /// Sum over the rectangle `(x, y, w, h)` from an integral image with row stride `stride`.
@@ -187,13 +200,69 @@ fn integrals(px: &[f32], w: usize, h: usize) -> (Vec<f64>, Vec<f64>) {
     (sum, sq)
 }
 
+/// The integral images of one pyramid level: upright sums, squared sums, and rotated sums for the tilted
+/// features.
+struct Tables {
+    sum: Vec<f64>,
+    sq: Vec<f64>,
+    rot: Vec<f64>,
+    /// Row length of `rot`.
+    rot_stride: usize,
+    /// Width of the level (the upright tables' stride is this plus one).
+    w: usize,
+}
+
+impl Tables {
+    fn new(px: &[f32], w: usize, h: usize, tilted: bool) -> Self {
+        let (sum, sq) = integrals(px, w, h);
+        let (rot, rot_stride) = if tilted { rotated(px, w, h) } else { (Vec::new(), 0) };
+        Tables { sum, sq, rot, rot_stride, w }
+    }
+}
+
+/// The rotated summed-area table. A pixel (i, j) sits at (u, v) = (i + j, j - i + w - 1), so the 45-degree
+/// diagonals become rows and columns; the table holds the prefix sums over those cells. Returns it with its
+/// row length.
+fn rotated(px: &[f32], w: usize, h: usize) -> (Vec<f64>, usize) {
+    let n = w + h;
+    let stride = n + 1;
+    let mut t = vec![0.0f64; stride * stride];
+    for j in 0..h {
+        for i in 0..w {
+            let (u, v) = (i + j, j + w - 1 - i);
+            t[(u + 1) * stride + v + 1] = px[j * w + i] as f64;
+        }
+    }
+    for u in 1..=n {
+        for v in 1..=n {
+            t[u * stride + v] += t[(u - 1) * stride + v] + t[u * stride + v - 1] - t[(u - 1) * stride + v - 1];
+        }
+    }
+    (t, stride)
+}
+
+/// Sum over a tilted rectangle whose top corner is (ax, ay) and whose size is (w, h): the pixels with
+/// 0 <= (i - ax) + (j - ay) < 2w and 0 <= (j - ay) - (i - ax) < 2h.
+fn tilted_sum(t: &Tables, ax: usize, ay: usize, w: usize, h: usize) -> f64 {
+    let cols = t.rot_stride;
+    let lim = cols - 1;
+    // u = i + j runs over [ax + ay, ax + ay + 2w); v = j - i + (w_level - 1) over [ay - ax + W - 1, + 2h)
+    let (u0, u1) = ((ax + ay).min(lim), (ax + ay + 2 * w).min(lim));
+    let v_base = ay + t.w - 1;
+    let v0 = v_base.saturating_sub(ax).min(lim);
+    let v1 = (v_base + 2 * h).saturating_sub(ax).min(lim);
+    let p = |u: usize, v: usize| t.rot[u * cols + v];
+    p(u1, v1) - p(u0, v1) - p(u1, v0) + p(u0, v0)
+}
+
 impl Cascade {
     /// Whether the window at (x, y) of a level passes every stage.
-    fn accepts(&self, sum: &[f64], sq: &[f64], stride: usize, x: usize, y: usize) -> bool {
-        let win = self.window;
-        let area = (win * win) as f64;
-        let s = rect(sum, stride, x, y, win, win);
-        let q = rect(sq, stride, x, y, win, win);
+    fn accepts(&self, t: &Tables, x: usize, y: usize) -> bool {
+        let (ww, wh) = (self.win_w, self.win_h);
+        let stride = t.w + 1;
+        let area = (ww * wh) as f64;
+        let s = rect(&t.sum, stride, x, y, ww, wh);
+        let q = rect(&t.sq, stride, x, y, ww, wh);
         let var = q / area - (s / area).powi(2);
         if var <= 1e-12 {
             return false;
@@ -205,7 +274,15 @@ impl Cascade {
                 .stumps
                 .iter()
                 .map(|st| {
-                    let f: f64 = self.features[st.feature].iter().map(|&(rx, ry, rw, rh, wt)| wt * rect(sum, stride, x + rx, y + ry, rw, rh)).sum();
+                    let feature = &self.features[st.feature];
+                    let f: f64 = feature
+                        .rects
+                        .iter()
+                        .map(|&(rx, ry, rw, rh, wt)| {
+                            let sum = if feature.tilted { tilted_sum(t, x + rx, y + ry, rw, rh) } else { rect(&t.sum, stride, x + rx, y + ry, rw, rh) };
+                            wt * sum
+                        })
+                        .sum();
                     if f / norm < st.threshold { st.left } else { st.right }
                 })
                 .sum();
@@ -265,20 +342,23 @@ fn group(hits: &[Face], min_neighbours: usize) -> Vec<Face> {
 
 /// One cascade over the image pyramid, grouped into faces.
 fn scan(cascade: &Cascade, px: &[f32], w: usize, h: usize, min_neighbours: usize) -> Vec<Face> {
-    let win = cascade.window;
+    let (ww, wh) = (cascade.win_w, cascade.win_h);
+    let tilted = cascade.features.iter().any(|f| f.tilted);
     let mut hits = Vec::new();
     let mut scale = 1.0;
     loop {
         let (lw, lh) = ((w as f64 / scale).floor() as usize, (h as f64 / scale).floor() as usize);
-        if lw < win || lh < win {
+        if lw < ww || lh < wh {
             break;
         }
         let level = resample(px, w, h, lw, lh);
-        let (sum, sq) = integrals(&level, lw, lh);
-        for y in 0..=lh - win {
-            for x in 0..=lw - win {
-                if cascade.accepts(&sum, &sq, lw + 1, x, y) {
-                    hits.push(Face { x: x as f64 * scale, y: y as f64 * scale, size: win as f64 * scale });
+        let tables = Tables::new(&level, lw, lh, tilted);
+        for y in 0..=lh - wh {
+            for x in 0..=lw - ww {
+                if cascade.accepts(&tables, x, y) {
+                    // a detection is reported as a square of the window's larger side
+                    let side = ww.max(wh) as f64;
+                    hits.push(Face { x: x as f64 * scale, y: y as f64 * scale, size: side * scale });
                 }
             }
         }
@@ -320,6 +400,39 @@ fn eye_cascade() -> Option<&'static Cascade> {
     C.get_or_init(|| load(EYE)).as_ref()
 }
 
+/// The smile cascade (36×18, with tilted features), parsed once.
+fn smile_cascade() -> Option<&'static Cascade> {
+    static C: OnceLock<Option<Cascade>> = OnceLock::new();
+    C.get_or_init(|| load(SMILE)).as_ref()
+}
+
+/// The mouth of a face, as a centre in the picture's pixels. `px` is a greyscale picture (`w`×`h`, values
+/// 0..1) and `face` a box in its pixels. The mouth is searched in the lower half of the box, near its middle,
+/// with the smile model: it finds a mouth that is smiling, and usually not one that is not. `None` when there
+/// is no such detection.
+pub fn mouth_in(px: &[f32], w: usize, h: usize, face: Face) -> Option<(f64, f64)> {
+    let smile = smile_cascade()?;
+    if w.checked_mul(h) != Some(px.len()) {
+        return None;
+    }
+    let x0 = face.x.max(0.0).floor() as usize;
+    let x1 = ((face.x + face.size).min(w as f64).floor() as usize).max(x0);
+    let y0 = ((face.y + face.size * 0.5).max(0.0).floor() as usize).min(h);
+    let y1 = ((face.y + face.size).min(h as f64).floor() as usize).max(y0);
+    let (cw, ch) = (x1 - x0, y1 - y0);
+    if cw < smile.win_w || ch < smile.win_h {
+        return None;
+    }
+    let crop: Vec<f32> = (y0..y1).flat_map(|y| px[y * w + x0..y * w + x1].iter().copied()).collect();
+    let mouths = scan(smile, &crop, cw, ch, MIN_MOUTH_NEIGHBOURS);
+    // detections are reported as squares of the model's wider side; the box is only win_h/win_w of that high,
+    // so its centre sits a quarter of the square's side below its top
+    let quarter = smile.win_h as f64 / smile.win_w as f64 / 2.0;
+    let middle = cw as f64 / 2.0;
+    let best = mouths.iter().find(|m| (m.x + m.size / 2.0 - middle).abs() < 0.3 * cw as f64)?;
+    Some((x0 as f64 + best.x + best.size / 2.0, y0 as f64 + best.y + best.size * quarter))
+}
+
 /// The two eyes of a face, as centres in the picture's pixels, left one first. `px` is a greyscale picture
 /// (`w`×`h`, values 0..1) and `face` a box in its pixels. Eyes are searched in the upper part of the box:
 /// the largest pair of detections that sit level with each other, a plausible distance apart and of similar size.
@@ -336,7 +449,7 @@ pub fn eyes_in(px: &[f32], w: usize, h: usize, face: Face) -> Option<[(f64, f64)
     let x1 = ((face.x + face.size).min(w as f64).floor() as usize).max(x0);
     let y1 = ((face.y + face.size * EYE_BAND).min(h as f64).floor() as usize).max(y0);
     let (cw, ch) = (x1 - x0, y1 - y0);
-    if cw < eye.window || ch < eye.window {
+    if cw < eye.win_w || ch < eye.win_h {
         return None;
     }
     let crop: Vec<f32> = (y0..y1).flat_map(|y| px[y * w + x0..y * w + x1].iter().copied()).collect();
@@ -373,15 +486,51 @@ pub fn largest(px: &[f32], w: usize, h: usize) -> Option<Face> {
 mod tests {
     use super::*;
 
+    /// Sum over a tilted rectangle by looking at every pixel, with the definition in `tilted_sum`.
+    fn tilted_brute(px: &[f32], w: usize, h: usize, ax: usize, ay: usize, rw: usize, rh: usize) -> f64 {
+        let mut total = 0.0;
+        for j in 0..h as i64 {
+            for i in 0..w as i64 {
+                let (dx, dy) = (i - ax as i64, j - ay as i64);
+                let s = dx + dy;
+                let t = dy - dx;
+                if (0..2 * rw as i64).contains(&s) && (0..2 * rh as i64).contains(&t) {
+                    total += px[j as usize * w + i as usize] as f64;
+                }
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn tilted_sums_match_the_pixels_they_cover() {
+        // a textured level; every tilted rectangle that fits, against a sum over every pixel
+        let (w, h) = (23usize, 17usize);
+        let px: Vec<f32> = (0..w * h).map(|k| ((k * 37 + 11) % 97) as f32 / 97.0).collect();
+        let t = Tables::new(&px, w, h, true);
+        for (ax, ay, rw, rh) in [(5usize, 0usize, 3usize, 2usize), (8, 1, 4, 3), (12, 2, 2, 5), (2, 3, 1, 1), (10, 4, 3, 3)] {
+            let got = tilted_sum(&t, ax, ay, rw, rh);
+            let want = tilted_brute(&px, w, h, ax, ay, rw, rh);
+            assert!((got - want).abs() < 1e-9, "rect at ({ax},{ay}) {rw}x{rh}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn the_smile_model_is_wider_than_high_and_tilted() {
+        let c = smile_cascade().expect("the smile model parses");
+        assert_eq!((c.win_w, c.win_h), (36, 18));
+        assert!(c.features.iter().any(|f| f.tilted));
+    }
+
     #[test]
     fn bundled_model_parses_to_the_opencv_frontal_cascade() {
         // OpenCV's haarcascade_frontalface_default: 25 stages over 2913 upright features
         let [c, profile] = cascades().expect("models parse");
-        assert_eq!((profile.window, profile.stages.len()), (20, 26));
+        assert_eq!((profile.win_w, profile.stages.len()), (20, 26));
         assert_eq!(c.stages.len(), 25);
         assert_eq!(c.features.len(), 2913);
-        assert_eq!(c.window, 24);
-        assert!(c.features.iter().all(|f| f.iter().all(|r| r.0 + r.2 <= c.window && r.1 + r.3 <= c.window)));
+        assert_eq!(c.win_w, 24);
+        assert!(c.features.iter().all(|f| f.rects.iter().all(|r| r.0 + r.2 <= c.win_w && r.1 + r.3 <= c.win_h)));
     }
 
     #[test]
@@ -455,5 +604,26 @@ mod tests {
         let faces = detect(img.as_raw(), w, h);
         assert!(!faces.is_empty(), "no face found in {w}x{h}");
         eprintln!("largest: {:?}; {} detections: {faces:?}", largest(img.as_raw(), w, h), faces.len());
+    }
+}
+
+#[cfg(test)]
+mod mouth_tests {
+    use super::*;
+
+    /// Runs the mouth detector on the largest face of a photograph (`FILMCRAFT_SMILE_SAMPLE`, a PNG), and
+    /// prints where the mouth is. Ignored by default: the photograph is not part of the repository.
+    #[test]
+    #[ignore]
+    fn finds_a_mouth_in_a_photograph() {
+        let path = std::env::var("FILMCRAFT_SMILE_SAMPLE").expect("set FILMCRAFT_SMILE_SAMPLE");
+        let img = image::open(path).expect("readable png").to_luma32f();
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let face = largest(img.as_raw(), w, h).expect("a face");
+        eprintln!("face {face:?}");
+        match mouth_in(img.as_raw(), w, h, face) {
+            Some(m) => eprintln!("MOUTH at ({:.0}, {:.0})", m.0, m.1),
+            None => eprintln!("NO MOUTH"),
+        }
     }
 }
