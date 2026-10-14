@@ -1352,3 +1352,176 @@ fn stabilizer_methods_survive_degenerate_clips() {
         }
     }
 }
+
+/// A clip read from a real file, through the codecs: the environment a stabilizer sees in a sequence.
+struct FileClip {
+    src: filmcraft_media::SharedSource,
+    fps: f64,
+    secs: f64,
+    size: (u32, u32),
+    key: u64,
+    /// Synthetic handheld shake applied to the real frames: a random pan, tilt and roll per frame.
+    shake: bool,
+    /// The time "now" the environment is rendering at: `source_frame(dt)` is the frame at `now + dt`.
+    now: f64,
+}
+
+/// The real picture `img` as seen by a camera that is turned by `(pan, tilt, roll)` about its centre,
+/// with focal length equal to the frame width: `G = K R K⁻¹`, sampled back through `G⁻¹`.
+fn turned(img: &Image, pan: f64, tilt: f64, roll: f64) -> Image {
+    use crate::track::Homography;
+    let (w, h) = (img.w as f64, img.h as f64);
+    let k = Homography { m: [w, 0.0, w / 2.0, 0.0, w, h / 2.0, 0.0, 0.0, 1.0] };
+    let g = k.then_apply(&rotation(pan, tilt, roll)).then_apply(&k.inverse().unwrap());
+    let Some(inv) = g.inverse() else { return img.clone() };
+    let mut out = Image::new(img.w, img.h);
+    for y in 0..img.h {
+        for x in 0..img.w {
+            if let Some(q) = inv.apply(filmcraft_geom::Vec2::new(x as f64 + 0.5, y as f64 + 0.5)) {
+                out.px[(y * img.w + x) * 4..(y * img.w + x) * 4 + 4].copy_from_slice(&img.sample_bilinear(q.x as f32, q.y as f32));
+            }
+        }
+    }
+    out
+}
+
+impl FxEnv for FileClip {
+    fn frame(&self, dt: f64, _upto: &EffectInstance) -> Option<Image> {
+        self.source_frame(dt, 1.0)
+    }
+    fn source_frame(&self, dt: f64, scale: f32) -> Option<Image> {
+        let t = (self.now + dt).clamp(0.0, (self.secs - 1.0 / self.fps).max(0.0));
+        let req = filmcraft_media::FrameRequest { time: filmcraft_time::Tick::from_seconds_f64(t), scale };
+        let vf = self.src.video_frame(req).ok()?;
+        let full = Image { w: vf.width as usize, h: vf.height as usize, px: vf.to_linear_f32() };
+        // the codec returns full-size pictures whatever the scale asked for: resample to the scale here,
+        // as an analysis copy would be
+        let (w, h) = (((full.w as f32 * scale).round() as usize).max(1), ((full.h as f32 * scale).round() as usize).max(1));
+        let img = if (w, h) == (full.w, full.h) {
+            full
+        } else {
+            let mut small = Image::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let (sx, sy) = ((x as f32 + 0.5) / w as f32 * full.w as f32, (y as f32 + 0.5) / h as f32 * full.h as f32);
+                    small.px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&full.sample_bilinear(sx, sy));
+                }
+            }
+            small
+        };
+        if !self.shake {
+            return Some(img);
+        }
+        let index = (t * self.fps).round() as u64;
+        let angle = |axis: u64| (hash01(index as i64, axis as i64, 0, 11) as f64 - 0.5) * 2.0 * 0.03;
+        Some(turned(&img, angle(0), angle(1), angle(2)))
+    }
+    fn track(&self, _index: usize) -> Option<Image> {
+        None
+    }
+    fn layer_to_output(&self) -> Affine {
+        Affine::IDENTITY
+    }
+    fn clip_seconds(&self) -> f64 {
+        self.secs
+    }
+    fn clip_offset(&self) -> f64 {
+        0.0
+    }
+    fn frame_rate(&self) -> f64 {
+        self.fps
+    }
+    fn media_timecode(&self) -> String {
+        String::new()
+    }
+    fn file_name(&self) -> String {
+        String::new()
+    }
+    fn sequence_name(&self) -> String {
+        String::new()
+    }
+    fn sequence_size(&self) -> (u32, u32) {
+        self.size
+    }
+    fn source_size(&self) -> (u32, u32) {
+        self.size
+    }
+    fn clip_key(&self) -> u64 {
+        self.key
+    }
+}
+
+/// Runs on a real clip (`FILMCRAFT_CLIP`, any MP4 the codecs read). Its frames are shaken by a known random
+/// turn per frame (a handheld pan, tilt and roll of about 1.7° each), and the picture is stabilised with the
+/// similarity method and with Subspace Warp. Reports the frame-to-frame change of the interior (lower is
+/// steadier) for the shaken clip and for each stabilised one. `FILMCRAFT_CLIP_SHAKE=0` runs the clip as it
+/// is. Writes one stabilised frame to `FILMCRAFT_CLIP_OUT` (a PNG) when that is set. Ignored by default: the
+/// clip is not part of the repository.
+#[test]
+#[ignore]
+fn subspace_steadies_a_real_clip() {
+    let path = std::env::var("FILMCRAFT_CLIP").expect("set FILMCRAFT_CLIP");
+    let shake = std::env::var("FILMCRAFT_CLIP_SHAKE").map_or(true, |v| v != "0");
+    let src = filmcraft_media::open_path(std::path::Path::new(&path), &filmcraft_codecs::openers()).expect("the codecs read the clip");
+    let info = src.info().clone();
+    let video = info.video.clone().expect("a video stream");
+    let fps = video.frame_rate.num as f64 / video.frame_rate.den.max(1) as f64;
+    let secs = info.duration.seconds().min(4.0);
+    let key = path.bytes().fold(0xC11Au64, |h, b| h.wrapping_mul(131).wrapping_add(b as u64));
+    let clip = FileClip { src, fps, secs, size: (video.width, video.height), key, shake, now: 0.0 };
+    // working size: a few hundred pixels wide, so that the frames stay small in memory
+    let scale = (480.0 / video.width.max(1) as f32).min(1.0);
+    let times: Vec<f64> = (0..(secs * fps) as usize).step_by(2).map(|i| i as f64 / fps).collect();
+    clear_stabilizer_cache();
+    let stabilise = |method: Option<u32>| -> Vec<Image> {
+        let mut e = inst("warp_stabilizer");
+        set(&mut e, "result", ParamValue::Choice(0)); // Smooth Motion
+        set(&mut e, "framing", ParamValue::Choice(0)); // Stabilize Only
+        if let Some(m) = method {
+            set(&mut e, "method", ParamValue::Choice(m));
+        }
+        times
+            .iter()
+            .map(|&t| {
+                // the environment as it stands at this frame: `now` = t, the frame itself is `source_frame(0)`
+                let at = FileClip { src: clip.src.clone(), fps, secs, size: clip.size, key, shake, now: t };
+                let mut img = at.source_frame(0.0, scale).expect("a frame");
+                if method.is_some() {
+                    crate::effects::apply(&mut img, &e, &FxCtx { seconds: t, env: Some(&at), ..cx() });
+                }
+                img
+            })
+            .collect()
+    };
+    // mean absolute change between consecutive frames, interior pixels, luma
+    let jitter = |frames: &[Image]| -> f64 {
+        let luma = |p: [f32; 4]| 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+        let mut total = 0.0;
+        let mut n = 0usize;
+        for pair in frames.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            let (w, h) = (a.w, a.h);
+            for y in h / 8..h - h / 8 {
+                for x in w / 8..w - w / 8 {
+                    total += (luma(a.get(x, y)) - luma(b.get(x, y))).abs() as f64;
+                    n += 1;
+                }
+            }
+        }
+        total / n.max(1) as f64
+    };
+    let raw = stabilise(None);
+    let similarity = stabilise(Some(1));
+    let subspace = stabilise(Some(3));
+    eprintln!("{} frames of {}x{}, shake {shake}", times.len(), raw[0].w, raw[0].h);
+    eprintln!("jitter: raw {:.5}  similarity {:.5}  subspace {:.5}", jitter(&raw), jitter(&similarity), jitter(&subspace));
+    if let Ok(out) = std::env::var("FILMCRAFT_CLIP_OUT") {
+        let frame = &subspace[times.len() / 2];
+        let bytes: Vec<u8> = frame.px.chunks(4).flat_map(|p| [0, 1, 2].map(|c| (filmcraft_color::linear_to_srgb(p[c].clamp(0.0, 1.0)) * 255.0) as u8)).collect();
+        image::RgbImage::from_raw(frame.w as u32, frame.h as u32, bytes).expect("sized").save(out).expect("writable");
+    }
+    if shake {
+        // with a known shake, the stabilised clip must be clearly steadier than the shaken one
+        assert!(jitter(&subspace) < jitter(&raw) * 0.6, "subspace {:.5} vs shaken {:.5}", jitter(&subspace), jitter(&raw));
+    }
+}

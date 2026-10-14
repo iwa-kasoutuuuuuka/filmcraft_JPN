@@ -25,6 +25,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
+filmcraft-codecs = { workspace = true }
 
 # Thread CPU clock for load-robust performance tests.
 [target.'cfg(unix)'.dev-dependencies]
