@@ -489,6 +489,14 @@ fn style_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, track_idx: us
         if resp.changed() {
             actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "background": bg})));
         }
+        let mut by_speaker = st.speaker_colors;
+        let resp = ui
+            .checkbox(&mut by_speaker, crate::i18n::t("Speaker colours", "話者で色分け"))
+            .on_hover_text(crate::i18n::t("Each speaker's captions in their own colour", "話者ごとに字幕の色を変えます"));
+        app.auto.add("text.captions.style.speakerColors", resp.rect, "Speaker colours");
+        if resp.changed() {
+            actions.push(("captions.setStyle".into(), json!({"track": tr.id.0, "speakerColors": by_speaker})));
+        }
         ui.label(egui::RichText::new(crate::i18n::t("Align", "配置")).size(11.0).color(app.tokens.text_dim));
         for (a, icon_txt, name, label_jp) in
             [(CaptionAlign::Left, "L", "left", "左揃え"), (CaptionAlign::Center, "C", "center", "中央揃え"), (CaptionAlign::Right, "R", "right", "右揃え")]

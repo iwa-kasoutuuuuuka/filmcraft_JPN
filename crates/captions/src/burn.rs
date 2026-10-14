@@ -237,6 +237,10 @@ pub fn track_overlay(track: &CaptionTrack, t: Tick, w: usize, h: usize) -> Optio
         return None;
     }
     let c = track.caption_at(t)?;
+    if track.style.speaker_colors {
+        let color = track.style.text_color(&track.speakers(), c.speaker.as_deref());
+        return render_caption(c, &CaptionStyle { color, ..track.style.clone() }, w, h);
+    }
     render_caption(c, &track.style, w, h)
 }
 
@@ -303,6 +307,38 @@ mod tests {
         let st = CaptionStyle { background: false, outline: 4.0, outline_color: [255, 0, 0, 255], ..Default::default() };
         let o = render_caption(&cap("O"), &st, 1920, 1080).unwrap();
         assert!(o.px.chunks(4).any(|p| p[0] > 0.9 && p[1] < 0.05 && p[3] > 0.9), "red outline pixels");
+    }
+
+    /// With speaker colours on, the second speaker's captions are drawn in the first palette colour
+    /// and the first speaker keeps the track colour; off, everyone has the track colour.
+    #[test]
+    fn speakers_get_their_own_colours() {
+        let mut t = CaptionTrack::new(TrackId(1), "S".into(), CaptionFormat::Subtitle);
+        t.style.background = false;
+        for (i, who) in ["Ann", "Bo", "Ann"].iter().enumerate() {
+            let mut c = cap("Hi");
+            c.id = ClipId(i as u64 + 1);
+            c.start = Tick(i as i64 * 100);
+            c.speaker = Some(who.to_string());
+            t.captions.push(c);
+        }
+        let colour = |t: &CaptionTrack, at: i64| {
+            let o = track_overlay(t, Tick(at), 640, 360).unwrap();
+            // the most opaque text pixel
+            let p = o.px.chunks(4).max_by(|a, b| a[3].total_cmp(&b[3])).unwrap().to_vec();
+            [p[0], p[1], p[2]]
+        };
+        assert_eq!(t.speakers(), ["Ann", "Bo"]);
+        let white = colour(&t, 150);
+        assert!(white.iter().all(|v| *v > 0.95), "{white:?}");
+        t.style.speaker_colors = true;
+        let first = colour(&t, 50);
+        let second = colour(&t, 150);
+        assert!(first.iter().all(|v| *v > 0.95), "the first speaker keeps the track colour: {first:?}");
+        // yellow: red and green high, blue low (linear light)
+        assert!(second[0] > 0.9 && second[1] > 0.7 && second[2] < 0.2, "{second:?}");
+        assert_eq!(t.style.text_color(&["Ann", "Bo"], None), t.style.color);
+        assert_eq!(t.style.text_color(&["Ann", "Bo"], Some("nobody")), t.style.color);
     }
 
     #[test]

@@ -93,6 +93,30 @@ pub struct CaptionStyle {
     /// Text outline width in pixels at 1080 lines (0 = none).
     pub outline: f32,
     pub outline_color: [u8; 4],
+    /// Colour the text by speaker: the first speaker of the track keeps `color`, the next ones
+    /// take [`SPEAKER_COLORS`] in order of first appearance (captions without a speaker keep
+    /// `color`).
+    pub speaker_colors: bool,
+}
+
+/// Text colours of the second, third… speaker of a caption track ([`CaptionStyle::speaker_colors`]):
+/// yellow, cyan, green, pink, orange, violet (the usual subtitle colours for speakers, legible on
+/// the dark box and with an outline).
+pub const SPEAKER_COLORS: [[u8; 4]; 6] =
+    [[255, 230, 80, 255], [110, 220, 255, 255], [140, 235, 130, 255], [255, 150, 200, 255], [255, 180, 90, 255], [190, 160, 255, 255]];
+
+impl CaptionStyle {
+    /// The text colour of `speaker` on a track whose speakers, in order of first appearance, are
+    /// `speakers`.
+    pub fn text_color(&self, speakers: &[&str], speaker: Option<&str>) -> [u8; 4] {
+        if !self.speaker_colors {
+            return self.color;
+        }
+        match speaker.and_then(|s| speakers.iter().position(|x| *x == s)) {
+            Some(0) | None => self.color,
+            Some(i) => SPEAKER_COLORS.get((i - 1) % SPEAKER_COLORS.len()).copied().unwrap_or(self.color),
+        }
+    }
 }
 
 impl Default for CaptionStyle {
@@ -109,6 +133,7 @@ impl Default for CaptionStyle {
             line_spacing: 1.25,
             outline: 0.0,
             outline_color: [0, 0, 0, 255],
+            speaker_colors: false,
         }
     }
 }
@@ -175,6 +200,17 @@ fn yes() -> bool {
 }
 
 impl CaptionTrack {
+    /// The speakers of the track's captions in order of first appearance.
+    pub fn speakers(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for s in self.captions.iter().filter_map(|c| c.speaker.as_deref()) {
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+        out
+    }
+
     pub fn new(id: TrackId, name: String, format: CaptionFormat) -> Self {
         Self {
             id,
