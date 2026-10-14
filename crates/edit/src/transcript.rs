@@ -192,27 +192,81 @@ pub fn find_pauses(words: &[SeqWord], min: Tick, keep: Tick, rate: FrameRate) ->
 }
 
 /// The default filler words and phrases (configurable in preferences and per command).
-pub const DEFAULT_FILLERS: &[&str] = &["um", "uh", "umm", "uhm", "erm", "er", "ah", "hmm", "mm", "mhm"];
+/// English and Japanese hesitations. Only sounds that are never a word of their own are listed:
+/// あの (that), まあ (well) and なんか (something) are left out, they are fillers only sometimes.
+pub const DEFAULT_FILLERS: &[&str] = &[
+    "um",
+    "uh",
+    "umm",
+    "uhm",
+    "erm",
+    "er",
+    "ah",
+    "hmm",
+    "mm",
+    "mhm",
+    "えー",
+    "えーと",
+    "えっと",
+    "えーっと",
+    "あー",
+    "あのー",
+    "うーん",
+    "んー",
+    "うー",
+    "えーっ",
+];
+
+/// A word or filler as compared: [`normalize_word`](filmcraft_project::transcript::normalize_word),
+/// with the wave dash read as the long-vowel mark and a run of long-vowel marks as one
+/// (えーーと, え〜と and えーと are the same filler).
+fn filler_form(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars().map(|c| if matches!(c, '〜' | '～') { 'ー' } else { c }) {
+        if !(c == 'ー' && out.ends_with('ー')) {
+            out.push(c);
+        }
+    }
+    filmcraft_project::transcript::normalize_word(&out)
+}
 
 /// Filler words: word index ranges matching one of `fillers` (each a word or a phrase such as
-/// "you know"; case and punctuation ignored).
+/// "you know"; case and punctuation ignored). A filler without spaces also matches a run of
+/// words that spell it (the recogniser splits Japanese into pieces: え / ー / と is えーと).
 pub fn find_fillers(words: &[SeqWord], fillers: &[String]) -> Vec<std::ops::Range<usize>> {
-    let norm: Vec<String> = words.iter().map(SeqWord::normalized).collect();
-    let mut phrases: Vec<Vec<String>> = fillers
-        .iter()
-        .map(|f| f.split_whitespace().map(filmcraft_project::transcript::normalize_word).filter(|s| !s.is_empty()).collect::<Vec<_>>())
-        .filter(|p| !p.is_empty())
-        .collect();
-    // longest phrases first, so "you know" wins over a lone "you"
-    phrases.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    let norm: Vec<String> = words.iter().map(|w| filler_form(&w.text)).collect();
+    let mut phrases: Vec<Vec<String>> =
+        fillers.iter().map(|f| f.split_whitespace().map(filler_form).filter(|s| !s.is_empty()).collect::<Vec<_>>()).filter(|p| !p.is_empty()).collect();
+    // longest phrases first, so "you know" wins over a lone "you" (and えーと over えー)
+    phrases.sort_by_key(|p| std::cmp::Reverse((p.len(), p.iter().map(|w| w.chars().count()).sum::<usize>())));
+    // how many words from `i` spell `f` together (at least one, none of them empty)
+    let spelled = |i: usize, f: &str| -> Option<usize> {
+        let mut acc = String::new();
+        for (k, w) in norm.get(i..)?.iter().enumerate().take(8) {
+            if w.is_empty() {
+                return None;
+            }
+            acc.push_str(w);
+            if acc == f {
+                return Some(k + 1);
+            }
+            if !f.starts_with(acc.as_str()) {
+                return None;
+            }
+        }
+        None
+    };
     let mut out = Vec::new();
     let mut i = 0;
     while i < norm.len() {
-        let hit = phrases.iter().find(|p| i + p.len() <= norm.len() && p.iter().enumerate().all(|(k, w)| norm[i + k] == *w));
+        let hit = phrases.iter().find_map(|p| match p.as_slice() {
+            [one] => spelled(i, one),
+            _ => (i + p.len() <= norm.len() && p.iter().enumerate().all(|(k, w)| norm.get(i + k) == Some(w))).then_some(p.len()),
+        });
         match hit {
-            Some(p) => {
-                out.push(i..i + p.len());
-                i += p.len();
+            Some(n) => {
+                out.push(i..i + n);
+                i += n;
             }
             None => i += 1,
         }
@@ -353,25 +407,97 @@ pub fn may_break_between(prev: &str, next: &str) -> bool {
     !((is_kanji(a) && is_kanji(b)) || (is_katakana(a) && is_katakana(b)))
 }
 
+/// Japanese particles a phrase ends with (は, を, から, について…).
+const PARTICLES: &[&str] = &[
+    "は",
+    "が",
+    "を",
+    "に",
+    "で",
+    "と",
+    "も",
+    "へ",
+    "や",
+    "の",
+    "から",
+    "まで",
+    "より",
+    "には",
+    "では",
+    "とは",
+    "にも",
+    "でも",
+    "について",
+    "ので",
+    "のに",
+    "けど",
+    "けれど",
+    "なら",
+    "ながら",
+    "として",
+    "によって",
+];
+/// Words that continue the word before them even after a particle-like ending (で + す is です,
+/// に + ついて is について, と + いう is という…).
+const CONTINUATIONS: &[&str] =
+    &["ついて", "は", "も", "の", "ので", "のに", "いう", "よる", "よって", "より", "して", "おいて", "とって", "かけて", "ら", "り", "き", "しか"];
+
+/// Whether a phrase that has to be broken (it is wider than a line) is best broken between
+/// `prev` and `next`: after a particle (わたしは / きのう, ものを / たべました), unless the next word
+/// continues it. Used only inside a unit [`may_break_between`] keeps together.
+pub fn soft_break_between(prev: &str, next: &str) -> bool {
+    let Some(b) = next.chars().next() else { return false };
+    // small kana, the long-vowel mark and ん never start a word
+    if matches!(b, 'ょ' | 'ゃ' | 'ゅ' | 'っ' | 'ぁ' | 'ぃ' | 'ぅ' | 'ぇ' | 'ぉ' | 'ー' | 'ん') {
+        return false;
+    }
+    // a particle that is a word of its own may also be the first piece of a longer word the
+    // recogniser split (で + す, で + した, と + て…): not before what would end such a word
+    if prev.chars().count() == 1 && matches!(b, 'す' | 'し' | 'ま' | 'た' | 'て' | 'ね' | 'よ' | 'わ' | 'さ' | 'か' | 'ぞ' | 'ぜ') {
+        return false;
+    }
+    if CONTINUATIONS.contains(&next) || PARTICLES.contains(&next) {
+        return false;
+    }
+    // a particle of its own, or one ending a longer hiragana word (ものを, わたしは); not a single
+    // character that is part of a noun written in kana (もの ends in の but is not one)
+    PARTICLES.contains(&prev) || (prev.chars().count() >= 3 && PARTICLES.iter().any(|p| p.chars().count() == 1 && prev.ends_with(p)) && !prev.ends_with("もの"))
+}
+
 /// The units captions are laid out in, as word index ranges: runs of words no line may break
 /// inside ([`may_break_between`]). A speaker change, a pause that starts a new caption and a unit
-/// wider than a line end a unit anyway.
+/// wider than a line end a unit anyway; a unit that is too wide is broken after its last
+/// particle when it has one ([`soft_break_between`]), else at the line width.
 fn caption_units(words: &[SeqWord], rules: &CaptionRules, max_chars: usize) -> Vec<std::ops::Range<usize>> {
     let mut units: Vec<std::ops::Range<usize>> = Vec::new();
     let mut width = 0usize;
+    // the last word of the current unit a soft break may come before
+    let mut soft: Option<usize> = None;
+    let width_of = |r: std::ops::Range<usize>| words.get(r).unwrap_or_default().iter().map(|w| display_width(&w.text)).sum::<usize>();
     for (i, w) in words.iter().enumerate() {
         let len = display_width(&w.text);
-        let joins = i > 0
-            && words.get(i - 1).is_some_and(|p| !may_break_between(&p.text, &w.text) && p.speaker == w.speaker && w.start - p.end < rules.break_pause)
-            && width + len <= max_chars;
+        let together =
+            i > 0 && words.get(i - 1).is_some_and(|p| !may_break_between(&p.text, &w.text) && p.speaker == w.speaker && w.start - p.end < rules.break_pause);
         match units.last_mut() {
-            Some(u) if joins => {
+            Some(u) if together && width + len <= max_chars => {
+                if words.get(i - 1).is_some_and(|p| soft_break_between(&p.text, &w.text)) {
+                    soft = Some(i);
+                }
                 u.end = i + 1;
                 width += len;
+            }
+            Some(u) if together && soft.is_some_and(|k| k > u.start && width_of(k..i + 1) <= max_chars) => {
+                // too wide: the part after the last particle goes on with this word
+                let k = soft.unwrap_or(i);
+                u.end = k;
+                units.push(k..i + 1);
+                width = width_of(k..i + 1);
+                soft = words.get(i - 1).is_some_and(|p| soft_break_between(&p.text, &w.text)).then_some(i).filter(|s| *s > k);
             }
             _ => {
                 units.push(i..i + 1);
                 width = len;
+                soft = None;
             }
         }
     }

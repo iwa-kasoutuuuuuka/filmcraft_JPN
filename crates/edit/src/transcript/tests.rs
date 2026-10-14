@@ -228,6 +228,21 @@ fn fillers_are_found_with_phrases_and_removed() {
     assert_eq!(q.audio_tracks[0].items.len(), 3);
 }
 
+/// Japanese hesitations are fillers too, also when the recogniser splits them (え / ー / と) or
+/// writes them with a wave dash or a longer vowel; あの and words that only contain a filler
+/// (ええ is "yes") are not touched.
+#[test]
+fn japanese_fillers_are_found() {
+    let w = japanese(&["えーと", "今日", "は", "え", "ー", "と", "東京", "に", "あのー", "行き", "ます", "え〜〜", "あの", "人", "うーん、", "ええ"], 0.3);
+    let defaults: Vec<String> = DEFAULT_FILLERS.iter().map(|x| x.to_string()).collect();
+    assert_eq!(find_fillers(&w, &defaults), vec![0..1, 3..6, 8..9, 11..12, 14..15]);
+    // a filler of the user's own, spelled over two words
+    assert_eq!(find_fillers(&japanese(&["まあ", "その", "まあ"], 0.3), &["まあ".to_string()]), vec![0..1, 2..3]);
+    assert_eq!(find_fillers(&japanese(&["ま", "あ"], 0.3), &["まあ".to_string()]), vec![0..2]);
+    // English is unchanged
+    assert_eq!(find_fillers(&japanese(&["Um,", "so", "uh"], 0.3), &defaults), vec![0..1, 2..3]);
+}
+
 #[test]
 fn merge_ranges_joins_overlaps() {
     let r = |a: f64, b: f64| TimeRange::from_bounds(s(a), s(b));
@@ -338,8 +353,9 @@ fn japanese_captions_have_no_spaces_and_count_wide_characters() {
     let two = CaptionRules { max_chars: 20, lines: 2, ..Default::default() };
     let b = caption_blocks(&w, &two, R);
     let text: Vec<&str> = b.iter().map(|x| x.text.as_str()).collect();
-    // (天気についてお話しします。 is wider than a line, so that one phrase is broken at the line width)
-    assert_eq!(text, ["こんにちは。今日は\n東京の", "天気についてお話し\nします。", "午後から雨が\n降るでしょう。"]);
+    // (天気についてお話しします。 is wider than a line, so that phrase is broken after its particle;
+    // before, at the line width: "天気についてお話し" / "します。")
+    assert_eq!(text, ["こんにちは。今日は\n東京の天気について", "お話しします。\n午後から雨が", "降るでしょう。"]);
     // a block ends at 。 once it is past half full (as at a full stop in English)
     let short = japanese(&["今日は", "晴れ", "です。", "明日は", "雨", "でしょう。"], 0.5);
     let b = caption_blocks(&short, &CaptionRules { max_chars: 20, lines: 1, ..Default::default() }, R);
@@ -412,6 +428,19 @@ fn japanese_captions_break_between_phrases() {
         ("東", "", true),
     ] {
         assert_eq!(may_break_between(a, n), ok, "{a:?} | {n:?}");
+    }
+    // …and one that has to be broken is broken after a particle, not inside a verb
+    // (before: "おいしい" / "ものをたべ" / "ました")
+    let kana = japanese(&["わたし", "は", "きのう", "とても", "おいしい", "ものを", "たべ", "ました"], 0.2);
+    let b = caption_blocks(&kana, &CaptionRules { max_chars: 12, lines: 1, ..Default::default() }, R);
+    let text: Vec<&str> = b.iter().map(|x| x.text.as_str()).collect();
+    assert!(text.contains(&"たべました"), "{text:?}");
+    assert!(text.iter().all(|t| filmcraft_project::transcript::display_width(t) <= 12), "{text:?}");
+    assert_eq!(text.concat(), "わたしはきのうとてもおいしいものをたべました");
+    for (a, n, ok) in
+        [("は", "きのう", true), ("ものを", "たべ", true), ("で", "す", false), ("に", "ついて", false), ("もの", "を", false), ("たべ", "ました", false)]
+    {
+        assert_eq!(soft_break_between(a, n), ok, "{a:?} | {n:?}");
     }
     // a phrase wider than a line is still broken (never a line longer than asked for)
     let long = japanese(&["あ", "い", "う", "え", "お", "か", "き", "く", "け", "こ"], 0.2);
