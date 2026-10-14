@@ -1517,7 +1517,8 @@ fn subspace_steadies_a_real_clip() {
     eprintln!("jitter: raw {:.5}  similarity {:.5}  subspace {:.5}", jitter(&raw), jitter(&similarity), jitter(&subspace));
     if let Ok(out) = std::env::var("FILMCRAFT_CLIP_OUT") {
         let frame = &subspace[times.len() / 2];
-        let bytes: Vec<u8> = frame.px.chunks(4).flat_map(|p| [0, 1, 2].map(|c| (filmcraft_color::linear_to_srgb(p[c].clamp(0.0, 1.0)) * 255.0) as u8)).collect();
+        let bytes: Vec<u8> =
+            frame.px.chunks(4).flat_map(|p| [0, 1, 2].map(|c| (filmcraft_color::linear_to_srgb(p[c].clamp(0.0, 1.0)) * 255.0) as u8)).collect();
         image::RgbImage::from_raw(frame.w as u32, frame.h as u32, bytes).expect("sized").save(out).expect("writable");
     }
     if shake {
