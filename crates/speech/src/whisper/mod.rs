@@ -255,6 +255,15 @@ impl Transcriber for Whisper {
         if language.as_deref().is_some_and(|l| self.tok.multilingual() && self.tok.language_token(l).is_none()) {
             return Err(SpeechError::Model(format!("the model does not know the language `{}`", language.unwrap_or_default())));
         }
+        // the task token: transcribe, or translate into English
+        let task = if opts.translate {
+            match self.tok.translate.filter(|_| self.tok.multilingual()) {
+                Some(t) => t,
+                None => return Err(SpeechError::Model("this model cannot translate (an English-only model); choose a multilingual one".into())),
+            }
+        } else {
+            self.tok.transcribe
+        };
         let mut words: Vec<Word> = Vec::new();
         let mut seek = 0usize;
         while seek < content_frames {
@@ -276,7 +285,7 @@ impl Transcriber for Whisper {
                 }
                 let lang = language.as_deref().unwrap_or("en");
                 prompt.push(self.tok.language_token(lang).unwrap_or(self.tok.sot + 1));
-                prompt.push(self.tok.transcribe);
+                prompt.push(task);
             }
             let (toks, avg_lp, no_speech) = self.decode_window(&mut m, &xa, &prompt)?;
             if trace {
@@ -316,7 +325,9 @@ impl Transcriber for Whisper {
             }
             seek += advance;
         }
-        let mut t = Transcript { language: language.unwrap_or_else(|| "en".into()), source: self.id.clone(), speakers: Vec::new(), words };
+        // (a translation is English, whatever was spoken)
+        let language = if opts.translate { "en".to_string() } else { language.unwrap_or_else(|| "en".into()) };
+        let mut t = Transcript { language, source: self.id.clone(), speakers: Vec::new(), words };
         t.normalize();
         crate::vad::tighten_words(audio, &mut t.words);
         if opts.diarize && !t.words.is_empty() {

@@ -342,6 +342,24 @@ fn silence_vertical_and_censor_dialogs() {
     assert_eq!(q.video_tracks.iter().map(|t| t.items.len()).sum::<usize>(), 1);
     assert_eq!(d.app().session.project.item(active).unwrap().name, "Main Edit (Square 1x1)");
 
+    // ---- Make Short Video: the same choices plus silence removal and captions, one undo step
+    d.exec("sequence.open", json!({"item": src.0}));
+    assert_eq!(d.menu("sequence.makeShort")["dialog"], "makeShort");
+    for id in ["makeShort.aspect.9:16", "makeShort.mode.blur", "makeShort.removeSilence", "makeShort.captions", "makeShort.ok", "makeShort.cancel"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("makeShort.removeSilence");
+    d.click("makeShort.captions");
+    d.click("makeShort.ok");
+    assert!(!d.dialog_open());
+    let q = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!((q.settings.width, q.settings.height), (1080, 1920));
+    assert_eq!(d.app().session.history.undo.last().unwrap().0, "Make Short Video");
+    // Markers ▸ Copy YouTube Chapters and the other new items are in the menus
+    for id in ["markers.exportChapters", "markers.addBeats", "sequence.cutToBeats", "transcript.createTranslatedCaptions"] {
+        find(id);
+    }
+
     // with parameters the commands run directly, without a dialog (agents, scripts)
     d.exec("edit.undo", json!({}));
     let r = d.exec("sequence.removeSilence", json!({"action": "detect"}));

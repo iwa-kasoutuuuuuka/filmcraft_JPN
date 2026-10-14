@@ -396,12 +396,16 @@ fn local_max(env: &[f32], t: usize, r: usize) -> f32 {
     env[t.saturating_sub(r)..(t + r + 1).min(env.len())].iter().copied().fold(0.0, f32::max)
 }
 
-/// Analyse planar audio (channels are summed to mono).
-pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixError> {
+fn mono_of(channels: &[&[f32]]) -> Vec<f32> {
     let len = channels.iter().map(|c| c.len()).max().unwrap_or(0);
     let k = 1.0 / channels.len().max(1) as f32;
-    let mono: Vec<f32> = (0..len).map(|i| channels.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() * k).collect();
-    let (env, n, hop) = onset_envelope(&mono, sample_rate);
+    (0..len).map(|i| channels.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() * k).collect()
+}
+
+/// The beats of a mono signal: the attack of each beat (samples, increasing, not yet clipped to
+/// the signal) and the beat period (samples).
+fn track(mono: &[f32], sample_rate: u32) -> Result<(Vec<i64>, f64), RemixError> {
+    let (env, n, hop) = onset_envelope(mono, sample_rate);
     let frame_rate = sample_rate as f64 / hop as f64;
     let period = tempo(&env, frame_rate).ok_or(RemixError::NoBeat)?;
     let mut frames = track_beats(&env, period);
@@ -424,10 +428,32 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
         frames.remove(0);
     }
     // the flux of frame t peaks as soon as an attack enters the newer window, at about
-    // t·hop + n − ¾·hop (measured on generated drums); joints sit half a crossfade earlier so a joint's fade is over
-    // when the beat's attack starts
-    let mut beats: Vec<i64> =
-        frames.iter().map(|&t| (t * hop + n) as i64 - 3 * hop as i64 / 4 - beat_lead(sample_rate)).filter(|&b| b > 0 && b < len as i64).collect();
+    // t·hop + n − ¾·hop (measured on generated drums)
+    let attacks = frames.iter().map(|&t| (t * hop + n) as i64 - 3 * hop as i64 / 4).collect();
+    Ok((attacks, period * hop as f64))
+}
+
+/// The beats of planar audio (channels are summed to mono): the attack of each beat in samples,
+/// increasing, and the tempo in beats per minute. For beat markers and cutting to the beat; at
+/// least two beats, or [`RemixError::NoBeat`].
+pub fn beats(channels: &[&[f32]], sample_rate: u32) -> Result<(Vec<i64>, f64), RemixError> {
+    let mono = mono_of(channels);
+    let (mut attacks, period_s) = track(&mono, sample_rate)?;
+    attacks.retain(|&b| b >= 0 && b < mono.len() as i64);
+    attacks.dedup();
+    if attacks.len() < 2 || period_s <= 0.0 {
+        return Err(RemixError::NoBeat);
+    }
+    Ok((attacks, 60.0 * sample_rate as f64 / period_s))
+}
+
+/// Analyse planar audio (channels are summed to mono).
+pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixError> {
+    let mono = mono_of(channels);
+    let len = mono.len();
+    let (attacks, period_s) = track(&mono, sample_rate)?;
+    // joints sit half a crossfade before the attack, so a joint's fade is over when the beat's attack starts
+    let mut beats: Vec<i64> = attacks.iter().map(|b| b - beat_lead(sample_rate)).filter(|&b| b > 0 && b < len as i64).collect();
     beats.dedup();
     if beats.len() < 2 * MIN_PIECE_BEATS + 2 {
         return Err(if beats.len() < 4 { RemixError::NoBeat } else { RemixError::TooShort });
@@ -440,7 +466,6 @@ pub fn analyze(channels: &[&[f32]], sample_rate: u32) -> Result<Analysis, RemixE
             sim[i * m + j] = 0.6 * cos(&chroma[i], &chroma[j]) + 0.4 * (1.0 + cos(&cep[i], &cep[j])) * 0.5;
         }
     }
-    let period_s = period * hop as f64;
     Ok(Analysis { sample_rate, len: len as i64, beats, period: period_s, bpm: 60.0 * sample_rate as f64 / period_s, sim })
 }
 
@@ -724,6 +749,24 @@ mod tests {
             assert!(a.beats.len() + 2 >= truth.len(), "{} beats of {}", a.beats.len(), truth.len());
             eprintln!("{bpm} BPM at {sr} Hz: detected {:.2}, {} beats, worst error {:.1} ms", a.bpm, a.beats.len(), worst as f64 * 1000.0 / sr as f64);
         }
+    }
+
+    /// `beats` gives the attacks themselves (no crossfade lead), on the true beats.
+    #[test]
+    fn beats_are_the_attacks() {
+        for (bpm, sr) in [(120.0, SR), (96.0, 48_000)] {
+            let (m, truth) = test_music(sr, bpm, 8, 5);
+            let refs: Vec<&[f32]> = m.iter().map(Vec::as_slice).collect();
+            let (b, tempo) = beats(&refs, sr).expect("beats");
+            assert!((tempo - bpm).abs() < 1.0, "{tempo} vs {bpm}");
+            let tol = (0.010 * sr as f64) as i64;
+            assert!(b.iter().all(|x| truth.iter().any(|t| (t - x).abs() <= tol)), "beats off the true beats");
+            assert!(b.len() + 2 >= truth.len() && b.windows(2).all(|w| w[0] < w[1]));
+        }
+        // no rhythm: silence and a short click are refused
+        assert!(beats(&[&vec![0.0; 48_000][..]], 48_000).is_err());
+        assert!(beats(&[&[1.0, -1.0][..]], 48_000).is_err());
+        assert!(beats(&[], 48_000).is_err());
     }
 
     #[test]

@@ -361,6 +361,19 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     if let Err(e) = &r {
         app.ui.status = e.clone();
     }
+    // Markers ▸ Copy YouTube Chapters: the list goes to the clipboard, problems to the status bar
+    if id == "markers.exportChapters"
+        && let Ok(v) = &r
+        && let Some(text) = v.get("text").and_then(Value::as_str)
+    {
+        ctx.copy_text(text.to_string());
+        let n = v.get("chapters").and_then(Value::as_array).map_or(0, Vec::len);
+        let warning = v.get("warnings").and_then(Value::as_array).and_then(|w| w.first()).and_then(Value::as_str).map(str::to_string);
+        app.ui.status = match warning {
+            Some(w) => crate::tf!("Copied {n} chapters; {w}", "チャプター {n} 件をコピーしました（注意: {w}）"),
+            None => crate::tf!("Copied {n} chapters to the clipboard", "チャプター {n} 件をクリップボードにコピーしました"),
+        };
+    }
     r
 }
 

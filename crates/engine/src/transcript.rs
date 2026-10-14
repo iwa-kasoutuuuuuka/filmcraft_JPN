@@ -55,6 +55,12 @@ pub fn sequence_words(s: &Session) -> Vec<SeqWord> {
     }
 }
 
+fn has_audio_clips(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    let q = s.active_sequence().ok_or("no sequence is open")?;
+    if q.audio_tracks.iter().any(|t| t.items.iter().any(|i| i.enabled)) { Ok(()) } else { Err("the sequence has no audio clips".into()) }
+}
+
 fn has_transcript(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     if sequence_words(s).is_empty() { Err("the sequence has no transcript (Transcribe first)".into()) } else { Ok(()) }
@@ -155,6 +161,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         },
         diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
         max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
+        translate: false,
     };
     let mut done: Vec<(ItemId, Transcript)> = Vec::new();
     let mut skipped = Vec::new();
@@ -181,6 +188,67 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     Ok(json!({"items": report, "skipped": skipped}))
+}
+
+/// Sequence ▸ Transcript ▸ Create English Captions: the speech of the sequence's audio clips
+/// translated into English by the speech model, laid out as a new caption track ("English").
+/// The clips' own transcripts are not changed; the translation is not kept as a transcript.
+fn translated_captions(s: &mut Session, p: &Value) -> Result<Value> {
+    let items: Vec<ItemId> = {
+        let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        let mut v: Vec<ItemId> = Vec::new();
+        for it in q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.enabled) {
+            if let Some(m) = media_item(s, it.item)
+                && !v.contains(&m)
+            {
+                v.push(m);
+            }
+        }
+        v
+    };
+    if items.is_empty() {
+        return Err(EngineError::Other("there are no audio clips to translate".into()));
+    }
+    let t = transcriber(s, p)?;
+    let opts = Options {
+        language: str_p(p, "language").filter(|l| !l.is_empty() && *l != "auto").map(str::to_string),
+        diarize: bool_p(p, "diarize").unwrap_or(false),
+        translate: true,
+        ..Options::default()
+    };
+    let mut english = tx::Transcripts::new();
+    for item in items {
+        let Some(audio) = item_audio(s, item) else { continue };
+        let mut tr = t.transcribe(&audio, &opts, &mut |_, _| true).map_err(speech_err)?;
+        tr.normalize();
+        english.insert(item, Arc::new(tr));
+    }
+    let words = match s.active_sequence() {
+        Some(q) => tx::sequence_words(q, &english),
+        None => Vec::new(),
+    };
+    if words.is_empty() {
+        return Err(EngineError::Other("no speech was found to translate".into()));
+    }
+    let mut q = json!({"name": str_p(p, "name").unwrap_or("English")});
+    for k in ["maxChars", "lines", "format"] {
+        if let Some(v) = p.get(k) {
+            q[k] = v.clone();
+        }
+    }
+    let n0 = s.history.undo.len();
+    let r = captions_from_words(s, &words, &q)?;
+    // the new track is the first one: mark its language
+    let tid = r["track"].as_u64();
+    s.edit("Create English Captions", |pr, st| {
+        let seq = st.active_sequence.ok_or(EngineError::NoSequence)?;
+        if let Some(t) = pr.sequence_mut(seq).and_then(|q| q.caption_tracks.iter_mut().find(|t| Some(t.id.0) == tid)) {
+            t.language = "en".into();
+        }
+        Ok(())
+    })?;
+    crate::clip_ops::collapse_history(s, n0, "Create English Captions");
+    Ok(json!({"track": r["track"], "captions": r["captions"], "words": words.len()}))
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
@@ -372,6 +440,12 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let words = sequence_words(s);
+    captions_from_words(s, &words, p)
+}
+
+/// A caption track made from `words` (sequence words whose times are those of the active
+/// sequence), laid out with the rules in `p` (`transcript.createCaptions`' parameters).
+pub(crate) fn captions_from_words(s: &mut Session, words: &[SeqWord], p: &Value) -> Result<Value> {
     let d = CaptionRules::default();
     let rules = CaptionRules {
         max_chars: u64_p(p, "maxChars").map(|n| n as usize).unwrap_or(d.max_chars),
@@ -381,7 +455,7 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
         gap_frames: p.get("gapFrames").and_then(Value::as_i64).unwrap_or(d.gap_frames),
         break_pause: d.break_pause,
     };
-    let blocks = tx::caption_blocks(&words, &rules, s.sequence_rate());
+    let blocks = tx::caption_blocks(words, &rules, s.sequence_rate());
     let format = str_p(p, "format").and_then(CaptionFormat::from_name).unwrap_or_default();
     let name = str_p(p, "name").unwrap_or("Transcript").to_string();
     let n = blocks.len();
@@ -475,6 +549,15 @@ pub fn commands() -> Vec<CommandSpec> {
             true,
         ),
         spec("transcript.removeFillers", "Remove Filler Words", &["Sequence", "Transcript"], r#"{"fillers":[str]?}"#, has_transcript, remove_fillers, true),
+        spec(
+            "transcript.createTranslatedCaptions",
+            "Create English Captions…",
+            &["Sequence", "Transcript"],
+            r#"{"language":"ja|auto"?,"model":"whisper-base"?,"maxChars":n?,"lines":1|2?,"format":str?,"name":str="English"}"#,
+            has_audio_clips,
+            translated_captions,
+            true,
+        ),
         spec(
             "transcript.createCaptions",
             "Create Captions from Transcript…",

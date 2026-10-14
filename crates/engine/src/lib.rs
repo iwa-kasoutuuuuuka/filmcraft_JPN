@@ -17,6 +17,7 @@ pub mod censor;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
+pub mod creator;
 pub mod demo;
 pub mod essential_sound;
 pub mod export_tools;
@@ -888,6 +889,8 @@ mod censor_tests;
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
+#[cfg(test)]
+mod creator_tests;
 #[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]

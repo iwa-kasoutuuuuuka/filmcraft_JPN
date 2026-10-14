@@ -64,6 +64,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "sequence.normalizeMixTrack" => ("Normalize Mix Track", "normalizeMix", "OK"),
         "sequence.removeSilence" => ("Remove Silence", "removeSilence", "Remove"),
         "sequence.makeVertical" => ("Make Vertical Version", "makeVertical", "Create"),
+        "sequence.makeShort" => ("Make Short Video", "makeShort", "Create"),
         "clip.censor" => ("Censor Area", "censor", "OK"),
         "sequence.simplify" => ("Simplify Sequence", "simplify", "Simplify"),
         "sequence.transcribe" => ("Transcribe Sequence", "transcribe", "Transcribe"),
@@ -89,6 +90,7 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "sequence.normalizeMixTrack" => "sequence.normalizeMixTrack",
         "sequence.removeSilence" => "sequence.removeSilence",
         "sequence.makeVertical" => "sequence.makeVertical",
+        "sequence.makeShort" => "sequence.makeShort",
         "clip.censor" => "clip.censor",
         "sequence.simplify" => "sequence.simplify",
         "sequence.transcribe" => "sequence.transcribe",
@@ -327,6 +329,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         "sequence.normalizeMixTrack" => (json!({"db": 0.0}), Value::Null),
         "sequence.removeSilence" => (json!({"thresholdDb": -40.0, "minSeconds": 0.5, "keepSeconds": 0.1}), Value::Null),
         "sequence.makeVertical" => (json!({"aspect": "9:16", "mode": "follow"}), Value::Null),
+        "sequence.makeShort" => (json!({"aspect": "9:16", "mode": "follow", "removeSilence": true, "captions": true}), Value::Null),
         "clip.censor" => (json!({"style": "mosaic", "shape": "ellipse", "strength": 50.0, "track": "none"}), Value::Null),
         "sequence.simplify" => {
             let name = s.state.active_sequence.and_then(|q| s.project.item(q)).map(|i| format!("{} (Simplified)", i.name)).unwrap_or_default();
@@ -719,6 +722,23 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         &[("follow", "Follow the subject"), ("fill", "Center crop"), ("blur", "Blurred background")],
                     );
                     ui.label(RichText::new(crate::i18n::tr_ui("A new sequence nests this one; the original is not changed.")).weak());
+                }
+                "sequence.makeShort" => {
+                    radios(ui, &mut elems, pre, p, "aspect", "Aspect:", &[("9:16", "Vertical 9:16"), ("1:1", "Square 1:1"), ("4:5", "Vertical 4:5")]);
+                    radios(
+                        ui,
+                        &mut elems,
+                        pre,
+                        p,
+                        "mode",
+                        "Framing:",
+                        &[("follow", "Follow the subject"), ("fill", "Center crop"), ("blur", "Blurred background")],
+                    );
+                    check(ui, &mut elems, pre, p, "removeSilence", "Remove silences");
+                    check(ui, &mut elems, pre, p, "captions", "Add captions from the transcript");
+                    ui.label(
+                        RichText::new(crate::i18n::tr_ui("A vertical version with the silences removed and captions; the original is not changed.")).weak(),
+                    );
                 }
                 "clip.censor" => {
                     radios(ui, &mut elems, pre, p, "style", "Style:", &[("mosaic", "Mosaic"), ("blur", "Blur")]);

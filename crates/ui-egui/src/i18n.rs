@@ -336,6 +336,13 @@ fn tr_ja(s: &str) -> &str {
         "Remove Silence" => "無音部分を削除",
         "Make Vertical Version…" => "縦型バージョンを作成…",
         "Make Vertical Version" => "縦型バージョンを作成",
+        "Make Short Video…" => "ショート動画を作成…",
+        "Make Short Video" => "ショート動画を作成",
+        "Copy YouTube Chapters" => "YouTube 用チャプターをコピー",
+        "Add Beat Markers" => "ビートにマーカーを追加",
+        "Cut to the Beat" => "カットをビートに合わせる",
+        "Create English Captions…" => "英語字幕を作成…",
+        "Create English Captions" => "英語字幕を作成",
         "Apply Text Style" => "テキストスタイルを適用",
         "Ruby (Furigana)" => "ルビ (ふりがな)",
         "Subtitle: White, Black Outline" => "字幕: 白文字・黒フチ",
@@ -1678,6 +1685,11 @@ pub fn tr_ui(s: &str) -> &str {
 fn tr_ui_ja(s: &str) -> &str {
     match s {
         "Furigana from 《 》 marks" => "《 》の読みをふりがなにする",
+        "Remove silences" => "無音部分を詰める",
+        "Add captions from the transcript" => "文字起こしから字幕を付ける",
+        "A vertical version with the silences removed and captions; the original is not changed." => {
+            "無音を詰めて字幕を付けた縦型バージョンを作ります。元のシーケンスは変更しません。"
+        }
         "Create" => "作成",
         "Quieter than:" => "次より小さい音量:",
         "Lasting at least:" => "次の長さ以上続く:",
