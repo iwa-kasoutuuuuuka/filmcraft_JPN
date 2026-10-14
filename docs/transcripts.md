@@ -30,9 +30,11 @@ the control channel and MCP agents can do the same.
 | `transcript.select` | Mark In/Out around words `from..=to` (frame-snapped outward) and move the playhead there. |
 | `transcript.extract` / `transcript.lift` | Extract (ripple) or lift the words' frames on the targeted tracks. |
 | `transcript.renameSpeaker` | Rename a speaker by name (every transcript) or by index in one `item`. |
-| `transcript.removeFillers` | Ripple-delete filler words (`fillers`, default um/uh/erm/…; phrases such as "you know" allowed). |
+| `transcript.removeFillers` | Ripple-delete filler words (`fillers`, default um/uh/erm/… and the Japanese えー/えーと/えっと/あのー/うーん/…; phrases such as "you know" allowed). A filler without spaces also matches the recogniser's pieces that spell it (え / ー / と), with 〜 read as ー and long vowels collapsed. あの, まあ and なんか are not defaults: they are often real words. |
 | `transcript.removePauses` | Ripple-delete pauses longer than `minSeconds`, keeping `keepSeconds` of air on both sides. |
 | `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `minSeconds`, `maxSeconds`, `gapFrames`). |
+| `transcript.createTranslatedCaptions` | Sequence ▸ Transcript ▸ Create English Captions…: the speech of the sequence's audio clips translated into English by the model (Whisper's translate task, multilingual models only) as a new caption track "English" (language `en`). The clips' transcripts are not changed. Translation quality follows the model: `whisper-base` gets the gist, not every detail. |
+| `captions.setStyle {"speakerColors": true}` | Colour each speaker's captions: the first speaker keeps the track colour, the next ones get yellow, cyan, green, pink, orange, violet (Text panel ▸ Captions ▸ Speaker colours). |
 | `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one. |
 
 ## Speech recognition
@@ -94,6 +96,12 @@ reference `.txt`) are in `target/fixtures/speech/`; it reports the word error ra
 prints SKIPPED. Measured on 2026-10-01: `whisper-tiny`, English, 12.2 % WER over 797 words of
 the local speech samples (LibriSpeech read speech and dialogue clips) (about 9.5 minutes for the run in a release build on an
 Apple-silicon laptop CPU).
+
+Japanese caption lines break between phrases (see `may_break_between`): particles and okurigana
+stay with the word before them, kanji with kanji, katakana with katakana. A phrase wider than a
+line is broken after its last particle (わたしは / きのう, ものを / たべました; `soft_break_between`)
+rather than at the line width. There is no morphological analysis, so a line can still break in an
+odd place now and then.
 
 ## Limits
 
