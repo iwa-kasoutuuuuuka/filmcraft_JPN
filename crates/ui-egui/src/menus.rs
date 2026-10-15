@@ -368,10 +368,20 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     {
         ctx.copy_text(text.to_string());
         let n = v.get("chapters").and_then(Value::as_array).map_or(0, Vec::len);
-        let warning = v.get("warnings").and_then(Value::as_array).and_then(|w| w.first()).and_then(Value::as_str).map(str::to_string);
-        app.ui.status = match warning {
-            Some(w) => crate::tf!("Copied {n} chapters; {w}", "チャプター {n} 件をコピーしました（注意: {w}）"),
-            None => crate::tf!("Copied {n} chapters to the clipboard", "チャプター {n} 件をクリップボードにコピーしました"),
+        let short =
+            v.get("tooShort").and_then(Value::as_array).and_then(|a| a.first()).and_then(|c| c.get("title")).and_then(Value::as_str).map(str::to_string);
+        app.ui.status = if v.get("tooFew").and_then(Value::as_bool).unwrap_or(false) {
+            crate::tf!(
+                "Copied {n} chapters; YouTube shows chapters only when there are at least 3",
+                "チャプター {n} 件をコピーしました（YouTube でチャプターが表示されるのは 3 件以上のときです）"
+            )
+        } else if let Some(t) = short {
+            crate::tf!(
+                "Copied {n} chapters; \"{t}\" is shorter than the 10 s YouTube needs",
+                "チャプター {n} 件をコピーしました（「{t}」が 10 秒未満です。YouTube では各チャプター 10 秒以上が必要です）"
+            )
+        } else {
+            crate::tf!("Copied {n} chapters to the clipboard", "チャプター {n} 件をクリップボードにコピーしました")
         };
     }
     r

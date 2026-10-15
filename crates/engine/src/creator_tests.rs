@@ -53,6 +53,8 @@ fn chapters_follow_youtube_rules() {
     let w: Vec<&str> = r["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("City at night") && w[0].contains("10 s"), "{w:?}");
+    assert_eq!(r["tooFew"], false);
+    assert_eq!(r["tooShort"][0]["title"], "City at night");
 
     // written to a file as well
     let dir = std::env::temp_dir().join(format!("filmcraft-chapters-{}", std::process::id()));

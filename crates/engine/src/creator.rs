@@ -156,10 +156,22 @@ fn export_chapters(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(path) = str_p(p, "path").filter(|x| !x.trim().is_empty()) {
         filmcraft_format::atomic_write(std::path::Path::new(path), text.as_bytes()).map_err(|e| EngineError::Other(format!("writing {path}: {e}")))?;
     }
+    // the same problems as data, for a UI that words them in its own language
+    let end = q.duration();
+    let short: Vec<Value> = list
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (t, name))| {
+            let len = (list.get(i + 1).map(|(n, _)| *n).unwrap_or(end) - *t).seconds();
+            (len < YOUTUBE_MIN_SECONDS).then(|| json!({"title": name, "timecode": youtube_time(*t), "seconds": len}))
+        })
+        .collect();
     Ok(json!({
         "text": text,
         "chapters": list.iter().map(|(t, name)| json!({"time": t.0, "timecode": youtube_time(*t), "title": name})).collect::<Vec<_>>(),
         "warnings": warnings,
+        "tooFew": list.len() < YOUTUBE_MIN_CHAPTERS,
+        "tooShort": short,
     }))
 }
 
