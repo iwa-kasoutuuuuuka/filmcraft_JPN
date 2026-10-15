@@ -74,6 +74,26 @@ pub fn note_hw_declined() {
     DECLINED.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Reasons not yet reported, and every reason seen (each is reported once per process).
+static REASONS: std::sync::Mutex<(Vec<String>, Vec<String>)> = std::sync::Mutex::new((Vec::new(), Vec::new()));
+
+/// A hardware factory declined a `codec` stream because of `why`: counted, and the reason is kept
+/// for [`take_declined_reasons`] so the user learns why playback runs in software.
+pub fn note_hw_declined_because(codec: &str, why: &str) {
+    note_hw_declined();
+    let msg = format!("{codec}: {why}");
+    let mut r = REASONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if r.1.len() < 64 && !r.1.contains(&msg) {
+        r.1.push(msg.clone());
+        r.0.push(msg);
+    }
+}
+
+/// Decline reasons (`"<codec>: <why>"`) not reported yet; each distinct reason is returned once.
+pub fn take_declined_reasons() -> Vec<String> {
+    std::mem::take(&mut REASONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0)
+}
+
 /// A hardware decoder switched to software mid-stream.
 pub fn note_hw_fallback() {
     FALLBACKS.fetch_add(1, Ordering::Relaxed);
@@ -303,6 +323,19 @@ impl NalStreamInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_decline_reason_is_reported_once() {
+        let before = hw_stats().declined;
+        note_hw_declined_because("HEVC", "test reason a");
+        note_hw_declined_because("HEVC", "test reason a");
+        note_hw_declined_because("HEVC", "test reason b");
+        assert_eq!(hw_stats().declined - before, 3, "every decline is counted");
+        let r: Vec<String> = take_declined_reasons().into_iter().filter(|m| m.contains("test reason")).collect();
+        assert_eq!(r, ["HEVC: test reason a", "HEVC: test reason b"]);
+        note_hw_declined_because("HEVC", "test reason a");
+        assert!(!take_declined_reasons().iter().any(|m| m.contains("test reason")), "already reported");
+    }
 
     #[test]
     fn switch_defaults_to_auto() {

@@ -95,7 +95,7 @@ pub fn videotoolbox_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<fi
         Ok(vt) => Some(Ok(Box::new(HybridDecoder::new(Box::new(vt), entry.clone(), info)))),
         Err(why) => {
             log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
-            filmcraft_codecs::hw::note_hw_declined();
+            filmcraft_codecs::hw::note_hw_declined_because(entry.codec.name(), &why);
             None
         }
     }
@@ -113,7 +113,7 @@ pub fn mediafoundation_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option
         Ok(mf) => Some(Ok(Box::new(HybridDecoder::new(Box::new(mf), entry.clone(), info)))),
         Err(why) => {
             log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
-            filmcraft_codecs::hw::note_hw_declined();
+            filmcraft_codecs::hw::note_hw_declined_because(entry.codec.name(), &why);
             None
         }
     }

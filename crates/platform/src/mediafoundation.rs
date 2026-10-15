@@ -171,7 +171,11 @@ impl Session {
         runtime()?;
         let device = Device::shared()?;
 
-        let mut why = String::from("no decoder transform for the codec");
+        let mut why = match info.codec {
+            // Windows ships no HEVC decoder of its own: it comes with a Microsoft Store add-on
+            NalCodec::Hevc => String::from("Windows has no HEVC decoder; install the HEVC Video Extensions from the Microsoft Store"),
+            NalCodec::H264 => String::from("Windows has no H.264 decoder (an N edition without the Media Feature Pack?)"),
+        };
         for activate in decoder_transforms(info.codec)? {
             // SAFETY: a valid activation object from `MFTEnumEx`.
             let transform: IMFTransform = match unsafe { activate.ActivateObject() } {

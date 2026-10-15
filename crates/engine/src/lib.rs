@@ -552,6 +552,14 @@ impl Session {
         scene_detect::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
+        // why a stream plays in software (once per reason): otherwise playback is just slow
+        for why in filmcraft_codecs::hw::take_declined_reasons() {
+            self.log.push(
+                panels::Level::Warning,
+                "playback",
+                format!("Hardware decoding unavailable for {why}. Playback and export decode it in software, which is slower."),
+            );
+        }
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
