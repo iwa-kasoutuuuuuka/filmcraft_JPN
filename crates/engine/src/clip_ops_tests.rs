@@ -689,3 +689,22 @@ fn subclip_source_monitor_trims_and_markers() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!(matches!(s.project.item(sub).unwrap().kind, ItemKind::Subclip { restrict_trims: false, .. }));
 }
+
+/// Commands that name their targets (`items`, `clips`) run without a selection step: a CLI or
+/// MCP caller has no Project panel or timeline selection to make. Unknown ids are still refused.
+#[test]
+fn explicit_targets_stand_in_for_the_selection() {
+    let mut s = demo();
+    let a = item_named(&s, "Desert_Dunes.mp4");
+    s.state.project_selection.clear();
+    s.state.selection.clear();
+    assert!(s.execute("file.newSequenceFromClip", json!({})).is_err(), "no selection, no targets");
+    assert!(s.execute("file.newSequenceFromClip", json!({"items": [999_999]})).is_err(), "unknown item");
+    s.execute("file.newSequenceFromClip", json!({"items": [a.0]})).unwrap();
+    assert!(s.state.project_selection.is_empty(), "the selection is left as it was");
+    let c = v1(&s)[0].id.0;
+    s.state.selection.clear();
+    s.execute("clip.enable", json!({"clips": [c]})).unwrap();
+    assert!(!clip(&s, c).enabled, "disabled by the explicit target");
+    assert!(s.state.selection.is_empty());
+}

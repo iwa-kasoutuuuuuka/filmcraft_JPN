@@ -114,7 +114,7 @@ pub fn fixture(ffmpeg: &Path, name: &str) -> Option<PathBuf> {
         eprintln!("could not generate {name} (encoder unavailable?); skipping");
         return None;
     }
-    std::fs::rename(&tmp, &out).unwrap(); // atomic: concurrent generators race harmlessly
+    assert!(filmcraft_testkit::publish(&tmp, &out), "publish {}", out.display()); // atomic: concurrent generators race harmlessly
     Some(out)
 }
 

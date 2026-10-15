@@ -5,7 +5,7 @@
 //!    not a silent skip);
 //! 2. every directory on `PATH` (`T`, and `T.exe` on Windows);
 //! 3. well-known install locations (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`,
-//!    `C:\ffmpeg\bin`, …).
+//!    `C:\ffmpeg\bin`, …), then per-user Windows installs (winget links, Scoop shims).
 //!
 //! When a tool is missing, tests print `SKIPPED: …` and pass — unless
 //! `FILMCRAFT_REQUIRE_ORACLES=1` is set (CI), which turns every skip into a failure.
@@ -68,11 +68,34 @@ fn env_var(name: &str) -> String {
     format!("FILMCRAFT_{}", name.to_ascii_uppercase())
 }
 
+/// Per-user install locations on Windows: winget's links and FFmpeg packages (`<pkg>\<build>\bin`,
+/// which winget only adds to the user `PATH`), and Scoop's shims. A shell or IDE started before
+/// the install doesn't have them on `PATH` yet, and every oracle test would skip.
+fn user_dirs() -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(l) = std::env::var_os("LOCALAPPDATA") {
+        let winget = Path::new(&l).join(r"Microsoft\WinGet");
+        v.push(winget.join("Links").to_string_lossy().into_owned());
+        let subdirs = |p: &Path| std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect::<Vec<_>>();
+        for pkg in subdirs(&winget.join("Packages")) {
+            if pkg.file_name().is_some_and(|n| n.to_string_lossy().to_ascii_lowercase().contains("ffmpeg")) {
+                v.extend(subdirs(&pkg).into_iter().map(|b| b.join("bin").to_string_lossy().into_owned()));
+            }
+        }
+    }
+    if let Some(h) = std::env::var_os("USERPROFILE") {
+        v.push(Path::new(&h).join(r"scoop\shims").to_string_lossy().into_owned());
+    }
+    v
+}
+
 /// Find a tool using the process environment (uncached).
 pub fn find_tool(name: &str) -> Option<PathBuf> {
     let explicit = std::env::var_os(env_var(name));
     let path = std::env::var_os("PATH");
-    match find_tool_in(name, explicit.as_deref(), path.as_deref(), KNOWN_DIRS) {
+    let user = user_dirs();
+    let extra: Vec<&str> = KNOWN_DIRS.iter().copied().chain(user.iter().map(String::as_str)).collect();
+    match find_tool_in(name, explicit.as_deref(), path.as_deref(), &extra) {
         Ok(p) => p,
         Err(e) => panic!("{e}"),
     }

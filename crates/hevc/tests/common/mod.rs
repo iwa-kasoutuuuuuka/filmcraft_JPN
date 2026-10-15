@@ -142,7 +142,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
             eprintln!("SKIPPED ({}): encoder unavailable", f.name);
             return None;
         }
-        std::fs::rename(&tmp, &hevc).unwrap();
+        assert!(filmcraft_testkit::publish(&tmp, &hevc), "publish {}", hevc.display());
     }
     if !yuv.exists() {
         let tmp = filmcraft_testkit::temp_path(&yuv);
@@ -150,7 +150,7 @@ pub fn ensure(f: &Fixture) -> Option<(PathBuf, PathBuf)> {
         c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(&hevc);
         c.args(["-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix_fmt(f.bit_depth)]).arg(&tmp);
         assert!(run(&mut c), "reference decode failed for {}", f.name);
-        std::fs::rename(&tmp, &yuv).unwrap();
+        assert!(filmcraft_testkit::publish(&tmp, &yuv), "publish {}", yuv.display());
     }
     Some((hevc, yuv))
 }

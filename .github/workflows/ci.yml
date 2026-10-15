@@ -23,6 +23,8 @@ env:
   # the runner's memory (LNK1102 / LNK1201 on Windows otherwise).
   CARGO_PROFILE_DEV_DEBUG: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  # Oracle tests (ffmpeg comparisons) fail instead of silently skipping when ffmpeg is missing.
+  FILMCRAFT_REQUIRE_ORACLES: 1
 
 jobs:
   gates:
@@ -39,7 +41,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev \
+            ffmpeg
+      # ffmpeg / ffprobe are test oracles and fixture generators only (never linked or shipped).
+      - name: Windows test oracles
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

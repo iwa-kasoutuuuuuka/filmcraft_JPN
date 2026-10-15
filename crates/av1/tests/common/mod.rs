@@ -45,7 +45,7 @@ pub fn make(ff: &Path, spec: &Spec) -> PathBuf {
         args.extend(spec.enc.iter().map(String::as_str));
         args.extend(["-f", "ivf", t.as_str()]);
         run(ff, &args);
-        std::fs::rename(&tmp, &path).unwrap();
+        assert!(filmcraft_testkit::publish(&tmp, &path), "publish {}", path.display());
     }
     path
 }
@@ -210,6 +210,6 @@ pub fn test_vector(name: &str) -> Option<PathBuf> {
         filmcraft_testkit::skip("av1 conformance", &format!("could not download {url}"));
         return None;
     }
-    std::fs::rename(&tmp, &path).ok()?;
+    filmcraft_testkit::publish(&tmp, &path).then_some(())?;
     Some(path)
 }

@@ -614,13 +614,47 @@ impl Session {
         self.revision != self.saved_revision
     }
 
+    /// Whether `spec` can run with these parameters. Explicit targets (`clips` / `clip`, `items` /
+    /// `item`) stand in for the timeline / Project panel selection, so a CLI or MCP caller that
+    /// names its targets needs no selection step first; every other prerequisite still applies.
+    fn enabled_for(&mut self, spec: &commands::CommandSpec, params: &Value) -> std::result::Result<(), String> {
+        let first = (spec.enabled)(self);
+        if first.is_ok() {
+            return first;
+        }
+        let ids = |list: &str, one: &str| -> Option<Vec<u64>> {
+            if !spec.params.contains(&format!("\"{list}\"")) && !spec.params.contains(&format!("\"{one}\"")) {
+                return None;
+            }
+            match (params.get(list).and_then(Value::as_array), params.get(one).and_then(Value::as_u64)) {
+                (Some(a), _) => Some(a.iter().filter_map(Value::as_u64).collect::<Vec<_>>()).filter(|v| !v.is_empty()),
+                (None, Some(id)) => Some(vec![id]),
+                (None, None) => None,
+            }
+        };
+        let (clips, items) = (ids("clips", "clip"), ids("items", "item"));
+        if clips.is_none() && items.is_none() {
+            return first;
+        }
+        let saved = (self.state.selection.clone(), self.state.project_selection.clone());
+        if let Some(c) = clips {
+            self.state.selection = c.into_iter().map(ClipId).collect();
+        }
+        if let Some(i) = items {
+            self.state.project_selection = i.into_iter().map(ItemId).collect();
+        }
+        let r = (spec.enabled)(self);
+        (self.state.selection, self.state.project_selection) = saved;
+        r
+    }
+
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
-        if let Err(why) = (spec.enabled)(self) {
+        if let Err(why) = self.enabled_for(spec, &params) {
             let e = EngineError::Disabled(id.to_string(), why);
             if self.exec_depth == 0 {
                 self.log.push(panels::Level::Warning, id, e.to_string());
