@@ -358,7 +358,13 @@ impl GopCache {
                 return Err(CodecError::Cancelled);
             }
             let k = st.next;
-            let data = s.read(k)?;
+            let data = match s.read(k) {
+                Ok(d) => d,
+                // A sample after the wanted one can't be read (a recording or download cut short):
+                // that is the end of the stream; the flush below outputs what the decoder holds.
+                Err(_) if k > i => break,
+                Err(e) => return Err(e),
+            };
             if k != i && s.pts(k) < late && st.decoder.as_ref().is_some_and(|d| d.is_disposable(&data)) {
                 st.next += 1;
                 SKIPPED.fetch_add(1, Ordering::Relaxed);
@@ -429,7 +435,12 @@ impl GopCache {
         let mut found = false;
         while *next < limit {
             let k = *next;
-            let data = s.read(k)?;
+            let data = match s.read(k) {
+                Ok(d) => d,
+                // past the wanted sample: a file cut short ends here (flushed below)
+                Err(_) if k > i => break,
+                Err(e) => return Err(e),
+            };
             let pics = timed(|| d.decode(&data, s.pts(k)))?;
             count_frames(&pics);
             *next += 1;
