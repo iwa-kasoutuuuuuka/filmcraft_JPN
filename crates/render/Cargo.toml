@@ -22,6 +22,7 @@ filmcraft-text = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tract-onnx = { workspace = true }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
