@@ -1,7 +1,0 @@
-asset:        crates/render/assets/face_detection_yunet_2023mar.onnx
-title:        YuNet face detection model, 2023 March (ONNX, 232589 bytes), used by yunet::detect
-author:       Shiqi Yu and the OpenCV Zoo contributors
-source:       https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet (file fetched through media.githubusercontent.com as a Git LFS object; sha256 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4); mirror https://huggingface.co/opencv/face_detection_yunet
-license:      Repository: Apache License 2.0 (opencv_zoo LICENSE, fetched 2026-10-15). Model card mirror (Hugging Face) states MIT for the model file; the two statements differ, the model card's licence is the one to confirm before redistribution beyond this repository.
-added:        2026-10-15 by Claude (agent)
-notes:        Fixed 640x640 input (BGR, 0..255, no normalisation). Not modified. Run by crates/render/src/yunet.rs with tract-onnx (MIT OR Apache-2.0).
