@@ -153,7 +153,8 @@ pub fn blur(m: &Mask, sigma: f32) -> Mask {
         return m.clone();
     }
     // box radius for 3 passes ≈ sigma * sqrt(3)
-    let r = ((sigma * sigma + 1.0).sqrt().round() as usize).max(1);
+    // a radius beyond the mask changes nothing more; capped so a hostile sigma can't overflow
+    let r = ((sigma * sigma + 1.0).sqrt().round() as usize).clamp(1, m.w.max(m.h));
     let mut a = m.a.clone();
     let mut b = vec![0.0f32; a.len()];
     for _ in 0..3 {

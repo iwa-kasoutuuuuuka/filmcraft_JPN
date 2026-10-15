@@ -870,18 +870,36 @@ impl Worker {
         Some((self.last_change + self.debounce).min(max))
     }
 
+    /// Serve messages until stopped. A panic while saving (a bug) is reported and the snapshot that
+    /// caused it is skipped; the worker keeps running so later changes are still protected.
     fn run(mut self, rx: Receiver<Msg>) {
         loop {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.step(&rx))) {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(_) => {
+                    if let Some(rev) = self.latest.as_ref().map(|s| s.revision) {
+                        (self.journaled, self.autosaved) = (rev, rev);
+                    }
+                    self.error("internal error while saving (see the crash log)".into());
+                }
+            }
+        }
+    }
+
+    /// Wait for the next message or deadline and act on it; false when the worker should stop.
+    fn step(&mut self, rx: &Receiver<Msg>) -> bool {
+        {
             let due = [self.journal_due(), self.prefs.enabled.then_some(self.next_autosave)].into_iter().flatten().min();
             let msg = match due {
                 Some(d) => match rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
                     Ok(m) => Some(m),
                     Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => return,
+                    Err(RecvTimeoutError::Disconnected) => return false,
                 },
                 None => match rx.recv() {
                     Ok(m) => Some(m),
-                    Err(_) => return,
+                    Err(_) => return false,
                 },
             };
             match msg {
@@ -917,7 +935,7 @@ impl Worker {
                     }
                     let _ = ack.send(());
                 }
-                Some(Msg::Stop) => return,
+                Some(Msg::Stop) => return false,
                 None => {}
             }
             let now = Instant::now();
@@ -931,6 +949,7 @@ impl Worker {
                 self.next_autosave = now + self.autosave_interval();
             }
         }
+        true
     }
 
     fn error(&self, e: String) {

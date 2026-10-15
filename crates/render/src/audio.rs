@@ -288,7 +288,8 @@ fn raw_channels(item: &TrackItem, src: &dyn filmcraft_media::MediaSource, x0: i6
     }
     let n = (a1 - a0) as usize;
     let off = (a0 - x0) as usize;
-    let speed = item.speed.abs().max(1e-6);
+    // bounded: a damaged speed (1e6, 1e300) must not size the varispeed read beyond memory
+    let speed = if item.speed.is_nan() { 1.0 } else { item.speed.abs().clamp(1e-6, 1000.0) };
     let src_start_ticks = item.source_time_at(Tick::from_units(a0, sr as i64));
     let remixed = crate::remix::read(item, &|m0, len| src.audio(m0, len, sr).ok(), a0 - item_s0, n, sr);
     let buf = if remixed.is_some() {
@@ -297,7 +298,7 @@ fn raw_channels(item: &TrackItem, src: &dyn filmcraft_media::MediaSource, x0: i6
         src.audio(src_start_ticks.to_units_floor(sr as i64), n, sr).ok()
     } else {
         // varispeed: read a longer span and resample linearly
-        let span = ((n as f64) * speed).ceil() as usize + 2;
+        let span = (((n as f64) * speed).ceil() as usize).saturating_add(2);
         let s0 = if item.reverse { src_start_ticks.to_units_floor(sr as i64) - span as i64 } else { src_start_ticks.to_units_floor(sr as i64) };
         src.audio(s0, span, sr).ok().map(|raw| {
             let mut b = AudioBuffer::silence(sr, raw.channel_count(), n);

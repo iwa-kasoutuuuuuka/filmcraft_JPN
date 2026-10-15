@@ -147,7 +147,8 @@ impl MediaSource for GeneratorSource {
         let scale = req.scale.clamp(1.0 / 64.0, 1.0);
         let bucket = (scale * 64.0).round() as u16;
         let s = bucket as f32 / 64.0;
-        let (w, h) = (((v.width as f32 * s).round() as u32).max(2), ((v.height as f32 * s).round() as u32).max(2));
+        // bounded: the size comes from project-stored media info, which may be damaged
+        let (w, h) = (((v.width as f32 * s).round() as u32).clamp(2, 16_384), ((v.height as f32 * s).round() as u32).clamp(2, 16_384));
         let t = rate.tick_of(frame).seconds() as f32;
         self.cache.get_or_insert_with((frame, bucket), || {
             let px = render(&self.generator, w, h, t, frame, rate);
@@ -288,7 +289,10 @@ fn to8(c: [f32; 3]) -> [u8; 4] {
 /// Render a generator frame as straight-alpha sRGB RGBA8.
 pub fn render(g: &Generator, w: u32, h: u32, t: f32, frame: i64, rate: FrameRate) -> Vec<u8> {
     let (wu, hu) = (w as usize, h as usize);
-    let mut px = vec![0u8; wu * hu * 4];
+    let Some(len) = wu.checked_mul(hu).and_then(|n| n.checked_mul(4)).filter(|&n| n <= 16_384 * 16_384 * 4) else {
+        return Vec::new();
+    };
+    let mut px = vec![0u8; len];
     match g {
         Generator::BarsAndTone => bars(&mut px, wu, hu),
         Generator::ColorMatte { color } => {

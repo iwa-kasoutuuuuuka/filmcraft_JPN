@@ -197,3 +197,20 @@ fn models_live_in_the_sessions_data_directory() {
     s.prefs_path = None;
     assert_eq!(crate::transcript::models_dir(&s), crate::autosave::default_data_dir().map(|d| d.join("models")));
 }
+
+#[test]
+fn hostile_speakers_and_caption_rules_are_refused_or_clamped() {
+    let (mut s, item, _) = session();
+    // a huge speaker index grew the label list to 4 billion entries
+    let t = json!({"words": [{"text": "a", "start": 0, "end": 1000, "speaker": u32::MAX}]});
+    assert!(s.execute("transcript.set", json!({"item": item.0, "transcript": t})).is_err());
+    s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+    // extreme layout values overflowed the caption maths
+    for p in [
+        json!({"maxChars": u64::MAX, "lines": u64::MAX, "gapFrames": i64::MAX, "minSeconds": 1e300, "maxSeconds": 1e300}),
+        json!({"maxChars": 0, "lines": 0, "gapFrames": i64::MIN, "minSeconds": -1e300, "maxSeconds": -1e300}),
+    ] {
+        s.execute("transcript.createCaptions", p).unwrap();
+        s.active_sequence().unwrap().check().unwrap();
+    }
+}

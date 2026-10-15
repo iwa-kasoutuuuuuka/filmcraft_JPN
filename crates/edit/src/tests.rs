@@ -270,6 +270,18 @@ fn rate_stretch_and_speed() {
 }
 
 #[test]
+fn set_speed_refuses_hostile_speeds() {
+    let mut fx = Fx::new();
+    let v1 = fx.v(0);
+    let a = fx.put(v1, 0, 10, 0);
+    let mut n = fx.next;
+    for sp in [1e-300, f64::MIN_POSITIVE, 1e300, f64::NAN, f64::INFINITY, -1.0, 0.0] {
+        assert!(set_speed(&mut fx.seq, a, sp, false, true, &mut Fx::ctx(&mut n)).is_err(), "{sp}");
+    }
+    assert_eq!(fx.spans(v1), vec![(0, 10)]);
+}
+
+#[test]
 fn move_with_insert_and_overwrite() {
     let mut fx = Fx::new();
     let (v1, v2) = (fx.v(0), fx.v(1));

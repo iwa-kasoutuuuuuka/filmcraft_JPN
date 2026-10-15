@@ -179,3 +179,15 @@ fn opus_toc_durations() {
     assert_eq!(opus_packet_samples([0xF8 | 3, 7], 10), None); // 140 ms: invalid
     assert_eq!(opus_packet_samples([0xF8, 0], 0), None);
 }
+
+/// Regression: granules near i64::MIN / i64::MAX overflowed the Opus timing arithmetic.
+#[test]
+fn opus_timing_with_extreme_granules() {
+    // TOC 0xFC: config 31 (20 ms CELT FB), code 0 → 960 samples
+    let pk = |granule: Option<i64>, eos: bool| Packet { parts: vec![(0, 1)], size: 1, granule, page: 0, eos, prefix: [0xFC, 0] };
+    let packets =
+        vec![pk(Some(i64::MIN), false), pk(Some(i64::MAX), false), pk(Some(i64::MAX), false), pk(None, false), pk(Some(i64::MIN), true), pk(None, false)];
+    let st = Stream { serial: 1, codec: Codec::Opus, headers: vec![], packets, pages: 5, last_granule: Some(i64::MAX), saw_eos: true };
+    let r = std::panic::catch_unwind(|| OpusTiming::of(&st, u32::MAX));
+    assert!(r.is_ok());
+}

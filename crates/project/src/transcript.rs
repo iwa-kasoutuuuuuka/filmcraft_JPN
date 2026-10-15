@@ -75,6 +75,9 @@ pub struct Transcript {
     pub words: Vec<Word>,
 }
 
+/// Most speakers one transcript may number; [`Transcript::normalize`] drops higher indices.
+pub const MAX_SPEAKERS: u32 = 256;
+
 impl Transcript {
     /// The speaker name of `word` (`"Speaker 2"` when the label list is short; `None` when the word
     /// has no speaker).
@@ -120,6 +123,12 @@ impl Transcript {
             let s = self.words[i].start;
             if self.words[i - 1].end > s {
                 self.words[i - 1].end = s.max(self.words[i - 1].start);
+            }
+        }
+        // A hostile speaker index would grow the label list without bound: drop it instead.
+        for w in &mut self.words {
+            if w.speaker.is_some_and(|s| s >= MAX_SPEAKERS) {
+                w.speaker = None;
             }
         }
         let max = self.words.iter().filter_map(|w| w.speaker).max();
@@ -203,6 +212,17 @@ mod tests {
         assert_eq!(t.words[2].end, Tick(35));
         assert_eq!(t.speakers.len(), 2);
         assert_eq!(t.speaker_name(&t.words[1]).as_deref(), Some("Speaker 2"));
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn normalize_drops_hostile_speaker_indices() {
+        let mut t = Transcript { words: vec![w("a", 0, 10), w("b", 10, 20)], ..Default::default() };
+        t.words[0].speaker = Some(u32::MAX);
+        t.words[1].speaker = Some(MAX_SPEAKERS - 1);
+        t.normalize();
+        assert_eq!(t.words[0].speaker, None);
+        assert_eq!(t.speakers.len(), MAX_SPEAKERS as usize);
         t.check().unwrap();
     }
 

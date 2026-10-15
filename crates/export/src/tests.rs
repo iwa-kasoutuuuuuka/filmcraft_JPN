@@ -89,6 +89,20 @@ fn wav_png_gif() {
     assert!(std::path::Path::new(&tmp("seq005.png")).exists());
 }
 
+/// A damaged project with a zero frame rate must export (at the default rate), not panic
+/// computing the GIF frame delay.
+#[test]
+fn gif_with_zero_sequence_rate() {
+    let (p, seq, m) = project();
+    let mut p = (*p).clone();
+    p.sequence_mut(seq).unwrap().settings.frame_rate = FrameRate { num: 0, den: 0 };
+    let p = Arc::new(p);
+    let mut s = ExportSettings { format: Format::Gif, path: tmp("zero_rate.gif"), scale: 0.25, ..Default::default() };
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(2)));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| export(&p, seq, &s, &m, &Progress::default())));
+    assert!(r.is_ok(), "export panicked");
+}
+
 #[test]
 fn prores_export_roundtrip() {
     let (p, seq, m) = project();

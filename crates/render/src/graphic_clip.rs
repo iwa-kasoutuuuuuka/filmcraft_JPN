@@ -250,8 +250,9 @@ pub fn raster_layer(spec: &LayerSpec, m: &Xform, cw: usize, ch: usize) -> Option
     if x1 <= x0 || y1 <= y0 || x1 <= 0 || y1 <= 0 || x0 >= cw as i32 || y0 >= ch as i32 {
         return None;
     }
-    let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
-    if w * h > 64 << 20 {
+    // i64: a hostile shadow blur/size puts the bounds at the ends of the i32 range
+    let (w, h) = ((i64::from(x1) - i64::from(x0)) as usize, (i64::from(y1) - i64::from(y0)) as usize);
+    if w.saturating_mul(h) > 64 << 20 {
         return None;
     }
     let mut cover = Mask::new(w, h);

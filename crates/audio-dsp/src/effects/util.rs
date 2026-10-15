@@ -108,7 +108,7 @@ pub(crate) struct OnePole {
 impl OnePole {
     /// Coefficient for a −3 dB cutoff at `hz` (matched-z).
     pub(crate) fn alpha(hz: f32, sr: f32) -> f64 {
-        1.0 - (-2.0 * PI * (hz.clamp(1.0, sr * 0.49) as f64) / sr as f64).exp()
+        1.0 - (-2.0 * PI * (hz.clamp(1.0, (sr * 0.49).max(1.0)) as f64) / sr as f64).exp()
     }
     #[inline]
     pub(crate) fn lp(&mut self, a: f64, x: f32) -> f32 {
@@ -158,7 +158,7 @@ pub(crate) struct AllPass1 {
 impl AllPass1 {
     /// Coefficient placing the 90° phase point at `hz`.
     pub(crate) fn coef(hz: f32, sr: f32) -> f64 {
-        let t = (PI * (hz.clamp(1.0, sr * 0.49) as f64) / sr as f64).tan();
+        let t = (PI * (hz.clamp(1.0, (sr * 0.49).max(1.0)) as f64) / sr as f64).tan();
         (t - 1.0) / (t + 1.0)
     }
     #[inline]

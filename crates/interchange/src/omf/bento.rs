@@ -321,6 +321,10 @@ impl<'a> Container<'a> {
                     out.extend_from_slice(b);
                 }
             }
+            // every segment may point at the whole file: a value larger than the file is hostile
+            if out.len() > self.data.len() {
+                return Err("a value is larger than the file".into());
+            }
         }
         Ok(out)
     }
@@ -353,5 +357,22 @@ impl<'a> Container<'a> {
             }
         }
         key
+    }
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::*;
+
+    /// Regression: a million segments each covering the whole file built a value a million times
+    /// the file's size.
+    #[test]
+    fn value_is_bounded_by_the_file() {
+        let data = vec![0u8; 1 << 16];
+        let c = Container { data: &data, objects: BTreeMap::new(), names: HashMap::new(), by_name: HashMap::new() };
+        let p = Prop { prop: 1, ty: 1, segs: vec![Seg::At(0, 1 << 16); 1 << 20] };
+        assert!(c.value(&p).is_err());
+        let ok = Prop { prop: 1, ty: 1, segs: vec![Seg::At(0, 1 << 16)] };
+        assert_eq!(c.value(&ok).map(|v| v.len()), Ok(1 << 16));
     }
 }

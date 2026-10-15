@@ -1526,3 +1526,29 @@ fn subspace_steadies_a_real_clip() {
         assert!(jitter(&subspace) < jitter(&raw) * 0.6, "subspace {:.5} vs shaken {:.5}", jitter(&subspace), jitter(&raw));
     }
 }
+
+/// Bevel Alpha after an effect that left alpha negative or NaN (Drop Shadow at a hostile opacity
+/// with Shadow Only) used `clamp(0.0, alpha)` with crossing bounds: a panic.
+#[test]
+fn bevel_alpha_survives_negative_and_nan_alpha() {
+    for a in [-0.5f32, f32::NAN] {
+        let mut img = Image::filled(4, 4, [0.2, 0.2, 0.2, a]);
+        crate::effects::apply(&mut img, &inst("bevel_alpha"), &cx());
+    }
+    let mut e = inst("drop_shadow");
+    setf(&mut e, "opacity", -50.0);
+    set(&mut e, "only", ParamValue::Bool(true));
+    let mut img = picture(8, 8);
+    crate::effects::apply(&mut img, &e, &cx());
+    crate::effects::apply(&mut img, &inst("bevel_alpha"), &cx());
+}
+
+/// A hostile Timecode size used to size the text masks from it (tens of GB).
+#[test]
+fn timecode_with_huge_size_is_bounded() {
+    let mut img = picture(16, 16);
+    crate::graphics::burn_text(&mut img, "00:00:00:00", "Inter", filmcraft_geom::Vec2::new(8.0, 8.0), 1e7, 0.8);
+    let mut e = inst("timecode");
+    setf(&mut e, "size", 1e7);
+    crate::effects::apply(&mut img, &e, &cx());
+}

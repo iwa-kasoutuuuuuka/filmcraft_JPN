@@ -283,7 +283,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         "drop_shadow" => {
             let c = color(e, "color", cx);
-            let op = f(e, "opacity", cx) / 100.0;
+            let op = (f(e, "opacity", cx) / 100.0).clamp(0.0, 1.0);
             let dir = (f(e, "direction", cx) as f64).to_radians();
             let dist = f(e, "distance", cx) as f64 * cx.px_scale as f64;
             let soft = f(e, "softness", cx) * cx.px_scale * 0.5;
@@ -320,8 +320,10 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                     let gy = a(0.0, th) - a(0.0, -th);
                     let shade = -(gx * lx + gy * ly) * inten;
                     let p = &mut row[x * 4..x * 4 + 4];
+                    // an earlier effect can leave alpha negative or NaN; clamp's bounds must not cross
+                    let al = p[3].max(0.0);
                     for k in 0..3 {
-                        p[k] = (p[k] + shade * p[3]).clamp(0.0, p[3]);
+                        p[k] = (p[k] + shade * al).clamp(0.0, al);
                     }
                 }
             });

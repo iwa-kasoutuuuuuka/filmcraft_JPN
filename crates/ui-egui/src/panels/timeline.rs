@@ -699,25 +699,32 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<
     let pending = app.tl.peaks_pending.clone();
     let dur = src.info().duration;
     let run = move || {
-        let sr = 48_000u32;
-        let total = dur.to_units_floor(sr as i64).max(0) as usize;
-        let mut out = Vec::with_capacity(total / 256 + 1);
-        let chunk = 48_000 * 4;
-        let mut s = 0usize;
-        while s < total {
-            let n = chunk.min(total - s);
-            match src.audio(s as i64, n, sr) {
-                Ok(buf) => {
-                    let ch = buf.channels.first().cloned().unwrap_or_default();
-                    for c in ch.chunks(256) {
-                        let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
-                        out.push((lo, hi));
+        // A decoder panic must still clear the pending entry, or the waveform never appears and is
+        // never retried; an empty result is drawn as silence.
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let sr = 48_000u32;
+            let total = dur.to_units_floor(sr as i64).max(0) as usize;
+            // capped: a damaged duration must not reserve gigabytes up front
+            let mut out = Vec::with_capacity((total / 256 + 1).min(1 << 20));
+            let chunk = 48_000 * 4;
+            let mut s = 0usize;
+            while s < total {
+                let n = chunk.min(total - s);
+                match src.audio(s as i64, n, sr) {
+                    Ok(buf) => {
+                        let ch = buf.channels.first().cloned().unwrap_or_default();
+                        for c in ch.chunks(256) {
+                            let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
+                            out.push((lo, hi));
+                        }
                     }
+                    Err(_) => break,
                 }
-                Err(_) => break,
+                s += n;
             }
-            s += n;
-        }
+            out
+        }))
+        .unwrap_or_default();
         peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(item, Arc::new(out));
         pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != item);
     };

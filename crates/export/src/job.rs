@@ -74,6 +74,11 @@ pub fn stepped(format: Format) -> bool {
     matches!(format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
 }
 
+/// The muxer is created before the first write; reaching a write without it is a logic error.
+fn mux_missing() -> ExportError {
+    ExportError::Encode("muxer not created".into())
+}
+
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
     video_factories()
         .read()
@@ -177,7 +182,7 @@ impl Exporter {
         if n == 0 {
             return Ok(());
         }
-        let mux = self.mux.as_mut().expect("mux created");
+        let mux = self.mux.as_mut().ok_or_else(mux_missing)?;
         match self.aenc.as_mut() {
             Some(a) => {
                 for au in a.encode(&buf)? {
@@ -190,7 +195,7 @@ impl Exporter {
                 let mut pcm = Vec::with_capacity(n * buf.len() * bps);
                 for i in 0..n {
                     for c in &buf {
-                        let s = c[i].clamp(-1.0, 1.0);
+                        let s = c.get(i).copied().unwrap_or(0.0).clamp(-1.0, 1.0);
                         if bps == 3 {
                             pcm.extend_from_slice(&((s * 8_388_607.0).round() as i32).to_le_bytes()[..3]);
                         } else {
@@ -209,7 +214,7 @@ impl Exporter {
         if let Some(m) = self.mxf.as_mut() {
             return m.write_video(packets);
         }
-        let mux = self.mux.as_mut().expect("mux created");
+        let mux = self.mux.as_mut().ok_or_else(mux_missing)?;
         for p in packets {
             mux.write_sample(self.vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
                 .map_err(|e| ExportError::Io(e.to_string()))?;
@@ -270,7 +275,7 @@ impl Exporter {
             if !self.settings.part_of_batch {
                 progress.set_status("Measuring loudness");
             }
-            let a = self.audio.as_mut().expect("audio");
+            let a = self.audio.as_mut().ok_or_else(|| ExportError::Encode("loudness pass without audio".into()))?;
             a.measure(&self.settings, sources, &|| progress.cancel.load(Ordering::Relaxed))?;
             if filmcraft_media::pending::take() {
                 return Ok(Step::Pending);
@@ -337,7 +342,7 @@ impl Exporter {
         self.write_audio(mixed)?;
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
             let fs = a.frame_size();
-            let mux = self.mux.as_mut().expect("mux created");
+            let mux = self.mux.as_mut().ok_or_else(mux_missing)?;
             for au in a.flush()? {
                 mux.write_sample(at, WriteSample { data: &au, duration: fs, composition_offset: 0, is_sync: true })
                     .map_err(|e| ExportError::Io(e.to_string()))?;
@@ -346,7 +351,7 @@ impl Exporter {
         let (bytes, extra_files) = match self.mxf.take() {
             Some(m) => m.finish(&self.settings)?,
             None => {
-                let w = self.mux.take().expect("mux created").finish().map_err(|e| ExportError::Io(e.to_string()))?;
+                let w = self.mux.take().ok_or_else(mux_missing)?.finish().map_err(|e| ExportError::Io(e.to_string()))?;
                 (w.finish(&self.settings)?, Vec::new())
             }
         };

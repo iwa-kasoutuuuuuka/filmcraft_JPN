@@ -93,7 +93,7 @@ fn packet_len(b: &[u8]) -> Option<usize> {
             if b[4] >> 6 == 1 {
                 let stuff = (*b.get(13)? & 7) as usize;
                 Some(14 + stuff)
-            } else if b[4] >> 4 == 2 {
+            } else if b[4] >> 4 == 2 && b.len() >= 12 {
                 Some(12)
             } else {
                 None
@@ -143,7 +143,7 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
         if id == 0xBA {
             // SCR (MPEG-2: 33 bits base, 9 bits extension; MPEG-1: 33 bits)
             let v = if head[4] >> 6 == 1 {
-                let b = &head[4..10];
+                let Some(b) = head.get(4..10) else { break };
                 let base = (((b[0] >> 3) & 7) as i64) << 30
                     | ((b[0] & 3) as i64) << 28
                     | (b[1] as i64) << 20
@@ -154,7 +154,8 @@ pub(crate) fn scan<S: ByteSource + ?Sized>(src: &S, mpeg1: bool) -> Result<File>
                 let ext = (((b[4] & 3) as i64) << 7) | (b[5] >> 1) as i64;
                 base * 300 + ext
             } else {
-                pes::timestamp(&head[4..9]) * 300
+                let Some(b) = head.get(4..9) else { break };
+                pes::timestamp(b) * 300
             };
             scr = Some(scr.map_or((v, v), |(a, b): (i64, i64)| (a.min(v), b.max(v))));
         } else if id == 0xBC {

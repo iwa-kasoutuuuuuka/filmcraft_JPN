@@ -96,6 +96,21 @@ pub enum EngineError {
 
 pub type Result<T> = std::result::Result<T, EngineError>;
 
+/// Longest stretch of audio one operation decodes into memory at once (6 hours): a damaged
+/// project's durations must not turn into an allocation that aborts the app.
+pub(crate) const MAX_DECODE_SECONDS: i64 = 6 * 3600;
+
+/// First sample and sample count (per channel) of `start..end` at `rate` samples a second;
+/// refused above [`MAX_DECODE_SECONDS`] (counted at 192 kHz at most).
+pub(crate) fn decode_span(start: filmcraft_time::Tick, end: filmcraft_time::Tick, rate: i64) -> Result<(i64, usize)> {
+    let first = start.to_units_floor(rate);
+    let n = end.to_units_floor(rate).saturating_sub(first).max(0);
+    if n > rate.clamp(1, 192_000).saturating_mul(MAX_DECODE_SECONDS) {
+        return Err(EngineError::Other(format!("the audio is longer than {} hours", MAX_DECODE_SECONDS / 3600)));
+    }
+    Ok((first, usize::try_from(n).unwrap_or(0)))
+}
+
 /// Host services (file access, clipboard…) injected by the frontend.
 pub trait Services: Send + Sync {
     fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>>;

@@ -125,20 +125,25 @@ fn dequantize(pcm: &[u8], channels: usize, bits: u16) -> Vec<Vec<f32>> {
     out
 }
 
+/// Most audio channels one embedded essence may have.
+const MAX_CHANNELS: u32 = 64;
+
 /// Decode a media range at `sample_rate` (planar).
 fn decode(s: &Session, need: &AudioNeed, sample_rate: u32) -> Result<Vec<Vec<f32>>> {
     let src = s
         .media
         .full_res_source(&s.project, need.item, &*s.services)
         .ok_or_else(|| EngineError::Other(format!("media {} is offline", need.path.as_deref().unwrap_or("?"))))?;
-    let start = need.start.to_units_floor(sample_rate as i64);
-    let frames = (need.end.to_units_floor(sample_rate as i64) - start).max(0) as usize;
+    let (start, frames) = crate::decode_span(need.start, need.end, i64::from(sample_rate))?;
+    if need.channels > MAX_CHANNELS {
+        return Err(EngineError::Other(format!("media with {} audio channels (at most {MAX_CHANNELS})", need.channels)));
+    }
     let mut out: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); need.channels.max(1) as usize];
     let chunk = sample_rate as usize * 10;
     let mut done = 0usize;
     while done < frames {
         let n = chunk.min(frames - done);
-        let b = src.audio(start + done as i64, n, sample_rate).map_err(|e| EngineError::Other(e.to_string()))?;
+        let b = src.audio(start.saturating_add(done as i64), n, sample_rate).map_err(|e| EngineError::Other(e.to_string()))?;
         for (c, o) in out.iter_mut().enumerate() {
             match b.channels.get(c).or(b.channels.first()) {
                 Some(x) => o.extend(x.iter().copied().chain(std::iter::repeat(0.0)).take(n)),

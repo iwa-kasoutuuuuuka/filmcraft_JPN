@@ -237,7 +237,7 @@ pub fn open<S: ByteSource>(src: S) -> Result<Mp4File> {
     let mut ftyp: Option<Vec<u8>> = None;
     let mut moov: Option<(u64, Vec<u8>)> = None;
     let mut moofs: Vec<(u64, Vec<u8>)> = Vec::new();
-    while offset + 8 <= len {
+    while len.saturating_sub(offset) >= 8 {
         let n = (len - offset).min(32) as usize;
         let mut hb = [0u8; 32];
         src.read_at(offset, &mut hb[..n])?;
@@ -917,6 +917,17 @@ fn parse_meta(p: &[u8], md: &mut Metadata) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a top-level box with a huge 64-bit size pushed `offset` near u64::MAX and the
+    /// loop condition `offset + 8` overflowed.
+    #[test]
+    fn huge_largesize_does_not_overflow() {
+        let mut b = vec![0, 0, 0, 1];
+        b.extend_from_slice(b"free");
+        b.extend_from_slice(&(u64::MAX - 4).to_be_bytes());
+        b.extend_from_slice(&[0; 8]);
+        assert!(std::panic::catch_unwind(|| open(&b[..]).is_err()).unwrap_or(false));
+    }
 
     #[test]
     fn language_codes() {

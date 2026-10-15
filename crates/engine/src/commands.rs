@@ -130,6 +130,16 @@ fn fps_p(p: &Value, cmd: &str) -> Result<Option<FrameRate>> {
     }
     Ok(Some(r))
 }
+/// A count of tracks to add to a sequence that has `have` of that kind; more than
+/// [`filmcraft_project::MAX_TRACKS`] in all is refused.
+fn track_count_p(p: &Value, k: &str, default: usize, have: usize, cmd: &str) -> Result<usize> {
+    let n = u64_p(p, k).map(|n| usize::try_from(n).unwrap_or(usize::MAX)).unwrap_or(default);
+    let max = filmcraft_project::MAX_TRACKS;
+    if have.saturating_add(n) > max {
+        return Err(bad(cmd, format!("`{k}`: a sequence has at most {max} {k} tracks ({have} already, {n} asked for)")));
+    }
+    Ok(n)
+}
 pub(crate) fn bool_p(p: &Value, k: &str) -> Option<bool> {
     p.get(k).and_then(Value::as_bool)
 }
@@ -138,17 +148,22 @@ pub(crate) fn u64_p(p: &Value, k: &str) -> Option<u64> {
 }
 
 /// Parse a time from params: `time` (ticks), `frame`, `seconds` or `timecode`, with `prefix`.
+/// Clamped to [`Tick::MIN`]..=[`Tick::MAX`] so hostile values cannot overflow the edit maths.
 pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
+    raw_time_p(s, p, prefix).map(|t| t.clamp(Tick::MIN, Tick::MAX))
+}
+fn raw_time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
     let rate = s.sequence_rate();
     let k = |n: &str| if prefix.is_empty() { n.to_string() } else { format!("{prefix}{}{}", n[..1].to_uppercase(), &n[1..]) };
     if let Some(t) = p.get(k("time")).and_then(Value::as_i64) {
         return Some(Tick(t));
     }
     if let Some(f) = p.get(k("frame")).and_then(Value::as_i64) {
-        return Some(rate.tick_of(f));
+        return Some(rate.tick_of(f.clamp(-(1 << 40), 1 << 40)));
     }
     if let Some(sec) = p.get(k("seconds")).and_then(Value::as_f64) {
-        return Some(Tick::from_seconds_f64(sec));
+        // NaN reads as 0; the `as` cast inside saturates and the caller clamps
+        return Some(Tick::from_seconds_f64(sec.clamp(-1e12, 1e12)));
     }
     if let Some(tc) = p.get(k("timecode")).and_then(Value::as_str) {
         let df = s.active_sequence().map(|q| q.settings.drop_frame).unwrap_or(false);
@@ -195,9 +210,10 @@ pub(crate) fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
     // "V1", "A2"
     let name = v.as_str()?;
     let seq = s.active_sequence()?;
-    let (kind, idx) = name.split_at(1);
-    let i: usize = idx.parse().ok()?;
-    let tracks = if kind.eq_ignore_ascii_case("v") { &seq.video_tracks } else { &seq.audio_tracks };
+    let mut chars = name.chars();
+    let kind = chars.next()?;
+    let i: usize = chars.as_str().parse().ok()?;
+    let tracks = if kind.eq_ignore_ascii_case(&'v') { &seq.video_tracks } else { &seq.audio_tracks };
     tracks.get(i.checked_sub(1)?).map(|t| t.id)
 }
 pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
@@ -509,19 +525,22 @@ fn build() -> Vec<CommandSpec> {
                 let mut st = SequenceSettings::default();
                 if let Some(from) = item_p(p, "fromItem").and_then(|i| s.project.item(i)).and_then(|i| i.as_media()) {
                     st = default_seq_settings_for(&from.info);
+                    // media metadata is hostile too: clamp it, then check what the caller asked for
+                    st.sanitize();
                 }
                 if let Some(w) = u64_p(p, "width") {
-                    st.width = w as u32;
+                    st.width = u32::try_from(w).unwrap_or(u32::MAX);
                 }
                 if let Some(h) = u64_p(p, "height") {
-                    st.height = h as u32;
+                    st.height = u32::try_from(h).unwrap_or(u32::MAX);
                 }
                 if let Some(fps) = fps_p(p, "file.newSequence")? {
                     st.frame_rate = fps;
                 }
                 if let Some(sr) = u64_p(p, "sampleRate") {
-                    st.sample_rate = sr as u32;
+                    st.sample_rate = u32::try_from(sr).unwrap_or(u32::MAX);
                 }
+                st.check().map_err(|e| bad("file.newSequence", e))?;
                 if let Some(m) = str_p(p, "mix") {
                     st.audio_master =
                         crate::mixer::channels_from(m).ok_or_else(|| bad("file.newSequence", format!("unknown mix `{m}` (Stereo, Mono, 5.1, Adaptive)")))?;
@@ -534,8 +553,8 @@ fn build() -> Vec<CommandSpec> {
                     None => None,
                 };
                 st.preset = format!("{}x{} {}", st.width, st.height, st.frame_rate.label());
-                let nv = u64_p(p, "video").unwrap_or(3) as usize;
-                let na = u64_p(p, "audio").unwrap_or(3) as usize;
+                let nv = track_count_p(p, "video", 3, 0, "file.newSequence")?;
+                let na = track_count_p(p, "audio", 3, 0, "file.newSequence")?;
                 let n = s.project.sequences().count() + 1;
                 let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Sequence {n:02}"));
                 let seq_label = s.prefs.labels.defaults.sequence;
@@ -1236,8 +1255,9 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"linkedSelection": s.state.linked_selection}))
         }),
         cmd!("sequence.addTracks", "Add Tracks…", ["Sequence"], None, r#"{"video":n=1,"audio":n=0}"#, has_seq, |s, p| {
-            let nv = u64_p(p, "video").unwrap_or(1) as usize;
-            let na = u64_p(p, "audio").unwrap_or(0) as usize;
+            let (hv, ha) = s.active_sequence().map(|q| (q.video_tracks.len(), q.audio_tracks.len())).unwrap_or_default();
+            let nv = track_count_p(p, "video", 1, hv, "sequence.addTracks")?;
+            let na = track_count_p(p, "audio", 0, ha, "sequence.addTracks")?;
             s.edit_sequence("Add Tracks", |q, ctx, _| {
                 for _ in 0..nv {
                     let n = q.video_tracks.len() + 1;
@@ -1283,20 +1303,22 @@ fn build() -> Vec<CommandSpec> {
                     }
                     let q = pr.sequence_mut(id).ok_or(EngineError::NoSequence)?;
                     if let Some(w) = u64_p(&p, "width") {
-                        q.settings.width = w as u32;
+                        q.settings.width = u32::try_from(w).unwrap_or(u32::MAX);
                     }
                     if let Some(h) = u64_p(&p, "height") {
-                        q.settings.height = h as u32;
+                        q.settings.height = u32::try_from(h).unwrap_or(u32::MAX);
                     }
                     if let Some(f) = fps {
                         q.settings.frame_rate = f;
                     }
                     if let Some(sr) = u64_p(&p, "sampleRate") {
-                        q.settings.sample_rate = sr as u32;
+                        q.settings.sample_rate = u32::try_from(sr).unwrap_or(u32::MAX);
                     }
                     if let Some(m) = mix {
                         q.settings.audio_master = m;
                     }
+                    // the edit is discarded on error, so the project keeps its old settings
+                    q.settings.check().map_err(|e| bad("sequence.settings", e))?;
                     Ok(())
                 })?;
                 Ok(Value::Null)
@@ -2802,7 +2824,9 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 }
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
-fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    // a damaged file must not reach the renderer with a zero-sized frame or a zero sample rate
+    proj.sanitize();
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
@@ -2848,7 +2872,7 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
         Some(id) => per.candidates.iter().position(|c| c.id == id).ok_or_else(|| bad("file.recover", format!("no recovery session `{id}`")))?,
         None => 0,
     };
-    let c = per.candidates[idx].clone();
+    let c = per.candidates.get(idx).cloned().ok_or_else(|| EngineError::Other("there is nothing to recover".into()))?;
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);

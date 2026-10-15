@@ -286,3 +286,15 @@ fn timestamps_unwrap_across_the_33_bit_wrap() {
     assert_eq!(u.unwrap(near + 1000), near + 1000);
     assert_eq!(u.unwrap(4200), (1 << 33) + 4200);
 }
+
+/// Regression: an MPEG-1 pack header cut short after 6 bytes was accepted as a 12-byte packet and
+/// its SCR read from `head[4..9]` panicked.
+#[test]
+fn short_mpeg1_pack_header_does_not_panic() {
+    for n in 4..12 {
+        let mut data = vec![0, 0, 1, 0xBA, 0x21, 0, 1, 0, 1, 0, 0, 0];
+        data.truncate(n);
+        let r = std::panic::catch_unwind(|| crate::ps::scan(&data, true).map(|_| ()));
+        assert!(r.is_ok(), "{n} bytes");
+    }
+}

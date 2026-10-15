@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ExportSettings, Format};
 
+/// Largest output frame side (presets and damaged projects can carry any size).
+const MAX_SIDE: u32 = 16_384;
+
 /// How the sequence picture is fitted into a different output frame size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -352,14 +355,14 @@ impl ExportSettings {
     /// Output size, rate, audio format and bitrate for a sequence of `seq_w`×`seq_h` at `seq_rate`.
     pub fn resolve(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: u32) -> Resolved {
         let (mut w, mut h) = match self.frame_size {
-            Some((w, h)) => (w.max(2), h.max(2)),
-            None => (((seq_w as f32 * self.scale).round() as u32).max(2), ((seq_h as f32 * self.scale).round() as u32).max(2)),
+            Some((w, h)) => (w.clamp(2, MAX_SIDE), h.clamp(2, MAX_SIDE)),
+            None => (((seq_w as f32 * self.scale).round() as u32).clamp(2, MAX_SIDE), ((seq_h as f32 * self.scale).round() as u32).clamp(2, MAX_SIDE)),
         };
         if !self.is_image_sequence() && self.format != Format::Gif {
             w &= !1;
             h &= !1;
         }
-        let rate = self.frame_rate.filter(|r| r.num > 0 && r.den > 0).unwrap_or(seq_rate);
+        let rate = self.frame_rate.filter(|r| r.num > 0 && r.den > 0).unwrap_or(seq_rate).sane();
         let fps = rate.num as f64 / rate.den as f64;
         let target = match self.adaptive_bitrate {
             Some(bpp) if bpp > 0.0 => ((w as f64 * h as f64 * fps * bpp as f64) / 1000.0).round() as u32,

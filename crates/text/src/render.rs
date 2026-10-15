@@ -136,6 +136,9 @@ fn glyph_cache() -> &'static Mutex<HashMap<GKey, Option<Arc<GlyphMask>>>> {
     C.get_or_init(Default::default)
 }
 
+/// Largest mask (in pixels) text rasterisation allocates: 64 Mpx, well beyond any frame size.
+pub const MAX_MASK_PIXELS: usize = 64 << 20;
+
 /// Rasterise glyph `g` at pixel size `px` with horizontal phase `frac` (0..1, quantised to ¼).
 pub fn glyph_mask(g: &Glyph, px: f32, frac: f32) -> Option<Arc<GlyphMask>> {
     let size_q = (px * 8.0).round().max(1.0) as u32;
@@ -148,12 +151,16 @@ pub fn glyph_mask(g: &Glyph, px: f32, frac: f32) -> Option<Arc<GlyphMask>> {
     let fq = frac_q as f32 / 4.0;
     let gg = Glyph { x: 0.0, y: 0.0, size: px, ..*g };
     let path = glyph_path(&gg, &[1.0, 0.0, 0.0, 1.0, fq, 0.0]);
-    let v = path.bounds().map(|(x0, y0, x1, y1)| {
+    let v = path.bounds().and_then(|(x0, y0, x1, y1)| {
         let left = x0.floor() as i32;
         let top = y0.floor() as i32;
-        let w = (x1.ceil() as i32 - left).max(1) as usize;
-        let h = (y1.ceil() as i32 - top).max(1) as usize;
-        Arc::new(GlyphMask { mask: fill(&path, w, h, -left as f32, -top as f32), left, top })
+        let w = (i64::from(x1.ceil() as i32) - i64::from(left)).max(1) as usize;
+        let h = (i64::from(y1.ceil() as i32) - i64::from(top)).max(1) as usize;
+        // a huge size (damaged project, hostile parameter) draws nothing instead of allocating GBs
+        if w.saturating_mul(h) > MAX_MASK_PIXELS {
+            return None;
+        }
+        Some(Arc::new(GlyphMask { mask: fill(&path, w, h, -left as f32, -top as f32), left, top }))
     });
     let mut m = glyph_cache().lock().unwrap_or_else(|e| e.into_inner());
     if m.len() > 16_384 {
@@ -245,8 +252,13 @@ pub fn draw_run(l: &Layout, m: &Xform, out: &mut Mask, origin: (i32, i32), run: 
 /// Rasterise a layout into a tight mask; returns `(mask, x, y)` with the mask's device position.
 pub fn rasterize(l: &Layout, m: &Xform) -> (Mask, i32, i32) {
     let b = device_bounds(l, m);
-    let (x0, y0) = (b[0].floor() as i32 - 1, b[1].floor() as i32 - 1);
-    let (w, h) = ((b[2].ceil() as i32 + 1 - x0).max(1) as usize, (b[3].ceil() as i32 + 1 - y0).max(1) as usize);
+    let (x0, y0) = ((b[0].floor() as i32).saturating_sub(1), (b[1].floor() as i32).saturating_sub(1));
+    let span = |lo: i32, hi: f32| (i64::from(hi.ceil() as i32) + 1 - i64::from(lo)).max(1) as usize;
+    let (w, h) = (span(x0, b[2]), span(y0, b[3]));
+    // a layout too large to rasterise (hostile size or transform) renders as nothing
+    if w.saturating_mul(h) > MAX_MASK_PIXELS {
+        return (Mask::new(1, 1), x0, y0);
+    }
     let mut mask = Mask::new(w, h);
     draw(l, m, &mut mask, (x0, y0));
     (mask, x0, y0)

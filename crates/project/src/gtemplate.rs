@@ -295,6 +295,11 @@ impl GraphicsTemplate {
                 return bad(format!("control `{}` has no unique id", c.name));
             }
             ids.push(c.id.clone());
+            if let (Some(lo), Some(hi)) = (c.min, c.max)
+                && (lo > hi || lo.is_nan() || hi.is_nan())
+            {
+                return bad(format!("control `{}` has min {lo} above max {hi}", c.name));
+            }
             let Some(l) = self.layers.iter().find(|l| layer_uid(l) == c.layer) else {
                 return bad(format!("control `{}` points at a missing layer", c.name));
             };
@@ -741,6 +746,14 @@ mod tests {
         assert_eq!(GraphicsTemplate::from_bytes(t.to_json().as_bytes()), Err(TemplateError::TooNew(99)));
         let mut t = builtin_templates().remove(0);
         t.controls[0].layer = 999;
+        assert!(matches!(t.validate(), Err(TemplateError::Invalid(_))));
+    }
+
+    #[test]
+    fn refuses_crossed_slider_bounds() {
+        let mut t = builtin_templates().remove(0);
+        t.controls[0].min = Some(10.0);
+        t.controls[0].max = Some(-10.0);
         assert!(matches!(t.validate(), Err(TemplateError::Invalid(_))));
     }
 

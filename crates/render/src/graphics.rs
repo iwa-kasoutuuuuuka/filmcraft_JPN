@@ -53,6 +53,8 @@ pub fn burn_text(img: &mut Image, text: &str, family: &str, pos: Vec2, px: f32, 
     if text.is_empty() || pos.x.is_nan() {
         return;
     }
+    // bounded so a hostile size cannot size the box and text masks beyond memory
+    let px = px.max(1.0).min(img.h.max(1) as f32 * 4.0);
     let st = TextStyle { family: family.into(), style: "Regular".into(), size: px, ..Default::default() };
     let l = layout(text, &st, &ParagraphStyle { align: Align::Center, ..Default::default() });
     let vm = filmcraft_text::fonts::face(filmcraft_text::resolve(family, "Regular").face).metrics(px);
@@ -63,9 +65,12 @@ pub fn burn_text(img: &mut Image, text: &str, family: &str, pos: Vec2, px: f32, 
     let boxp = filmcraft_text::Path::rect(bx + b[0] - pad, by - vm.cap_height - pad, bx + b[2] + pad, by + vm.descent * 0.6 + pad);
     if let Some(bb) = boxp.bounds() {
         let (x0, y0) = (bb.0.floor() as i32, bb.1.floor() as i32);
-        let m =
-            filmcraft_text::raster::fill(&boxp, (bb.2.ceil() as i32 - x0).max(1) as usize, (bb.3.ceil() as i32 - y0).max(1) as usize, -x0 as f32, -y0 as f32);
-        paint_mask(img, &m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha);
+        let span = |lo: i32, hi: f32| (i64::from(hi.ceil() as i32) - i64::from(lo)).max(1) as usize;
+        let (w, h) = (span(x0, bb.2), span(y0, bb.3));
+        if w.saturating_mul(h) <= filmcraft_text::render::MAX_MASK_PIXELS {
+            let m = filmcraft_text::raster::fill(&boxp, w, h, -x0 as f32, -y0 as f32);
+            paint_mask(img, &m, x0, y0, [0.0, 0.0, 0.0, 1.0], box_alpha);
+        }
     }
     let (m, x0, y0) = render::rasterize(&l, &render::at(bx, by.round()));
     paint_mask(img, &m, x0, y0, [1.0, 1.0, 1.0, 1.0], 1.0);

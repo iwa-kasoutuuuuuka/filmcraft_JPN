@@ -169,12 +169,15 @@ impl<'a> CompoundFile<'a> {
         let mut out = Vec::new();
         let mut s = start;
         let mut steps = 0usize;
+        // A chain visits each sector at most once, so it can never be longer than the file: a
+        // looping chain through a large FAT would otherwise copy the file over and over.
+        let max_steps = (self.data.len() / self.sector_size).max(1);
         while s != ENDOFCHAIN {
             if s > MAXREGSECT {
                 return Err(invalid(format!("bad sector {s:#x} in a chain")));
             }
             steps += 1;
-            if steps > self.fat.len().max(1) {
+            if steps > self.fat.len().max(1) || steps > max_steps {
                 return Err(invalid("sector chain loops"));
             }
             let b = self.sector(s)?;
@@ -208,8 +211,8 @@ impl<'a> CompoundFile<'a> {
             if steps > self.minifat.len().max(1) {
                 return Err(invalid("mini sector chain loops"));
             }
-            let at = s as usize * MINI_SECTOR_SIZE;
-            let b = self.mini_stream.get(at..at + MINI_SECTOR_SIZE).ok_or_else(|| invalid("mini sector outside the mini stream"))?;
+            let at = (s as usize).checked_mul(MINI_SECTOR_SIZE).ok_or_else(|| invalid("mini sector number overflow"))?;
+            let b = self.mini_stream.get(at..at.saturating_add(MINI_SECTOR_SIZE)).ok_or_else(|| invalid("mini sector outside the mini stream"))?;
             out.extend_from_slice(b);
             s = *self.minifat.get(s as usize).ok_or_else(|| invalid("mini sector has no mini FAT entry"))?;
         }

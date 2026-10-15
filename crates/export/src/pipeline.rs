@@ -34,7 +34,7 @@ impl Geometry {
             // the sequence size times `scale`, rendered directly (even-size crop/pad at the edge)
             return Geometry { w, h, render_scale: w as f32 / sw, content: None, offset: (0, 0) };
         }
-        let par = settings.pixel_aspect.map(|(n, d)| n.max(1) as f32 / d.max(1) as f32).unwrap_or(1.0);
+        let par = settings.pixel_aspect.map(|(n, d)| (n.max(1) as f32 / d.max(1) as f32).clamp(0.1, 10.0)).unwrap_or(1.0);
         let disp_w = w as f32 * par;
         let (fx, fy) = (disp_w / sw, h as f32 / sh);
         let (sx, sy) = match settings.scaling {
@@ -42,8 +42,8 @@ impl Geometry {
             Scaling::ScaleToFill => (fx.max(fy), fx.max(fy)),
             Scaling::StretchToFill => (fx, fy),
         };
-        let cw = (sw * sx / par).round().max(1.0) as usize;
-        let ch = (sh * sy).round().max(1.0) as usize;
+        let cw = ((sw * sx / par).round().max(1.0) as usize).min(filmcraft_render::MAX_FRAME_SIDE);
+        let ch = ((sh * sy).round().max(1.0) as usize).min(filmcraft_render::MAX_FRAME_SIDE);
         let render_scale = if settings.max_render_quality { 1.0f32.max(sy).max(sx / par) } else { sy.max(sx / par) }.clamp(0.01, 4.0);
         Geometry { w, h, render_scale, content: Some((cw, ch)), offset: ((w as i64 - cw as i64) / 2, (h as i64 - ch as i64) / 2) }
     }

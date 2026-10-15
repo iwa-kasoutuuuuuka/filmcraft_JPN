@@ -259,6 +259,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     if t.source.is_empty() {
         t.source = "imported".into();
     }
+    if let Some(sp) = t.words.iter().filter_map(|w| w.speaker).find(|&sp| sp >= filmcraft_project::transcript::MAX_SPEAKERS) {
+        return Err(bad("transcript.set", format!("speaker {sp} is out of range (at most {} speakers)", filmcraft_project::transcript::MAX_SPEAKERS)));
+    }
     t.normalize();
     t.check().map_err(|e| bad("transcript.set", e))?;
     let n = t.words.len();
@@ -443,16 +446,24 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     captions_from_words(s, &words, p)
 }
 
+/// Upper bounds for `transcript.createCaptions`' layout parameters.
+const MAX_CAPTION_CHARS: u64 = 200;
+const MAX_CAPTION_LINES: u64 = 10;
+const MAX_CAPTION_GAP_FRAMES: i64 = 1000;
+const MAX_CAPTION_SECONDS: f64 = 3600.0;
+
 /// A caption track made from `words` (sequence words whose times are those of the active
 /// sequence), laid out with the rules in `p` (`transcript.createCaptions`' parameters).
 pub(crate) fn captions_from_words(s: &mut Session, words: &[SeqWord], p: &Value) -> Result<Value> {
     let d = CaptionRules::default();
+    // hostile values are clamped into sane ranges (huge ones overflowed the layout math)
+    let secs = |k: &str| f64_p(p, k).filter(|v| v.is_finite()).map(|v| Tick::from_seconds_f64(v.clamp(0.0, MAX_CAPTION_SECONDS)));
     let rules = CaptionRules {
-        max_chars: u64_p(p, "maxChars").map(|n| n as usize).unwrap_or(d.max_chars),
-        lines: u64_p(p, "lines").map(|n| n as usize).unwrap_or(d.lines),
-        min_duration: f64_p(p, "minSeconds").map(Tick::from_seconds_f64).unwrap_or(d.min_duration),
-        max_duration: f64_p(p, "maxSeconds").map(Tick::from_seconds_f64).unwrap_or(d.max_duration),
-        gap_frames: p.get("gapFrames").and_then(Value::as_i64).unwrap_or(d.gap_frames),
+        max_chars: u64_p(p, "maxChars").map(|n| n.clamp(1, MAX_CAPTION_CHARS) as usize).unwrap_or(d.max_chars),
+        lines: u64_p(p, "lines").map(|n| n.clamp(1, MAX_CAPTION_LINES) as usize).unwrap_or(d.lines),
+        min_duration: secs("minSeconds").unwrap_or(d.min_duration),
+        max_duration: secs("maxSeconds").unwrap_or(d.max_duration),
+        gap_frames: p.get("gapFrames").and_then(Value::as_i64).map(|n| n.clamp(0, MAX_CAPTION_GAP_FRAMES)).unwrap_or(d.gap_frames),
         break_pause: d.break_pause,
     };
     let blocks = tx::caption_blocks(words, &rules, s.sequence_rate());

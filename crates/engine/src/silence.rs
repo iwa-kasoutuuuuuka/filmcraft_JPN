@@ -21,6 +21,8 @@ use crate::{EngineError, Result, Session};
 const CMD: &str = "sequence.removeSilence";
 /// Envelope windows per second (10 ms each).
 const WINDOWS_PER_SECOND: i64 = 100;
+/// Longest sequence the detector scans (24 hours of windows).
+const MAX_WINDOWS: usize = 24 * 3600 * WINDOWS_PER_SECOND as usize;
 /// Ranges listed in the reply (all of them are removed; the list is for display).
 const MAX_LISTED: usize = 1000;
 
@@ -93,6 +95,9 @@ fn mix_envelope(s: &Session) -> Result<Vec<f32>> {
     let total = q.duration().to_units_floor(sr);
     let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
     let windows = usize::try_from(Tick::from_units(total, sr).to_units_floor(WINDOWS_PER_SECOND)).unwrap_or(0);
+    if windows > MAX_WINDOWS {
+        return Err(EngineError::Other(format!("the sequence is longer than {} hours", MAX_WINDOWS / WINDOWS_PER_SECOND as usize / 3600)));
+    }
     let mut peaks = vec![0f32; windows];
     let mut pos = 0i64;
     while pos < total {
