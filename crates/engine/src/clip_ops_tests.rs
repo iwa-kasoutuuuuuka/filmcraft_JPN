@@ -708,3 +708,33 @@ fn explicit_targets_stand_in_for_the_selection() {
     assert!(!clip(&s, c).enabled, "disabled by the explicit target");
     assert!(s.state.selection.is_empty());
 }
+
+/// `timeline.place` onto a track that doesn't exist used to fall back to the targeted track and
+/// overwrite what was there. A track just past the last is created (one undo step with the
+/// placement); any other unknown track is an error and changes nothing.
+#[test]
+fn placing_on_a_missing_track_adds_it_or_refuses() {
+    let mut s = demo();
+    let a = item_named(&s, "Desert_Dunes.mp4");
+    s.execute("file.newSequenceFromClip", json!({"items": [a.0]})).unwrap();
+    let before = s.active_sequence().unwrap().clone();
+    assert_eq!(before.video_tracks.len(), 1, "a sequence from one clip has one video track");
+    let undo0 = s.history.undo.len();
+    let r = s.execute("timeline.place", json!({"item": a.0, "track": "V2", "seconds": 1.0})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks.len(), 2, "V2 was added");
+    assert_eq!(q.video_tracks[0].items, before.video_tracks[0].items, "V1 untouched");
+    assert_eq!(q.video_tracks[1].items.len(), 1, "{r}");
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks.len(), 1, "undo removes the added track too");
+    for bad in [json!("X1"), json!("V0"), json!("V1000"), json!(9_999_999), json!("A1")] {
+        let r = s.execute("timeline.place", json!({"item": a.0, "track": bad, "seconds": 1.0}));
+        if bad == json!("A1") {
+            // an existing track of the other kind keeps its old meaning; nothing else to check
+            continue;
+        }
+        assert!(r.is_err(), "track {bad} is refused");
+        assert_eq!(s.active_sequence().unwrap().video_tracks[0].items, before.video_tracks[0].items, "track {bad}: V1 untouched");
+    }
+}

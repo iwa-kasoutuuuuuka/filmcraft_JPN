@@ -213,9 +213,34 @@ pub(crate) fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
     let mut chars = name.chars();
     let kind = chars.next()?;
     let i: usize = chars.as_str().parse().ok()?;
-    let tracks = if kind.eq_ignore_ascii_case(&'v') { &seq.video_tracks } else { &seq.audio_tracks };
+    let tracks = match kind.to_ascii_lowercase() {
+        'v' => &seq.video_tracks,
+        'a' => &seq.audio_tracks,
+        _ => return None,
+    };
     tracks.get(i.checked_sub(1)?).map(|t| t.id)
 }
+/// The destination track named by `key` (an id, or a name such as `"V2"`) for a placement, or
+/// `None` when not given. A name past the last track of its kind adds tracks up to it, as dropping
+/// above the top track does; any other track that doesn't exist is an error, never a silent
+/// fallback to another track (which would overwrite what is there).
+pub(crate) fn dest_track_p(s: &mut Session, p: &Value, key: &str, video: bool, cmd: &str) -> Result<Option<TrackId>> {
+    let Some(v) = p.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
+    if let Some(t) = track_p(s, p, key) {
+        let exists = s.active_sequence().is_some_and(|q| q.all_tracks().any(|x| x.id == t));
+        return if exists { Ok(Some(t)) } else { Err(bad(cmd, format!("no track {v} in this sequence"))) };
+    }
+    let name = v.as_str().ok_or_else(|| bad(cmd, format!("`{key}`: a track id or a name such as \"V2\"")))?;
+    let mut chars = name.chars();
+    let is_video = chars.next().is_some_and(|c| c.eq_ignore_ascii_case(&'v'));
+    let n = chars.as_str().parse::<usize>().ok().filter(|n| (1..=filmcraft_project::MAX_TRACKS).contains(n) && is_video == video);
+    let Some(n) = n else { return Err(bad(cmd, format!("no track {name}: give V1… for video, A1… for audio"))) };
+    let have = s.active_sequence().map_or(0, |q| if video { q.video_tracks.len() } else { q.audio_tracks.len() });
+    let add = n.saturating_sub(have);
+    s.execute("sequence.addTracks", if video { json!({"video": add, "audio": 0}) } else { json!({"video": 0, "audio": add}) })?;
+    track_p(s, p, key).map(Some).ok_or_else(|| bad(cmd, format!("no track {name}")))
+}
+
 pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
     u64_p(p, k).map(ItemId)
 }
@@ -1587,8 +1612,9 @@ fn build() -> Vec<CommandSpec> {
                 let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
                 let at = time_p(s, p, "").unwrap_or(s.playhead());
                 let tg = s.targeting();
-                let v = track_p(s, p, "track").or(tg.video_dest);
-                let a = track_p(s, p, "audioTrack").or(tg.audio_dest);
+                let n0 = s.history.undo.len();
+                let v = dest_track_p(s, p, "track", true, "timeline.place")?.or(tg.video_dest);
+                let a = dest_track_p(s, p, "audioTrack", false, "timeline.place")?.or(tg.audio_dest);
                 let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
                 let full = match &pi.kind {
                     // Settings ▸ Timeline ▸ Still Image Default Duration
@@ -1608,6 +1634,8 @@ fn build() -> Vec<CommandSpec> {
                 let sin = p.get("sourceIn").and_then(Value::as_i64).map(Tick).or(mi).unwrap_or_default();
                 let dur = p.get("duration").and_then(Value::as_i64).map(Tick).unwrap_or_else(|| mo.unwrap_or(full) - sin);
                 let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip", None)?;
+                // tracks added for the destination and the placement undo as one step
+                crate::clip_ops::collapse_history(s, n0, "Place Clip");
                 Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
             }
         ),
