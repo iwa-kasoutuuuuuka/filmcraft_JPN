@@ -185,7 +185,7 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let r = egui::ComboBox::from_id_salt("gfx-cat").selected_text(cur).width(130.0).show_ui(ui, |ui| {
             ui.selectable_value(&mut st.category, String::new(), crate::i18n::t("All Categories", "すべてのカテゴリ"));
             for c in &cats {
-                ui.selectable_value(&mut st.category, c.clone(), c);
+                ui.selectable_value(&mut st.category, c.clone(), gt(c).into_owned());
             }
         });
         elems.push(("gfxTemplates.category".into(), r.response.rect, "Category".into()));
@@ -245,8 +245,12 @@ fn browse(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                         let k = (ir.width() / sz.x).min(ir.height() / sz.y);
                         let tr = Rect::from_center_size(ir.center(), sz * k);
                         ui.painter().image(tex.id(), tr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-                        ui.painter().text(pos2(r.min.x + 6.0, ir.max.y + 6.0), Align2::LEFT_TOP, &e.template.name, Tokens::ui(11.5), t.text);
-                        let sub = if e.path.is_some() { format!("{} · My Template", e.template.category) } else { e.template.category.clone() };
+                        ui.painter().text(pos2(r.min.x + 6.0, ir.max.y + 6.0), Align2::LEFT_TOP, gt(&e.template.name), Tokens::ui(11.5), t.text);
+                        let sub = if e.path.is_some() {
+                            crate::tf!("{} · My Template", "{} · マイテンプレート", gt(&e.template.category))
+                        } else {
+                            gt(&e.template.category).into_owned()
+                        };
                         ui.painter().text(pos2(r.min.x + 6.0, ir.max.y + 20.0), Align2::LEFT_TOP, sub, Tokens::ui(10.0), t.text_faint);
                         if on {
                             ui.painter().rect_stroke(r, 4.0, Stroke::new(1.5, t.accent), StrokeKind::Inside);
@@ -347,7 +351,7 @@ pub fn template_controls(
 ) -> bool {
     let t = app.tokens;
     let Some(link) = it.graphic.as_ref().and_then(|m| m.template.as_ref()) else { return false };
-    ui.label(egui::RichText::new(crate::tf!("   Template: {}", "   テンプレート: {}", link.name)).color(t.text_faint).size(11.0));
+    ui.label(egui::RichText::new(crate::tf!("   Template: {}", "   テンプレート: {}", gt(&link.name))).color(t.text_faint).size(11.0));
     for c in &link.controls {
         let Some(e) = it.effects.iter().find(|e| graphic::is_layer(e) && filmcraft_project::gtemplate::layer_uid(e) == c.layer) else { continue };
         let id = format!("gfxTemplates.control.{}", c.id);
@@ -358,7 +362,7 @@ pub fn template_controls(
             && let Some(ParamValue::Text(s0)) = &pv
             && s0.contains('\n')
         {
-            ui.label(egui::RichText::new(format!("    {}", c.name)).color(t.text_dim).size(12.0));
+            ui.label(egui::RichText::new(format!("    {}", gt(&c.name))).color(t.text_dim).size(12.0));
             let mut s = s0.clone();
             let rows = s.lines().count().clamp(2, 8);
             let r = ui
@@ -373,7 +377,7 @@ pub fn template_controls(
             }
             continue;
         }
-        let mut vui = row_label(ui, &c.name, &t);
+        let mut vui = row_label(ui, &gt(&c.name), &t);
         let set =
             |v: Value, actions: &mut Vec<(String, Value)>| actions.push(("graphics.template.set".into(), json!({"clip": clip.0, "control": c.id, "value": v})));
         match c.kind {
@@ -760,7 +764,7 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     }
                 });
                 elems.push(("replaceFonts.from".into(), r.response.rect, "Replace".into()));
-                ui.label("with:");
+                ui.label(crate::i18n::t("with:", "置換後:"));
                 let r = egui::ComboBox::from_id_salt("gfx-rf-to").selected_text(&d.to).width(160.0).height(360.0).show_ui(ui, |ui| {
                     for (f, _) in filmcraft_text::families() {
                         ui.selectable_value(&mut d.to, f.clone(), &f);
@@ -800,5 +804,78 @@ fn replace_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
         },
         Some(false) => app.ui.gfx_templates.replace = None,
         None => app.ui.gfx_templates.replace = Some(d),
+    }
+}
+
+/// A built-in template's name, category or control name in the UI language (the user's own
+/// templates and names are kept as they are).
+fn gt(s: &str) -> std::borrow::Cow<'_, str> {
+    if crate::i18n::is_japanese() { template_text_ja(s).map_or(s.into(), Into::into) } else { s.into() }
+}
+
+/// [`gt`] whatever the UI language.
+fn template_text_ja(s: &str) -> Option<&'static str> {
+    Some(match s {
+        // categories
+        "Lower Thirds" => "ローワーサード",
+        "Titles" => "タイトル",
+        "End Credits" => "エンドクレジット",
+        "Callouts" => "吹き出し",
+        "My Templates" => "マイテンプレート",
+        // templates
+        "Lower Third – Slab" => "ローワーサード – スラブ",
+        "Lower Third – Rule" => "ローワーサード – ライン",
+        "Title – Centered" => "タイトル – 中央",
+        "Title – Boxed" => "タイトル – ボックス",
+        "End Credits – Roll" => "エンドクレジット – ロール",
+        "Callout – Pointer" => "吹き出し – ポインター",
+        "Callout – Tag" => "吹き出し – タグ",
+        "Ticker – Crawl" => "ティッカー – クロール",
+        // controls
+        "Accent Color" => "アクセントカラー",
+        "Bar Color" => "バーのカラー",
+        "Box Color" => "ボックスのカラー",
+        "Box Opacity" => "ボックスの不透明度",
+        "Color" => "カラー",
+        "Credits" => "クレジット",
+        "Dot Color" => "ドットのカラー",
+        "Font" => "フォント",
+        "Heading" => "見出し",
+        "Label" => "ラベル",
+        "Name" => "名前",
+        "Name Color" => "名前のカラー",
+        "Name Size" => "名前のサイズ",
+        "Pointer Color" => "ポインターのカラー",
+        "Position" => "位置",
+        "Role" => "役職",
+        "Rule Color" => "ラインのカラー",
+        "Show Dot" => "ドットを表示",
+        "Show Role" => "役職を表示",
+        "Slab Color" => "スラブのカラー",
+        "Subtitle" => "サブタイトル",
+        "Tag Color" => "タグのカラー",
+        "Text" => "テキスト",
+        "Text Color" => "テキストのカラー",
+        "Title" => "タイトル",
+        "Title Color" => "タイトルのカラー",
+        "Title Size" => "タイトルのサイズ",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod template_text_tests {
+    /// Every built-in template's name, category and control has a Japanese name.
+    #[test]
+    fn builtin_templates_in_japanese() {
+        let mut missing = Vec::new();
+        for t in filmcraft_project::gtemplate::builtin_templates() {
+            for s in std::iter::once(&t.name).chain([&t.category]).chain(t.controls.iter().map(|c| &c.name)) {
+                if super::template_text_ja(s).is_none() {
+                    missing.push(s.clone());
+                }
+            }
+        }
+        assert!(missing.is_empty(), "no Japanese name: {missing:?}");
     }
 }

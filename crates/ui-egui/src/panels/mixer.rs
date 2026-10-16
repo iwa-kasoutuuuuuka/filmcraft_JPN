@@ -558,7 +558,11 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         });
         y += 24.0;
         let or = Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, 20.0));
-        let out_label = tr.mixer.output.map(|o| seq.mix_track(o).map(|s| s.name.clone()).unwrap_or_else(|| "Mix".into())).unwrap_or_else(|| "Mix".into());
+        let out_label = tr
+            .mixer
+            .output
+            .map(|o| seq.mix_track(o).map(|s| s.name.clone()).unwrap_or_else(|| crate::i18n::t("Mix", "ミックス").into()))
+            .unwrap_or_else(|| crate::i18n::t("Mix", "ミックス").into());
         let oresp = crate::widgets::dropdown_text(ui, or, &out_label, &t, egui::Id::new((&ap, "output")));
         app.auto.add(&format!("{ap}.output"), or, "Track output assignment");
         let tg = targets(seq, id);
@@ -757,7 +761,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
     let nr = Rect::from_min_max(pos2(x, sr.max.y - name_h), sr.max);
     ui.painter().line_segment([pos2(nr.min.x + 4.0, nr.min.y), pos2(nr.max.x - 4.0, nr.min.y)], Stroke::new(1.0, t.separator));
     if is_master {
-        small_text(ui, nr.center(), Align2::CENTER_CENTER, "Mix", 12.0, t.text);
+        small_text(ui, nr.center(), Align2::CENTER_CENTER, crate::i18n::t("Mix", "ミックス"), 12.0, t.text);
     } else {
         small_text(ui, pos2(nr.min.x + 6.0, nr.center().y), Align2::LEFT_CENTER, &label, 12.0, t.text);
         let name = ui.painter().with_clip_rect(Rect::from_min_max(pos2(nr.min.x + 26.0, nr.min.y), nr.max).intersect(ui.clip_rect()));

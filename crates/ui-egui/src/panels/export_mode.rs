@@ -107,6 +107,81 @@ impl Reg {
     }
 }
 
+/// A built-in export preset or category name in the UI language (names the user gave are kept).
+fn preset_display(name: &str) -> std::borrow::Cow<'_, str> {
+    if crate::i18n::is_japanese() { preset_in_japanese(name) } else { name.into() }
+}
+
+/// [`preset_display`] whatever the UI language. Product and platform names stay as they are.
+fn preset_in_japanese(name: &str) -> std::borrow::Cow<'_, str> {
+    let fixed = match name {
+        // categories
+        "Match Source" => "ソースに合わせる",
+        "Web & Social" => "Web と SNS",
+        "Broadcast" => "放送",
+        "Image Sequence" => "連番画像",
+        "Animated GIF" => "アニメーション GIF",
+        "Audio Only" => "オーディオのみ",
+        "User" => "ユーザー",
+        // presets
+        "Match Source – Adaptive High Bitrate" => "ソースに合わせる – アダプティブ高ビットレート",
+        "Match Source – Adaptive Medium Bitrate" => "ソースに合わせる – アダプティブ中ビットレート",
+        "Match Source – Adaptive Low Bitrate" => "ソースに合わせる – アダプティブ低ビットレート",
+        "High Quality 1080p HD" => "高品質 1080p HD",
+        "High Quality 2160p 4K" => "高品質 2160p 4K",
+        "Social Vertical 1080×1920" => "SNS 縦型 1080×1920",
+        "PNG Sequence" => "PNG 連番",
+        "TIFF Sequence" => "TIFF 連番",
+        "BMP Sequence" => "BMP 連番",
+        "Animated GIF 640×360" => "アニメーション GIF 640×360",
+        "Waveform Audio 48 kHz 16-bit" => "WAV オーディオ 48 kHz 16 ビット",
+        "Waveform Audio 48 kHz 24-bit" => "WAV オーディオ 48 kHz 24 ビット",
+        "AIFF 48 kHz 16-bit" => "AIFF 48 kHz 16 ビット",
+        _ => return name.into(),
+    };
+    fixed.into()
+}
+
+/// A Summary line (the export crate words it in English, as agents read it) in the UI language.
+fn summary_text(s: &str) -> std::borrow::Cow<'_, str> {
+    if crate::i18n::is_japanese() { summary_in_japanese(s).into() } else { s.into() }
+}
+
+/// [`summary_text`] whatever the UI language: the summary's fixed words, longest first.
+fn summary_in_japanese(s: &str) -> String {
+    let mut out = s.to_string();
+    // "keyframe every 48 frames"
+    if let Some(i) = out.find("keyframe every ")
+        && let Some(n) = out.get(i + 15..).and_then(|r| r.split(' ').next()).map(str::to_string)
+    {
+        let en = format!("keyframe every {n} frames");
+        out = out.replace(&en, &format!("キーフレーム間隔 {n} フレーム"));
+    }
+    // "Uncompressed 16-bit PCM"
+    for bits in [16, 24] {
+        out = out.replace(&format!("Uncompressed {bits}-bit PCM"), &format!("非圧縮 {bits} ビット PCM"));
+    }
+    for (en, ja) in [
+        ("Image sequence", "連番画像"),
+        ("Upper First", "上位フィールドから"),
+        ("Lower First", "下位フィールドから"),
+        ("Progressive", "プログレッシブ"),
+        ("auto level", "レベル自動"),
+        ("VBR, 1 pass", "VBR 1 パス"),
+        ("VBR, 2 pass", "VBR 2 パス"),
+        ("Target ", "ターゲット "),
+        ("Max ", "最大 "),
+        ("quality ", "画質 "),
+        ("No video", "ビデオなし"),
+        ("No audio", "オーディオなし"),
+        ("Stereo", "ステレオ"),
+        ("Mono", "モノラル"),
+    ] {
+        out = out.replace(en, ja);
+    }
+    out.replace(", ", "、")
+}
+
 fn settings_json(s: &ExportSettings) -> Value {
     serde_json::to_value(s).unwrap_or_default()
 }
@@ -413,31 +488,32 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         });
         // Preset: favourites, then every preset by category, then More presets…
         row(ui, &t, crate::i18n::t("Preset", "プリセット"), |ui| {
-            let r = egui::ComboBox::from_id_salt("export.preset").selected_text(&ex.preset).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
-                if !favs.is_empty() {
-                    ui.label(egui::RichText::new(crate::i18n::t("Favorites", "お気に入り")).color(t.text_dim).size(11.0));
-                    for f in &favs {
-                        if ui.selectable_label(*f == ex.preset, f).clicked() {
-                            chosen_preset = Some(f.clone());
+            let r =
+                egui::ComboBox::from_id_salt("export.preset").selected_text(preset_display(&ex.preset)).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+                    if !favs.is_empty() {
+                        ui.label(egui::RichText::new(crate::i18n::t("Favorites", "お気に入り")).color(t.text_dim).size(11.0));
+                        for f in &favs {
+                            if ui.selectable_label(*f == ex.preset, preset_display(f)).clicked() {
+                                chosen_preset = Some(f.clone());
+                            }
+                        }
+                        ui.separator();
+                    }
+                    let mut cat = String::new();
+                    for p in &all_presets {
+                        if p.category != cat {
+                            cat = p.category.clone();
+                            ui.label(egui::RichText::new(preset_display(&cat)).color(t.text_dim).size(11.0));
+                        }
+                        if ui.selectable_label(p.name == ex.preset, preset_display(&p.name)).clicked() {
+                            chosen_preset = Some(p.name.clone());
                         }
                     }
                     ui.separator();
-                }
-                let mut cat = String::new();
-                for p in &all_presets {
-                    if p.category != cat {
-                        cat = p.category.clone();
-                        ui.label(egui::RichText::new(&cat).color(t.text_dim).size(11.0));
+                    if ui.button(crate::i18n::t("More presets…", "その他のプリセット…")).clicked() {
+                        open_manager = true;
                     }
-                    if ui.selectable_label(p.name == ex.preset, &p.name).clicked() {
-                        chosen_preset = Some(p.name.clone());
-                    }
-                }
-                ui.separator();
-                if ui.button(crate::i18n::t("More presets…", "その他のプリセット…")).clicked() {
-                    open_manager = true;
-                }
-            });
+                });
             reg.add("export.preset", r.response.rect, ex.preset.clone());
         });
         ui.horizontal(|ui| {
@@ -939,9 +1015,9 @@ fn preview_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq_id:
                     ui.end_row();
                 };
                 line(ui, crate::i18n::t("Output", "出力"), &output_path(ex));
-                line(ui, "", &sum.format);
-                line(ui, "", &sum.video);
-                line(ui, "", &sum.audio);
+                line(ui, "", &summary_text(&sum.format));
+                line(ui, "", &summary_text(&sum.video));
+                line(ui, "", &summary_text(&sum.audio));
                 line(
                     ui,
                     crate::i18n::t("Source", "ソース"),
@@ -1323,5 +1399,34 @@ fn expand_home(p: &str) -> String {
     match (p.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(h)) => format!("{h}/{rest}"),
         _ => p.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    /// The Summary's fixed words in Japanese (pure translator; the UI language is not switched).
+    #[test]
+    fn summary_lines_in_japanese() {
+        let v = super::summary_in_japanese(
+            "1920x1080 (1.0), 23.976 fps, Progressive, High auto level, VBR, 1 pass, Target 9.94 Mbps, Max 14.91 Mbps, keyframe every 48 frames",
+        );
+        assert_eq!(
+            v,
+            "1920x1080 (1.0)、23.976 fps、プログレッシブ、High レベル自動、VBR 1 パス、ターゲット 9.94 Mbps、最大 14.91 Mbps、キーフレーム間隔 48 フレーム"
+        );
+        assert_eq!(super::summary_in_japanese("AAC, 320 kbps, 48000 Hz, Stereo"), "AAC、320 kbps、48000 Hz、ステレオ");
+        assert_eq!(super::summary_in_japanese("Uncompressed 24-bit PCM, 48000 Hz, Mono"), "非圧縮 24 ビット PCM、48000 Hz、モノラル");
+    }
+
+    /// Every built-in preset and category has a Japanese name, or is a product / platform name.
+    #[test]
+    fn builtin_presets_in_japanese() {
+        let kept = |n: &str| ["YouTube", "Vimeo", "Apple ProRes", "Avid DNxHR", "MXF "].iter().any(|k| n.starts_with(k));
+        let missing: Vec<String> = super::builtin_presets()
+            .iter()
+            .flat_map(|p| [p.name.clone(), p.category.clone()])
+            .filter(|n| !kept(n) && super::preset_in_japanese(n).is_ascii())
+            .collect();
+        assert!(missing.is_empty(), "no Japanese name: {missing:?}");
     }
 }

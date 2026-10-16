@@ -294,11 +294,23 @@ fn preset_grid(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect) -> Option<
     apply
 }
 
+/// The folder name shown in the Effects tree (Japanese when the UI is Japanese).
 fn folder_display_name(name: &str) -> &str {
     if !crate::i18n::is_japanese() {
         return name;
     }
-    let ja = match name {
+    let Some(ja) = folder_ja(name) else {
+        return name;
+    };
+    crate::i18n::remember(name, ja);
+    ja
+}
+
+/// Japanese name of an Effects-panel folder or sub-folder (top-level categories, effect /
+/// transition sub-folders, Lumetri Presets folders).
+fn folder_ja(name: &str) -> Option<&'static str> {
+    Some(match name {
+        // top level
         "Presets" => "プリセット",
         "Lumetri Presets" => "Lumetri プリセット",
         "Audio Effects" => "オーディオエフェクト",
@@ -306,63 +318,454 @@ fn folder_display_name(name: &str) -> &str {
         "Video Effects" => "ビデオエフェクト",
         "Video Transitions" => "ビデオトランジション",
         "Legacy" => "レガシー",
-        "Color Correction" => "カラー補正",
+        "Obsolete" => "旧バージョン",
+        // video effects
+        "Adjust" => "色調補正",
         "Blur & Sharpen" => "ブラー＆シャープ",
+        "Color Correction" => "カラー補正",
         "Distort" => "ディストーション",
         "Generate" => "描画",
+        "Image Control" => "イメージコントロール",
+        "Immersive Video" => "イマーシブビデオ",
         "Keying" => "キーイング",
+        "Lights & Glows" => "ライト＆グロー",
         "Noise & Grain" => "ノイズ＆グレイン",
         "Perspective" => "遠近",
         "Stylize" => "スタイライズ",
         "Time" => "時間",
-        "Transition" => "トランジション",
         "Transform" => "トランスフォーム",
+        "Transition" => "トランジション",
         "Utility" => "ユーティリティ",
         "Video" => "ビデオ",
+        // audio effects / transitions
+        "Amplitude and Compression" => "振幅と圧縮",
+        "Delay and Echo" => "ディレイとエコー",
+        "Filter and EQ" => "フィルターと EQ",
+        "Modulation" => "モジュレーション",
+        "Noise Reduction/Restoration" => "ノイズリダクション / レストレーション",
+        "Reverb" => "リバーブ",
+        "Special" => "スペシャル",
+        "Stereo Imagery" => "ステレオイメージ",
+        "Time and Pitch" => "タイムとピッチ",
+        "Crossfade" => "クロスフェード",
+        // video transitions
+        "Animation" => "アニメーション",
         "Dissolve" => "ディゾルブ",
+        "Grunge & Distort" => "グランジ＆ディストーション",
         "Iris" => "アイリス",
+        "Lights & Blurs" => "ライト＆ブラー",
+        "Page Peel" => "ページピール",
         "Slide" => "スライド",
+        "Smart Tools" => "スマートツール",
+        "Text" => "テキスト",
+        "Transformers" => "トランスフォーマー",
         "Wipe" => "ワイプ",
         "Zoom" => "ズーム",
-        "Page Peel" => "ページピール",
-        "Crossfade" => "クロスフェード",
-        "Obsolete" => "旧バージョン",
+        // Lumetri Presets
         "Cinematic" => "シネマティック",
+        "Film Emulation" => "フィルムエミュレーション",
         "Monochrome" => "モノクロ",
+        "Technical" => "テクニカル",
         "Temperature" => "色温度",
         "Clean" => "クリーン",
-        _ => name,
+        _ => return None,
+    })
+}
+
+/// The effect / transition name shown in the Effects tree (Japanese when the UI is Japanese).
+fn effect_display_name<'a>(id: &str, name: &'a str) -> &'a str {
+    if !crate::i18n::is_japanese() {
+        return name;
+    }
+    let Some(ja) = effect_ja(id) else {
+        return name;
     };
     crate::i18n::remember(name, ja);
     ja
 }
 
-fn effect_display_name<'a>(id: &str, name: &'a str) -> &'a str {
-    if !crate::i18n::is_japanese() {
-        return name;
-    }
-    let ja = match id {
-        "gaussian_blur" => "ガウス",
-        "brightness_contrast" => "輝度＆コントラスト",
-        "crop" => "クロップ",
-        "proc_amp" => "プロアンプ",
-        "tint" => "色合い",
-        "black_white" => "白黒",
-        "color_balance" => "カラーバランス (RGB)",
-        "directional_blur" => "方向ブラー",
-        "unsharp_mask" => "アンシャープマスク",
+/// Japanese name of a catalog effect / transition, by id.
+pub(crate) fn effect_ja(id: &str) -> Option<&'static str> {
+    Some(match id {
+        // intrinsic effects and graphics
+        "motion" => "モーション",
+        "opacity" => "不透明度",
+        "time_remap" => "タイムリマップ",
+        "volume" => "ボリューム",
+        "channel_volume" => "チャンネルボリューム",
+        "panner" => "パンナー",
+        "graphic_text" => "テキスト",
+        "graphic_shape" => "シェイプ",
+        // Video Effects ▸ Adjust
         "levels" => "レベル",
-        "gamma_correction" => "ガンマ補正",
+        "proc_amp" => "プロアンプ",
+        "extract" => "抽出",
+        "lighting_effects" => "ライティング効果",
+        // Blur & Sharpen
+        "gaussian_blur" => "ブラー (ガウス)",
+        "directional_blur" => "方向ブラー",
+        "sharpen" => "シャープ",
+        "unsharp_mask" => "アンシャープマスク",
+        "bokeh_blur" => "ボケブラー",
+        "channel_blur" => "チャンネルブラー",
+        "compound_blur" => "合成ブラー",
+        "focus_blur" => "フォーカスブラー",
+        "reduce_interlace_flicker" => "インターレースのちらつき軽減",
+        // Color Correction
+        "brightness_contrast" => "輝度＆コントラスト",
+        "tint" => "色合い",
         "lumetri" => "Lumetri カラー",
-        "cross_dissolve" => "クロスディゾルブ",
-        "dip_to_black" => "暗転 (黒へディップ)",
-        "dip_to_white" => "明転 (白へディップ)",
-        "morph_cut" => "モーフカット",
+        "video_limiter" => "ビデオリミッター",
+        "vignette" => "ビネット",
+        // Distort
+        "mirror" => "ミラー",
+        "lens_distortion" => "レンズ歪み",
+        "twirl" => "渦巻き",
+        "wave_warp" => "波形ワープ",
+        "corner_pin" => "コーナーピン",
+        "magnify" => "拡大",
+        "spherize" => "球面",
+        "turbulent_displace" => "タービュレントディスプレイス",
+        "warp_stabilizer" => "ワープスタビライザー",
+        // Generate
+        "four_color_gradient" => "4 色グラデーション",
+        "gradient" => "グラデーション",
+        // Image Control
+        "black_white" => "白黒",
+        "color_pass" => "カラーパス",
+        "gamma_correction" => "ガンマ補正",
+        "invert" => "反転",
+        "channel_mix" => "チャンネルミキサー",
+        "color_replace" => "カラー置き換え",
+        "rounded_crop" => "角丸クロップ",
+        // Immersive Video
+        "vr_blur" => "VR ブラー",
+        "vr_chromatic_aberrations" => "VR 色収差",
+        "vr_color_gradients" => "VR カラーグラデーション",
+        "vr_denoise" => "VR ノイズ除去",
+        "vr_digital_glitch" => "VR デジタルグリッチ",
+        "vr_fractal_noise" => "VR フラクタルノイズ",
+        "vr_glow" => "VR グロー",
+        "vr_plane_to_sphere" => "VR 平面から球面",
+        "vr_projection" => "VR 投影",
+        "vr_rotate_sphere" => "VR 球面を回転",
+        "vr_sharpen" => "VR シャープ",
+        // Keying
+        "ultra_key" => "Ultra キー",
+        "track_matte" => "トラックマットキー",
+        "color_key" => "カラーキー",
+        "luma_key" => "ルミナンスキー",
+        "alpha_adjust" => "アルファ調整",
+        "logo_cutout" => "ロゴ切り抜き",
+        // Lights & Glows
+        "lens_flare" => "レンズフレア",
+        "echo_glow" => "エコーグロー",
+        "edge_glow" => "エッジグロー",
+        "glint" => "グリント",
+        "light_leaks" => "ライトリーク",
+        "rgb_split" => "RGB 分割",
+        "volumetric_rays" => "ボリュームライト",
+        "wonder_glow" => "ワンダーグロー",
+        // Noise & Grain
+        "noise" => "ノイズ",
+        // Perspective
+        "basic_3d" => "基本 3D",
+        "drop_shadow" => "ドロップシャドウ",
+        "long_shadow" => "ロングシャドウ",
+        // Stylize
+        "posterize" => "ポスタリゼーション",
+        "mosaic" => "モザイク",
+        "find_edges" => "輪郭検出",
+        "strobe" => "ストロボライト",
+        "brush_strokes" => "ブラシストローク",
+        "color_emboss" => "カラーエンボス",
+        "roughen_edges" => "エッジを粗く",
+        // Time
+        "posterize_time" => "ポスタリゼーション時間",
+        // Transform
+        "horizontal_flip" => "水平反転",
+        "vertical_flip" => "垂直反転",
+        "transform" => "トランスフォーム",
+        "offset" => "オフセット",
+        "rotate_3d" => "3D 回転",
+        "auto_reframe" => "オートリフレーム",
+        "camera_shake" => "カメラシェイク",
+        "grow" => "拡大アニメーション",
+        "shrink" => "縮小アニメーション",
+        "move" => "移動",
+        "spin" => "スピン",
+        "spacer" => "スペーサー",
+        "wiggle" => "ウィグル",
+        // Utility / Video
+        "simple_text" => "シンプルテキスト",
+        "auto_align" => "自動整列",
+        "cineon_converter" => "Cineon コンバーター",
+        "clone" => "クローン",
+        "stroke" => "線",
+        "metadata_burnin" => "メタデータ＆タイムコードのバーンイン",
+        // Video Effects ▸ Obsolete
+        "color_balance" => "カラーバランス",
+        "leave_color" => "色抜き",
+        "change_to_color" => "他のカラーへ変更",
+        "emboss" => "エンボス",
+        "median" => "メディアン",
+        "bevel_alpha" => "ベベルアルファ",
+        "circle" => "円",
+        "grid" => "グリッド",
+        "timecode" => "タイムコード",
+        "clip_name" => "クリップ名",
+        "echo" => "エコー",
+        "lightning" => "稲妻",
+        "cell_pattern" => "セルパターン",
+        "checkerboard" => "チェッカーボード",
+        "ellipse" => "楕円",
+        "paint_bucket" => "ペイントバケツ",
+        "write_on" => "書き込み",
+        // Legacy ▸ Video Effects
+        "camera_blur" => "カメラブラー",
+        "replicate" => "複製",
+        "crop" => "クロップ",
+        "edge_feather" => "エッジのぼかし",
+        "ramp" => "ランプ",
+        "alpha_glow" => "アルファグロー",
+        "block_dissolve" => "ブロックディゾルブ",
+        "directional_blur_legacy" => "方向ブラー (レガシー)",
+        "gaussian_blur_legacy" => "ガウス (レガシー)",
+        "gradient_wipe_legacy" => "グラデーションワイプ (レガシー)",
+        "linear_wipe_legacy" => "リニアワイプ (レガシー)",
+        "magnify_legacy" => "拡大 (レガシー)",
+        "mosaic_legacy" => "モザイク (レガシー)",
+        "noise_legacy" => "ノイズ (レガシー)",
+        "twirl_legacy" => "渦巻き (レガシー)",
+        // Audio Transitions ▸ Crossfade
         "constant_power" => "コンスタントパワー",
         "constant_gain" => "コンスタントゲイン",
         "exponential_fade" => "指数フェード",
-        _ => name,
-    };
-    crate::i18n::remember(name, ja);
-    ja
+        // Audio Effects ▸ Amplitude and Compression
+        "amplify" => "増幅",
+        "channel_mixer_a" => "チャンネルミキサー",
+        "channel_volume_a" => "チャンネルボリューム",
+        "deesser" => "ディエッサー",
+        "dynamics_rack" => "ダイナミクス",
+        "dynamics" => "ダイナミクス処理",
+        "hard_limiter" => "ハードリミッター",
+        "multiband_compressor" => "マルチバンドコンプレッサー",
+        "single_band_compressor" => "シングルバンドコンプレッサー",
+        "tube_compressor" => "チューブモデルコンプレッサー",
+        // Delay and Echo
+        "analog_delay" => "アナログディレイ",
+        "delay" => "ディレイ",
+        "multitap_delay" => "マルチタップディレイ",
+        // Filter and EQ
+        "bandpass" => "バンドパス",
+        "bass" => "低音",
+        "fft_filter" => "FFT フィルター",
+        "graphic_eq" => "グラフィックイコライザー (10 バンド)",
+        "graphic_eq_20" => "グラフィックイコライザー (20 バンド)",
+        "graphic_eq_30" => "グラフィックイコライザー (30 バンド)",
+        "highpass" => "ハイパス",
+        "lowpass" => "ローパス",
+        "notch" => "ノッチフィルター",
+        "parametric_eq" => "パラメトリックイコライザー",
+        "scientific_filter" => "サイエンティフィックフィルター",
+        "simple_notch" => "シンプルノッチフィルター",
+        "simple_eq" => "シンプルパラメトリック EQ",
+        "treble" => "高音",
+        // Modulation
+        "chorus_flanger" => "コーラス / フランジャー",
+        "flanger" => "フランジャー",
+        "phaser" => "フェイザー",
+        // Noise Reduction/Restoration
+        "declicker" => "自動クリック除去",
+        "dehummer" => "ハム除去",
+        "denoise" => "ノイズ除去",
+        "dereverb" => "リバーブ除去",
+        "speech_enhance" => "スピーチを強調",
+        // Reverb
+        "convolution_reverb" => "コンボリューションリバーブ",
+        "studio_reverb" => "スタジオリバーブ",
+        "surround_reverb" => "サラウンドリバーブ",
+        // Special
+        "binauralizer" => "バイノーラライザー - アンビソニックス",
+        "distortion" => "ディストーション",
+        "fill_left" => "左チャンネルを右チャンネルで埋める",
+        "fill_right" => "右チャンネルを左チャンネルで埋める",
+        "guitar_suite" => "ギタースイート",
+        "invert_a" => "反転",
+        "loudness_radar" => "ラウドネスメーター",
+        "mastering" => "マスタリング",
+        "panner_ambisonics" => "パンナー - アンビソニックス",
+        "swap_channels" => "チャンネルの入れ替え",
+        "vocal_enhancer" => "ボーカル強調",
+        // Stereo Imagery / Time and Pitch / loose
+        "stereo_expander" => "ステレオエキスパンダー",
+        "stereo_width" => "ステレオ幅",
+        "pitch_shifter" => "ピッチシフター",
+        "balance_a" => "バランス",
+        "mute" => "ミュート",
+        "volume_a" => "ボリューム",
+        // Video Transitions ▸ Animation
+        "block_motion" => "ブロックモーション",
+        "flip_motion" => "フリップモーション",
+        "fold_motion" => "フォールドモーション",
+        "pop_motion" => "ポップモーション",
+        "pull_motion" => "プルモーション",
+        "spin_motion" => "スピンモーション",
+        "spring_motion" => "スプリングモーション",
+        "travel_motion" => "トラベルモーション",
+        // Dissolve
+        "additive_dissolve" => "加算ディゾルブ",
+        "blur_dissolve" => "ブラーディゾルブ",
+        "burn_alpha" => "バーンアルファ",
+        "cross_dissolve" => "クロスディゾルブ",
+        "dip_to_black" => "暗転 (黒へディップ)",
+        "dip_to_color" => "カラーへディップ",
+        "dip_to_white" => "明転 (白へディップ)",
+        "film_dissolve" => "フィルムディゾルブ",
+        "luma_fade" => "ルミナンスフェード",
+        "morph_cut" => "モーフカット",
+        "mosaic_transition" => "モザイク",
+        // Grunge & Distort
+        "chaos" => "カオス",
+        "earthquake" => "地震",
+        "flicker" => "フリッカー",
+        "glass" => "ガラス",
+        "glitch" => "グリッチ",
+        "grunge" => "グランジ",
+        "kaleidoscope" => "万華鏡",
+        "liquid_distortion" => "液体ディストーション",
+        "tv_power" => "テレビの電源",
+        "vhs_damage" => "VHS ダメージ",
+        // Immersive Video
+        "vr_chroma_leaks" => "VR クロマリーク",
+        "vr_gradient_wipe" => "VR グラデーションワイプ",
+        "vr_iris_wipe" => "VR アイリスワイプ",
+        "vr_light_leaks" => "VR ライトリーク",
+        "vr_light_rays" => "VR 光線",
+        "vr_mobius_zoom" => "VR メビウスズーム",
+        "vr_random_blocks" => "VR ランダムブロック",
+        "vr_spherical_blur" => "VR 球面ブラー",
+        // Lights & Blurs
+        "burn_chroma" => "バーンクロマ",
+        "chroma_leak" => "クロマリーク",
+        "cross_zoom" => "クロスズーム",
+        "directional_blur_transition" => "方向ブラー",
+        "flare" => "フレア",
+        "flash" => "フラッシュ",
+        "glow" => "グロー",
+        "lens_blur" => "レンズブラー",
+        "light_leak" => "ライトリーク",
+        "light_sweep" => "ライトスイープ",
+        "phosphor" => "フォスファー",
+        "radial_blur" => "放射状ブラー",
+        "ray" => "レイ",
+        "solarize" => "ソラリゼーション",
+        "stripe" => "ストライプ",
+        "zoom_blur" => "ズームブラー",
+        // Slide
+        "roll_3d" => "3D ロール",
+        "film_roll" => "フィルムロール",
+        "push" => "プッシュ",
+        "roll" => "ロール",
+        "slide" => "スライド",
+        "split" => "スプリット",
+        "stretch" => "ストレッチ",
+        "whip" => "ホイップ",
+        // Smart Tools
+        "motion_camera" => "モーションカメラ",
+        "motion_tween" => "モーショントゥイーン",
+        "shape_dissolve" => "シェイプディゾルブ",
+        "shape_flow" => "シェイプフロー",
+        // Text
+        "text_animator" => "テキストアニメーター",
+        "typewriter" => "タイプライター",
+        // Transformers
+        "spin_3d" => "3D スピン",
+        "spinback_3d" => "3D スピンバック",
+        "frame" => "フレーム",
+        "louver" => "ルーバー",
+        "mirror_transition" => "ミラー",
+        "page_peel" => "ページピール",
+        "slice" => "スライス",
+        "wave" => "ウェーブ",
+        // Wipe
+        "clock_wipe" => "クロックワイプ",
+        "linear_wipe" => "リニアワイプ",
+        "neon_wipe" => "ネオンワイプ",
+        "panel_wipe" => "パネルワイプ",
+        "plateau_wipe" => "プラトーワイプ",
+        "radial_wipe" => "放射状ワイプ",
+        "soft_wipe" => "ソフトワイプ",
+        "star_wipe" => "スターワイプ",
+        "stretch_wipe" => "ストレッチワイプ",
+        // Legacy ▸ Video Transitions
+        "additive_dissolve_legacy" => "加算ディゾルブ (レガシー)",
+        "barn_doors" => "バーンドア",
+        "center_split" => "センタースプリット",
+        "clock_wipe_legacy" => "クロックワイプ (レガシー)",
+        "cross_dissolve_legacy" => "クロスディゾルブ (レガシー)",
+        "cross_zoom_legacy" => "クロスズーム (レガシー)",
+        "dip_to_black_legacy" => "黒へディップ (レガシー)",
+        "dip_to_white_legacy" => "白へディップ (レガシー)",
+        "film_dissolve_legacy" => "フィルムディゾルブ (レガシー)",
+        "inset" => "インセット",
+        "iris_box" => "アイリス (ボックス)",
+        "iris_cross" => "アイリス (クロス)",
+        "iris_diamond" => "アイリス (ダイヤモンド)",
+        "iris_round" => "アイリス (円形)",
+        "non_additive_dissolve" => "非加算ディゾルブ",
+        "push_legacy" => "プッシュ (レガシー)",
+        "radial_wipe_legacy" => "放射状ワイプ (レガシー)",
+        "slide_legacy" => "スライド (レガシー)",
+        "split_legacy" => "スプリット (レガシー)",
+        "whip_legacy" => "ホイップ (レガシー)",
+        "wipe" => "ワイプ",
+        // Obsolete ▸ Video Transitions
+        "band_slide" => "バンドスライド",
+        "checker_wipe" => "チェッカーワイプ",
+        "cube_spin" => "キューブスピン",
+        "flip_over" => "フリップオーバー",
+        "gradient_wipe" => "グラデーションワイプ",
+        "page_turn" => "ページターン",
+        "venetian_blinds" => "ベネチアンブラインド",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Catalog ids whose display name legitimately stays ASCII (an industry-standard name).
+    const ASCII_IDS: &[&str] = &["asc_cdl"];
+
+    #[test]
+    fn every_effect_and_folder_has_a_japanese_name() {
+        let defs = filmcraft_project::effect_defs();
+        assert!(defs.len() > 250, "catalog unexpectedly small: {}", defs.len());
+        let mut folders: Vec<&str> = filmcraft_project::vtransition::EFFECT_TOP_FOLDERS.to_vec();
+        folders.extend(filmcraft_render::lumetri_presets::FOLDERS);
+        for d in defs.iter() {
+            folders.extend(d.category.iter().copied());
+        }
+        folders.sort_unstable();
+        folders.dedup();
+        // Check the pure lookups (the display functions use them when Japanese is selected): the
+        // UI language is process-wide and other tests expect English, so it is not switched here.
+        let missing_fx: Vec<String> = defs
+            .iter()
+            .filter(|d| !ASCII_IDS.contains(&d.id))
+            .filter(|d| effect_ja(d.id).is_none_or(|ja| ja.is_ascii()))
+            .map(|d| format!("{} ({})", d.id, d.name))
+            .collect();
+        let missing_folders: Vec<&str> = folders.iter().copied().filter(|f| folder_ja(f).is_none_or(|ja| ja.is_ascii())).collect();
+        assert!(
+            missing_fx.is_empty() && missing_folders.is_empty(),
+            "untranslated effects ({}): {missing_fx:?}\nuntranslated folders ({}): {missing_folders:?}",
+            missing_fx.len(),
+            missing_folders.len()
+        );
+        assert_eq!(effect_ja("cross_dissolve"), Some("クロスディゾルブ"));
+        assert_eq!(folder_ja("Animation"), Some("アニメーション"));
+    }
 }

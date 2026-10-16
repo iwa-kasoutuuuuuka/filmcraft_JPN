@@ -1116,6 +1116,7 @@ fn tr_ja(s: &str) -> &str {
         "Responsive Design - Time" => "レスポンシブデザイン - 時間",
         "Responsive Design - Position" => "レスポンシブデザイン - 位置",
         "Character Style" => "文字スタイル",
+        "List Text Styles" => "テキストスタイルを一覧",
         "Upgrade Caption to Graphic" => "キャプションをグラフィックにアップグレード",
         "List Fonts Used" => "使用フォントを一覧",
         "List Keyboard Shortcuts" => "キーボードショートカットを一覧",
@@ -1335,6 +1336,14 @@ pub fn tr_track_name(name: &str) -> Cow<'_, str> {
 /// Settings dialog text (labels, group titles, choices and notes of the schema in
 /// `filmcraft_engine::settings`). Falls back to [`tr`], then to the original.
 pub fn tr_settings(s: &str) -> &str {
+    // modifier keys are named as on macOS; elsewhere they are Ctrl and Alt (in every language)
+    if !cfg!(target_os = "macos") {
+        match s {
+            "+ Cmd" => return "+ Ctrl",
+            "+ Opt" => return "+ Alt",
+            _ => {}
+        }
+    }
     if !is_japanese() {
         return s;
     }
@@ -1622,7 +1631,7 @@ fn tr_settings_ja(s: &str) -> &str {
         "Auto" => "自動",
         "On" => "オン",
         "Off" => "オフ",
-        _ => tr(s),
+        _ => tr_ja(s),
     }
 }
 
@@ -2234,5 +2243,46 @@ mod tests {
         assert_eq!(Language::from_pref("auto", Some("ja-JP")), Language::Japanese);
         assert_eq!(Language::from_pref("auto", Some("de-DE")), Language::English);
         assert_eq!(Language::from_pref("", None), Language::Japanese);
+    }
+    /// Every Settings page title, group, field label, choice, note and button has Japanese text.
+    #[test]
+    fn settings_text_in_japanese() {
+        use filmcraft_engine::settings::{Kind, Row, categories};
+        fn walk(rows: &[Row], out: &mut Vec<&'static str>) {
+            for r in rows {
+                match r {
+                    Row::Field(f) => {
+                        out.push(f.label);
+                        if let Kind::Choice(opts) = f.kind {
+                            out.extend(opts.iter().map(|o| o.1));
+                        }
+                    }
+                    Row::Group(title, rows) => {
+                        out.push(title);
+                        walk(rows, out);
+                    }
+                    Row::Note(n) => out.push(n),
+                    Row::Button { label, .. } => out.push(label),
+                    _ => {}
+                }
+            }
+        }
+        let mut words = Vec::new();
+        for c in categories() {
+            words.push(c.title);
+            walk(c.rows, &mut words);
+        }
+        // numbers, units, codecs and product names read the same in Japanese
+        let kept = |s: &str| {
+            s.is_empty()
+                || !s.chars().any(|c| c.is_ascii_alphabetic())
+                || s.ends_with(" fps")
+                || s.contains("% HLG")
+                || ["+ Cmd", "+ Opt", "Dynamic Link", "Whisper"].iter().any(|k| s.starts_with(k))
+        };
+        let mut missing: Vec<&str> = words.into_iter().filter(|w| !kept(w) && tr_settings_ja(w).is_ascii()).collect();
+        missing.sort_unstable();
+        missing.dedup();
+        assert!(missing.is_empty(), "{} Settings texts without Japanese: {missing:#?}", missing.len());
     }
 }

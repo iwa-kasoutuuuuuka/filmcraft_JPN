@@ -11,6 +11,8 @@ use crate::FilmcraftApp;
 use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
+mod labels_ja;
+
 const ROW_H: f32 = 22.0;
 
 fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, filmcraft_project::TrackKind)> {
@@ -271,7 +273,7 @@ pub(crate) fn param_row(
         app.auto.add(&format!("effectControls.{}.{}.stopwatch", e.effect, pkey), sw, "Toggle animation");
     }
     x += 14.0;
-    let label = param_display_label(pd.id, pd.label);
+    let label = param_display_label(&e.effect, pd.id, pd.label);
     ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text);
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
     let value = param.value_at(mt);
@@ -311,9 +313,9 @@ pub(crate) fn param_row(
         }
         (ParamKind::Choice(opts), ParamValue::Choice(c)) => {
             let mut sel = *c as usize;
-            egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).copied().unwrap_or("")).width(130.0).show_ui(&mut vui, |ui| {
+            egui::ComboBox::from_id_salt(id).selected_text(opts.get(sel).map_or("", |o| choice_display_label(o))).width(130.0).show_ui(&mut vui, |ui| {
                 for (i, o) in opts.iter().enumerate() {
-                    if ui.selectable_value(&mut sel, i, *o).changed() {
+                    if ui.selectable_value(&mut sel, i, choice_display_label(o)).changed() {
                         set = Some(json!(i));
                     }
                 }
@@ -873,27 +875,26 @@ pub(crate) fn graph_rows(
     }
 }
 
-fn param_display_label<'a>(id: &str, label: &'a str) -> &'a str {
+fn param_display_label<'a>(effect: &str, id: &str, label: &'a str) -> &'a str {
     if !crate::i18n::is_japanese() {
         return label;
     }
-    let ja = match id {
-        "position" => "位置",
-        "scale" => "スケール",
-        "uniform_scale" => "縦横比を固定",
-        "scale_w" => "スケール (幅)",
-        "rotation" => "回転",
-        "anchor" => "アンカーポイント",
-        "antiflicker" => "アンチフリッカーフィルター",
-        "opacity" => "不透明度",
-        "blend" => "描画モード",
-        "speed" => "速度",
-        "level" => "レベル",
-        "bypass" => "バイパス",
-        "pan" => "パン",
-        _ => label,
+    let Some(ja) = labels_ja::param_label_ja(effect, id, label) else {
+        return label;
     };
     crate::i18n::remember(label, ja);
+    ja
+}
+
+/// A dropdown choice in the UI language.
+fn choice_display_label(en: &str) -> &str {
+    if !crate::i18n::is_japanese() {
+        return en;
+    }
+    let Some(ja) = labels_ja::choice_label_ja(en) else {
+        return en;
+    };
+    crate::i18n::remember(en, ja);
     ja
 }
 
@@ -901,27 +902,8 @@ fn effect_def_display_name<'a>(id: &str, name: &'a str) -> &'a str {
     if !crate::i18n::is_japanese() {
         return name;
     }
-    let ja = match id {
-        "motion" => "モーション",
-        "opacity" => "不透明度",
-        "time_remap" => "タイムリマップ",
-        "volume" => "ボリューム",
-        "channel_volume" => "チャンネルボリューム",
-        "panner" => "パナー",
-        "gaussian_blur" => "ガウス",
-        "brightness_contrast" => "輝度＆コントラスト",
-        "crop" => "クロップ",
-        "proc_amp" => "プロアンプ",
-        "tint" => "色合い",
-        "black_white" => "白黒",
-        "color_balance" => "カラーバランス (RGB)",
-        "directional_blur" => "方向ブラー",
-        "unsharp_mask" => "アンシャープマスク",
-        "levels" => "レベル",
-        "gamma_correction" => "ガンマ補正",
-        "lumetri" => "Lumetri カラー",
-        _ => name,
-    };
+    // one table with the Effects panel, so both panels name an effect the same
+    let ja = super::effects::effect_ja(id).unwrap_or(name);
     crate::i18n::remember(name, ja);
     ja
 }
@@ -958,5 +940,49 @@ mod param_text_tests {
             param_text(&p, "curve_luma", &ParamValue::Curve(vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])),
             crate::i18n::t("Custom (3 points)", "カスタム (3 ポイント)")
         );
+    }
+}
+
+#[cfg(test)]
+mod label_coverage_tests {
+    use super::labels_ja::{choice_label_ja, param_label_ja, stays_ascii};
+    use filmcraft_project::ParamKind;
+
+    /// Every parameter and dropdown choice of every effect and transition in the catalog has
+    /// Japanese text (or is on the short list of text that stays as it is: units, numbers, names).
+    #[test]
+    fn every_catalog_param_and_choice_has_japanese() {
+        let mut missing = Vec::new();
+        let mut checked = 0;
+        for e in filmcraft_project::effect_defs() {
+            for p in &e.params {
+                checked += 1;
+                let ja = param_label_ja(e.id, p.id, p.label);
+                if !ja.is_some_and(|j| !j.is_ascii()) && !stays_ascii(p.label) {
+                    missing.push(format!("param {}.{} \"{}\"", e.id, p.id, p.label));
+                }
+                if let ParamKind::Choice(opts) = &p.kind {
+                    for o in opts.iter() {
+                        if !choice_label_ja(o).is_some_and(|j| !j.is_ascii()) && !stays_ascii(o) {
+                            missing.push(format!("choice {}.{} \"{}\"", e.id, p.id, o));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1000, "catalog has only {checked} params");
+        assert!(missing.is_empty(), "{} labels without Japanese:\n{}", missing.len(), missing.join("\n"));
+    }
+
+    #[test]
+    fn motion_ids_and_context_dependent_labels() {
+        assert_eq!(param_label_ja("motion", "scale_width", "Scale Width"), Some("スケール (幅)"));
+        assert_eq!(param_label_ja("motion", "anti_flicker", "Anti-flicker Filter"), Some("アンチフリッカーフィルター"));
+        assert_eq!(param_label_ja("opacity", "blend", "Blend Mode"), Some("描画モード"));
+        assert_eq!(param_label_ja("scientific_filter", "order", "Order"), Some("次数"));
+        assert_eq!(param_label_ja("shape_dissolve", "order", "Order"), Some("順序"));
+        assert_eq!(choice_label_ja("Normal"), Some("通常"));
+        assert_eq!(choice_label_ja("Multiply"), Some("乗算"));
+        assert_eq!(param_label_ja("x", "y", "Not a label"), None);
     }
 }

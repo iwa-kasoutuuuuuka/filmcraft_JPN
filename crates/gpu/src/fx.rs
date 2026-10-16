@@ -73,6 +73,8 @@ pub(crate) struct FxStage {
     no_masks: wgpu::Buffer,
     pool: HashMap<(u32, u32), Vec<Target>>,
     used: HashSet<(u32, u32)>,
+    uniform_pool: Vec<wgpu::Buffer>,
+    used_uniforms: Vec<wgpu::Buffer>,
 }
 
 /// One compute pass of a job.
@@ -333,18 +335,36 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, no_masks, pool: HashMap::new(), used: HashSet::new() }
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            bgl,
+            source,
+            no_masks,
+            pool: HashMap::new(),
+            used: HashSet::new(),
+            uniform_pool: Vec::new(),
+            used_uniforms: Vec::new(),
+        }
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
     /// are released then.
     pub(crate) fn begin_frame(&mut self) {
         self.used.clear();
+        for b in self.used_uniforms.drain(..) {
+            if self.uniform_pool.len() < 64 {
+                self.uniform_pool.push(b);
+            }
+        }
     }
 
     pub(crate) fn end_frame(&mut self) {
         let used = &self.used;
         self.pool.retain(|k, _| used.contains(k));
+        if self.pool.is_empty() {
+            self.uniform_pool.clear();
+        }
     }
 
     /// No working textures held.
@@ -430,20 +450,24 @@ impl FxStage {
                 Some((i, p)) => (i, p),
                 None => (&self.no_masks, &self.no_masks),
             };
-            let mut bytes = Vec::with_capacity(96);
-            for v in [s.code, w, h, 0].iter().chain(&s.i1) {
-                bytes.extend_from_slice(&v.to_le_bytes());
+            let mut bytes = [0u8; 96];
+            for (idx, v) in [s.code, w, h, 0].iter().chain(&s.i1).enumerate() {
+                bytes[idx * 4..idx * 4 + 4].copy_from_slice(&v.to_le_bytes());
             }
-            for v in &s.p {
-                bytes.extend_from_slice(&v.to_le_bytes());
+            for (idx, v) in s.p.iter().enumerate() {
+                let off = 32 + idx * 4;
+                bytes[off..off + 4].copy_from_slice(&v.to_le_bytes());
             }
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("fx-u"),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
+            let buf = self.uniform_pool.pop().unwrap_or_else(|| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("fx-u"),
+                    size: bytes.len() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
             });
             queue.write_buffer(&buf, 0, &bytes);
+            self.used_uniforms.push(buf.clone());
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("fx"),
                 layout: &self.bgl,

@@ -227,9 +227,9 @@ fn typed_body(ui: &mut egui::Ui, cx: &mut Ctx, st: &EssentialSound, items: &[Tra
     let mut draft: Option<String> = ui.data(|d| d.get_temp(draft_id));
     ui.horizontal(|ui| {
         let w = ui.available_width() - 56.0;
-        let cb = egui::ComboBox::from_id_salt("es-preset").selected_text(&current).width(w).show_ui(ui, |ui| {
+        let cb = egui::ComboBox::from_id_salt("es-preset").selected_text(es_text(&current).into_owned()).width(w).show_ui(ui, |ui| {
             for p in &mine {
-                if ui.selectable_label(p.name == st.preset, &p.name).clicked() {
+                if ui.selectable_label(p.name == st.preset, es_text(&p.name).into_owned()).clicked() {
                     picked = Some(p.name.clone());
                 }
             }
@@ -467,7 +467,7 @@ fn section_header(ui: &mut egui::Ui, cx: &mut Ctx, sec: Section, open: bool, ena
         if open { Icon::ChevronDown } else { Icon::ChevronRight },
         t.text,
     );
-    ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, sec.label(), Tokens::semibold(13.0), t.text);
+    ui.painter().text(pos2(r.min.x + 30.0, r.center().y), Align2::LEFT_CENTER, es_text(sec.label()), Tokens::semibold(13.0), t.text);
     cx.auto.add(&format!("essentialSound.section.{}", sec.label()), r, sec.label());
     if let (Some(on), Some(k)) = (enabled, sec.key()) {
         let sw = Rect::from_center_size(pos2(r.max.x - 16.0, r.center().y), vec2(30.0, 15.0));
@@ -593,13 +593,14 @@ fn slider_track(ui: &mut egui::Ui, cx: &mut Ctx, track: Rect, key: &str, v: f64,
 fn combo(ui: &mut egui::Ui, cx: &mut Ctx, key: &str, names: &[&str], current: &str, active: bool) {
     let mut picked = None;
     ui.add_enabled_ui(active, |ui| {
-        let cb = egui::ComboBox::from_id_salt(("es-combo", key)).selected_text(current).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
-            for n in names {
-                if ui.selectable_label(*n == current, *n).clicked() {
-                    picked = Some(n.to_string());
+        let cb =
+            egui::ComboBox::from_id_salt(("es-combo", key)).selected_text(es_text(current).into_owned()).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+                for n in names {
+                    if ui.selectable_label(*n == current, es_text(n).into_owned()).clicked() {
+                        picked = Some(n.to_string());
+                    }
                 }
-            }
-        });
+            });
         cx.auto.add(&format!("essentialSound.{key}"), cb.response.rect, key);
     });
     if let Some(n) = picked {
@@ -691,4 +692,78 @@ fn save_icon(p: &Painter, r: Rect, col: Color32) {
     p.line_segment([at(0.5, 0.05), at(0.5, 0.62)], s);
     p.add(egui::Shape::line(vec![at(0.28, 0.42), at(0.5, 0.64), at(0.72, 0.42)], s));
     p.add(egui::Shape::line(vec![at(0.08, 0.6), at(0.08, 0.92), at(0.92, 0.92), at(0.92, 0.6)], s));
+}
+
+/// Essential Sound's own words (sections, built-in presets, EQ and reverb presets) in the UI
+/// language; a preset the user named is kept as it is.
+fn es_text(s: &str) -> std::borrow::Cow<'_, str> {
+    if crate::i18n::is_japanese() { es_text_ja(s).map_or(s.into(), Into::into) } else { s.into() }
+}
+
+/// [`es_text`] whatever the UI language.
+fn es_text_ja(s: &str) -> Option<&'static str> {
+    Some(match s {
+        // sections
+        "Loudness" => "ラウドネス",
+        "Repair" => "修復",
+        "Clarity" => "明瞭度",
+        "Creative" => "クリエイティブ",
+        "Ducking" => "ダッキング",
+        "Duration" => "デュレーション",
+        "Pan" => "パン",
+        // presets
+        "(Default)" => "(初期設定)",
+        "Balanced Voice" => "バランスの取れた声",
+        "Clean Up Noisy Dialogue" => "ノイズの多い会話をクリーンアップ",
+        "Podcast Voice" => "ポッドキャストの声",
+        "Dry Up a Roomy Voice" => "響きの多い声を抑える",
+        "Phone Call" => "電話",
+        "Radio Announcer" => "ラジオアナウンサー",
+        "Voice in a Hall" => "ホールの声",
+        "Duck Under Dialogue" => "会話の下にダッキング",
+        "Duck Deep Under Dialogue" => "会話の下に深くダッキング",
+        "Duck Under Voice and Effects" => "声と効果音の下にダッキング",
+        "Far Away" => "遠くの音",
+        "From the Left" => "左から",
+        "From the Right" => "右から",
+        "In a Room" => "室内",
+        "Interior Room Tone" => "室内のルームトーン",
+        "Wide Outdoor" => "広い屋外",
+        // EQ presets
+        "Presence Lift" => "プレゼンスを強調",
+        "Warm Voice" => "温かみのある声",
+        "Clear Muddiness" => "こもりを除去",
+        "Soften Harshness" => "耳障りな音を和らげる",
+        "Bright Air" => "明るく抜けのよい音",
+        "Radio Voice" => "ラジオボイス",
+        "Telephone" => "電話音声",
+        // reverb presets
+        "Small Room" => "小さな部屋",
+        "Warm Room" => "温かみのある部屋",
+        "Medium Room" => "中くらいの部屋",
+        "Bright Studio" => "明るいスタジオ",
+        "Large Hall" => "大ホール",
+        "Stone Church" => "石造りの教会",
+        "Open Air" => "屋外",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod es_text_tests {
+    use filmcraft_project::essential::{AudioType, EQ_PRESETS, REVERB_PRESETS, builtin_presets};
+
+    /// Every section, built-in preset, EQ preset and reverb preset has a Japanese name.
+    #[test]
+    fn essential_sound_words_in_japanese() {
+        let mut words: Vec<String> = [AudioType::Dialogue, AudioType::Music, AudioType::Sfx, AudioType::Ambience]
+            .iter()
+            .flat_map(|k| k.sections().iter().map(|s| s.label().to_string()))
+            .collect();
+        words.extend(builtin_presets().into_iter().map(|p| p.name));
+        words.extend(EQ_PRESETS.iter().map(|p| p.name.to_string()));
+        words.extend(REVERB_PRESETS.iter().map(|p| p.name.to_string()));
+        let missing: Vec<&String> = words.iter().filter(|w| super::es_text_ja(w).is_none()).collect();
+        assert!(missing.is_empty(), "no Japanese name: {missing:?}");
+    }
 }
