@@ -17,6 +17,7 @@
 //! Direct3D textures; each is read back (`IMF2DBuffer2::Lock2DSize`) and copied into planar
 //! [`PixelData::Yuv8`] / [`PixelData::Yuv16`], cropped to the picture's output rectangle.
 
+use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, OnceLock};
 
@@ -26,8 +27,10 @@ use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11CreateDevice, ID3D11Device, ID3D11Multithread, ID3D11Texture2D,
+    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Multithread, ID3D11Texture2D,
 };
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer2, IMFActivate, IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaType, IMFSample, IMFTransform, MF_E_NOTACCEPTING, MF_E_TRANSFORM_NEED_MORE_INPUT,
     MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_VERSION,
@@ -106,8 +109,8 @@ fn layout(info: &NalStreamInfo) -> std::result::Result<Layout, String> {
 /// shares it between them. Created once: making a device costs far more than decoding a picture.
 struct Device {
     manager: IMFDXGIDeviceManager,
-    // Kept alive for the manager.
-    _device: ID3D11Device,
+    // Kept alive for the manager; read-back copies run on it.
+    device: ID3D11Device,
 }
 
 // SAFETY: a Direct3D 11 device with multithread protection on (set in `Device::new`) and the DXGI
@@ -146,7 +149,7 @@ impl Device {
         let manager = manager.ok_or("no DXGI device manager")?;
         // SAFETY: `device` is a valid Direct3D 11 device and `token` the manager's own reset token.
         unsafe { manager.ResetDevice(&device, token) }.map_err(|e| err("IMFDXGIDeviceManager::ResetDevice", e))?;
-        Ok(Device { manager, _device: device })
+        Ok(Device { manager, device })
     }
 
     /// The process's device, or why there is none (no video-capable adapter).
@@ -231,8 +234,9 @@ impl Session {
         }
     }
 
-    /// Take the next decoded picture. `Ok(None)`: the transform needs more input.
-    fn output(&self, layout: &Layout) -> std::result::Result<Option<(i64, VideoFrame)>, String> {
+    /// Take the next decoded picture (a sample holding its Direct3D texture). `Ok(None)`: the
+    /// transform needs more input.
+    fn output(&self, layout: &Layout) -> std::result::Result<Option<(i64, IMFSample)>, String> {
         for _ in 0..4 {
             let mut buffers = [MFT_OUTPUT_DATA_BUFFER::default()];
             let mut status = 0u32;
@@ -248,7 +252,7 @@ impl Session {
                     let sample = sample.ok_or("the decoder returned no picture")?;
                     // SAFETY: a valid sample.
                     let time = unsafe { sample.GetSampleTime() }.map_err(|e| err("IMFSample::GetSampleTime", e))?;
-                    return Ok(Some((time, copy_out(&sample, layout)?)));
+                    return Ok(Some((time, sample)));
                 }
                 Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(None),
                 // the output format is known only now (or changed): choose it again and retry
@@ -401,14 +405,19 @@ fn copy_out(sample: &IMFSample, l: &Layout) -> std::result::Result<VideoFrame, S
     // slice does not outlive `_lock` (it is dropped at the end of this function, after `data`).
     let all = unsafe { std::slice::from_raw_parts(start as *const u8, len as usize) };
     let data = all.get(first..).ok_or("decoded picture layout")?;
+    planar(data, pitch, desc.Height as usize, l)
+}
 
-    // NV12 / P010: `desc.Height` rows of luma, then `desc.Height / 2` rows of interleaved CbCr,
-    // every row `pitch` bytes apart.
+/// A mapped NV12 / P010 picture (`rows` rows of luma, then `rows / 2` rows of interleaved CbCr,
+/// every row `pitch` bytes apart) as a planar frame: chroma deinterleaved, cropped to the output
+/// rectangle, 10-bit samples shifted down from the high bits.
+fn planar(data: &[u8], pitch: usize, rows: usize, l: &Layout) -> std::result::Result<VideoFrame, String> {
+    let (cx, cy, w, h) = l.crop;
     let (w, h, cx, cy) = (w as usize, h as usize, cx as usize, cy as usize);
     let bps = if l.bits > 8 { 2 } else { 1 };
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     let (cox, coy) = (cx / 2, cy / 2);
-    let chroma_at = pitch.checked_mul(desc.Height as usize).ok_or("decoded picture size")?;
+    let chroma_at = pitch.checked_mul(rows).ok_or("decoded picture size")?;
     let row = |base: usize, y: usize, x: usize, n: usize| -> std::result::Result<&[u8], String> {
         let at = y.checked_mul(pitch).and_then(|o| o.checked_add(base)).and_then(|o| o.checked_add(x)).ok_or("decoded picture size")?;
         data.get(at..at.saturating_add(n)).ok_or_else(|| "decoded picture row out of range".to_string())
@@ -447,6 +456,139 @@ fn copy_out(sample: &IMFSample, l: &Layout) -> std::result::Result<VideoFrame, S
     Ok(VideoFrame { width: w as u32, height: h as u32, data: pixels, color: l.color, par: l.par, pts: filmcraft_time::Tick::ZERO })
 }
 
+/// Staging textures in the read-back ring (see [`Readback`]).
+const READBACK_DEPTH: usize = 3;
+
+/// Decoded pictures on their way back from the GPU. Each is copied into a staging texture of a
+/// small ring and mapped only when the ring is full, when that copy (and the decoding it waits
+/// for) finished long ago. Locking each picture as it comes out (`IMF2DBuffer2::Lock2DSize`)
+/// waited for the GPU every time: about 8 ms per 1080p picture, nearly all of what hardware
+/// decoding cost in playback. Pictures come out [`READBACK_DEPTH`] − 1 samples later; `flush`
+/// returns the rest.
+struct Readback {
+    device: ID3D11Device,
+    context: ID3D11DeviceContext,
+    /// The ring and the decoder texture size / format it was made for.
+    ring: Vec<ID3D11Texture2D>,
+    made_for: (u32, u32, DXGI_FORMAT),
+    next: usize,
+    /// (pts, ring slot) of pictures copied and not yet mapped, oldest first.
+    pending: VecDeque<(i64, usize)>,
+}
+
+// SAFETY: the immediate context of a device with multithread protection on (`Device::new`), and
+// textures of that device; the decoder owning a `Readback` uses it from one thread at a time.
+unsafe impl Send for Readback {}
+
+impl Readback {
+    fn new(device: &ID3D11Device) -> std::result::Result<Self, String> {
+        // SAFETY: a valid device; the immediate context is always there.
+        let context = unsafe { device.GetImmediateContext() }.map_err(|e| err("ID3D11Device::GetImmediateContext", e))?;
+        Ok(Self { device: device.clone(), context, ring: Vec::new(), made_for: (0, 0, DXGI_FORMAT(0)), next: 0, pending: VecDeque::new() })
+    }
+
+    /// Copy the picture in `sample` into the ring; returns the pictures whose copies are now due
+    /// (oldest first).
+    fn push(&mut self, sample: &IMFSample, pts: i64, l: &Layout) -> std::result::Result<Vec<(i64, VideoFrame)>, String> {
+        // SAFETY: a valid sample.
+        let buffer = unsafe { sample.GetBufferByIndex(0) }.map_err(|e| err("IMFSample::GetBufferByIndex", e))?;
+        let dxgi: IMFDXGIBuffer = buffer.cast().map_err(|_| "the decoder transform decoded in software".to_string())?;
+        let mut texture: Option<ID3D11Texture2D> = None;
+        // SAFETY: asks for the buffer's texture as the interface whose IID is passed; `texture` is a
+        // valid out pointer of that interface type.
+        unsafe { dxgi.GetResource(&ID3D11Texture2D::IID, &mut texture as *mut Option<ID3D11Texture2D> as *mut *mut std::ffi::c_void) }
+            .map_err(|e| err("IMFDXGIBuffer::GetResource", e))?;
+        let texture = texture.ok_or("decoded picture without a texture")?;
+        // SAFETY: a valid buffer.
+        let sub = unsafe { dxgi.GetSubresourceIndex() }.map_err(|e| err("IMFDXGIBuffer::GetSubresourceIndex", e))?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: a valid texture and out pointer.
+        unsafe { texture.GetDesc(&mut desc) };
+        let (cx, cy, w, h) = l.crop;
+        if cx.saturating_add(w) > desc.Width || cy.saturating_add(h) > desc.Height {
+            return Err(format!("decoded picture is {}x{}, the stream's is {w}x{h}", desc.Width, desc.Height));
+        }
+        let mut out = Vec::new();
+        if self.made_for != (desc.Width, desc.Height, desc.Format) {
+            // a new size or format: what is in the old ring comes out first
+            out.extend(self.finish(l)?);
+            self.ring = (0..READBACK_DEPTH).map(|_| self.staging(&desc)).collect::<std::result::Result<_, _>>()?;
+            self.made_for = (desc.Width, desc.Height, desc.Format);
+            self.next = 0;
+        }
+        let slot = self.next;
+        let dst = self.ring.get(slot).ok_or("read-back ring")?;
+        // SAFETY: both textures belong to the device of `context`, have the same size and format,
+        // and `sub` is the picture's subresource of the decoder texture (array).
+        unsafe { self.context.CopySubresourceRegion(dst, 0, 0, 0, 0, &texture, sub, None) };
+        self.pending.push_back((pts, slot));
+        self.next = (slot + 1) % READBACK_DEPTH;
+        // the ring slot `next` is overwritten by the next copy: map it out first
+        while self.pending.len() >= READBACK_DEPTH {
+            out.push(self.map_oldest(l)?);
+        }
+        Ok(out)
+    }
+
+    /// Every picture still in the ring (end of a run).
+    fn finish(&mut self, l: &Layout) -> std::result::Result<Vec<(i64, VideoFrame)>, String> {
+        let mut out = Vec::new();
+        while !self.pending.is_empty() {
+            out.push(self.map_oldest(l)?);
+        }
+        Ok(out)
+    }
+
+    /// Forget the pictures in the ring (a seek).
+    fn clear(&mut self) {
+        self.pending.clear();
+    }
+
+    fn staging(&self, like: &D3D11_TEXTURE2D_DESC) -> std::result::Result<ID3D11Texture2D, String> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: like.Width,
+            Height: like.Height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: like.Format,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+        };
+        let mut tex: Option<ID3D11Texture2D> = None;
+        // SAFETY: a valid description and out pointer; no initial data.
+        unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut tex)) }.map_err(|e| err("ID3D11Device::CreateTexture2D", e))?;
+        tex.ok_or_else(|| "no staging texture".into())
+    }
+
+    fn map_oldest(&mut self, l: &Layout) -> std::result::Result<(i64, VideoFrame), String> {
+        let (pts, slot) = self.pending.pop_front().ok_or("read-back ring is empty")?;
+        let tex = self.ring.get(slot).ok_or("read-back ring")?;
+        let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+        // SAFETY: a staging texture with CPU read access, its only subresource, a valid out pointer;
+        // unmapped below before anything else touches it.
+        unsafe { self.context.Map(tex, 0, D3D11_MAP_READ, 0, Some(&mut m)) }.map_err(|e| err("ID3D11DeviceContext::Map", e))?;
+        let rows = self.made_for.1 as usize;
+        let pitch = m.RowPitch as usize;
+        // NV12 / P010 map as `rows` rows of luma then `rows / 2` rows of chroma, `pitch` apart
+        let len = pitch.checked_mul(rows.saturating_add(rows.div_ceil(2)));
+        let frame = match len {
+            Some(len) if !m.pData.is_null() && pitch > 0 => {
+                // SAFETY: Direct3D mapped the whole subresource, `len` bytes of it, readable until the
+                // `Unmap` below; the slice is not used after it.
+                let data = unsafe { std::slice::from_raw_parts(m.pData as *const u8, len) };
+                planar(data, pitch, rows, l)
+            }
+            _ => Err("decoded picture is not mapped".to_string()),
+        };
+        // SAFETY: mapped above.
+        unsafe { self.context.Unmap(tex, 0) };
+        frame.map(|f| (pts, f))
+    }
+}
+
 /// The Media Foundation decoder for one `avcC` / `hvcC` stream.
 pub struct MfDecoder {
     info: NalStreamInfo,
@@ -464,6 +606,8 @@ pub struct MfDecoder {
     fail_after: Option<u64>,
     fed: u64,
     name: &'static str,
+    /// The read-back ring; None if it could not be made (pictures are then locked one by one).
+    readback: Option<Readback>,
 }
 
 impl MfDecoder {
@@ -477,7 +621,8 @@ impl MfDecoder {
             NalCodec::H264 => "Media Foundation H.264",
             NalCodec::Hevc => "Media Foundation HEVC",
         };
-        Ok(Self { info, layout, session: Some(session), in_flight: Vec::new(), first: true, skip_rasl: false, fail_after: None, fed: 0, name })
+        let readback = Device::shared().and_then(|d| Readback::new(&d.device)).inspect_err(|e| log::info!("{name}: no read-back ring ({e})")).ok();
+        Ok(Self { info, layout, session: Some(session), in_flight: Vec::new(), first: true, skip_rasl: false, fail_after: None, fed: 0, name, readback })
     }
 
     /// Test hook: from the `n`-th sample on, every decode fails as a lost device would.
@@ -501,13 +646,16 @@ impl MfDecoder {
         let mut out = Vec::new();
         let Some(session) = self.session.as_ref() else { return Ok(out) };
         while out.len() < MAX_OUTPUTS {
-            let Some((pts, frame)) = session.output(&self.layout)? else { break };
+            let Some((pts, sample)) = session.output(&self.layout)? else { break };
             // every picture is one we fed, under the time we fed it with
             let Some(i) = self.in_flight.iter().position(|&p| p == pts) else {
                 return Err(format!("the decoder returned a picture with an unknown time ({pts})"));
             };
             self.in_flight.swap_remove(i);
-            out.push(DecodedFrame { pts, frame, draft: false });
+            match self.readback.as_mut() {
+                Some(rb) => out.extend(rb.push(&sample, pts, &self.layout)?.into_iter().map(|(pts, frame)| DecodedFrame { pts, frame, draft: false })),
+                None => out.push(DecodedFrame { pts, frame: copy_out(&sample, &self.layout)?, draft: false }),
+            }
         }
         Ok(out)
     }
@@ -580,6 +728,16 @@ impl VideoDecoder for MfDecoder {
                 Err(e) => log::warn!("{}: {e} while flushing", self.name),
             }
         }
+        // the pictures still on their way back from the GPU
+        if let Some(rb) = self.readback.as_mut() {
+            match rb.finish(&self.layout) {
+                Ok(v) => out.extend(v.into_iter().map(|(pts, frame)| DecodedFrame { pts, frame, draft: false })),
+                Err(e) => {
+                    log::warn!("{}: {e} while flushing", self.name);
+                    rb.clear();
+                }
+            }
+        }
         // The drained transform is kept for the next run (setting one up costs far more than a
         // picture): flushed, it takes a new run that starts with the parameter sets.
         if self.session.as_ref().is_some_and(|s| s.message(MFT_MESSAGE_COMMAND_FLUSH).is_err()) {
@@ -599,6 +757,9 @@ impl VideoDecoder for MfDecoder {
             self.session = None;
         }
         self.in_flight.clear();
+        if let Some(rb) = self.readback.as_mut() {
+            rb.clear();
+        }
         self.skip_rasl = false;
         self.first = true;
     }

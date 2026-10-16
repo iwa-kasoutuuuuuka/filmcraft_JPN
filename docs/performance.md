@@ -13,29 +13,31 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
-## Results (Windows: Media Foundation vs software H.264, Hardware decoding Auto / On / Off)
+## Results (Windows: Media Foundation read-back, before → after)
 
-`cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw auto|on|off` (release, GPU
-path, 8 s plays), 2026-10-16, AMD Ryzen 9 9950X3D (16 cores, 32 threads, 63 GB), Windows 11 Pro
-26300, otherwise idle. Shown/dropped of 192 frames; decode ms per frame job.
+`cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw on|off` (release, GPU
+path, 8 s plays) and `cargo test --release -p filmcraft-platform --test mediafoundation throughput
+-- --ignored`, 2026-10-16, AMD Ryzen 9 9950X3D (16 cores, 32 threads, 63 GB), NVIDIA GeForce RTX
+5080, Windows 11 Pro 26300, otherwise idle. Shown/dropped of 192 frames; decode ms per frame job.
 
-| case | Media Foundation (`On`) | software (`Off`) | `Auto` before → **after** |
+| case | Media Foundation before | **after** | software (`Off`) |
 |---|---|---|---|
-| H.264 1080p Full | 102/90, 186 ms (runs: 10/182 – 160/32) | 192/0, 3.9 ms | 160/32 → **192/0** |
-| H.264 2160p Full | 102/90 – 192/0, 21–191 ms | 192/0, 18.6 ms | 102/90 → **192/0** |
-| H.264 2160p 1/2 | 17/175 | 192/0 | 17/175 → **192/0** |
+| H.264 1080p Full | 102/90, 186 ms (runs: 10/182 – 160/32) | **192/0, 7.3 ms** | 192/0, 3.9 ms |
+| H.264 2160p Full | 102/90 – 192/0, 21–191 ms | **192/0, 12.9 ms** | 192/0, 18.6 ms |
+| H.264 2160p 1/2 | 17/175, 282 ms | **192/0, 8.6 ms** | 192/0 |
 
-Media Foundation hands every picture back through a synchronous GPU read-back
-(`IMF2DBuffer2::Lock2DSize`): ~30 ms per picture inside playback (9.6 ms decoding one stream
-sequentially), against 4–20 ms for FilmCraft's frame-threaded H.264 decoder on this CPU. Keeping
-a few access units in flight before taking pictures out did not help (same numbers), so the
-read-back itself is the cost; zero-copy upload of the decoded texture into wgpu (#30) is the fix.
-Until then `Auto` keeps H.264 in software on CPUs with 12 or more threads
-(`filmcraft_platform::SOFTWARE_H264_THREADS`); `On` still forces the hardware (to spare the CPU or
-the battery), and HEVC keeps using Media Foundation (Windows ships no HEVC decoder of its own; the
-HEVC Video Extensions are needed, and the Events panel says so when they are missing). The bench
-now runs on Windows (no `/usr/bin/time`: no peak RSS; no load average).
+Decoding alone (`throughput`): 1080p 402 fps at 1.71 ms of CPU per frame in hardware against 305
+fps and 19.9 ms in software; 2160p 175 fps at 5.1 ms against 108 fps and 87 ms.
 
+Before, every picture came back through `IMF2DBuffer2::Lock2DSize` as soon as it came out of the
+transform, which waited for the GPU each time: ~8 ms per 1080p picture (timed per call; the
+transform's own `ProcessInput` / `ProcessOutput` took under 0.1 ms), roughly 4× that at 2160p. Now
+each picture is copied (`CopySubresourceRegion`) into a ring of three staging textures and mapped
+two pictures later, when the copy finished long ago (`Readback` in
+`crates/platform/src/mediafoundation.rs`); the pictures are bit-identical (parity tests). Keeping
+access units in flight in the transform instead did not help. Zero-copy upload into wgpu (#30)
+would also remove the CPU copy. The bench runs on Windows (no `/usr/bin/time`: no peak RSS; no
+load average).
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
 Before = this change with clips that carry standard effects sent back to the CPU layer path in

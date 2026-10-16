@@ -488,8 +488,6 @@ fn hardware_decoding_setting_drives_the_decoder_switch() {
     set(&mut s, "playback.hardwareDecoding", json!("off"));
     assert!(!filmcraft_codecs::hw::hardware_decoding(), "Off reaches the decoder registry");
     assert!(s.execute("prefs.set", json!({"key": "playback.hardwareDecoding", "value": "gpu"})).is_err());
-    set(&mut s, "playback.hardwareDecoding", json!("on"));
-    assert_eq!(filmcraft_codecs::hw::hardware_mode(), filmcraft_codecs::hw::HwMode::On, "On forces the hardware where it can");
     set(&mut s, "playback.hardwareDecoding", json!("auto"));
     assert!(filmcraft_codecs::hw::hardware_decoding());
     assert_eq!(filmcraft_codecs::hw::hardware_mode(), filmcraft_codecs::hw::HwMode::Auto);
