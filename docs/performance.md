@@ -30,7 +30,23 @@ CPU grade within 1e-5 and the GPU within 1e-6 relative (`lumetri_hdr_tests`, `fx
 (an Unsharp pass chained after the grade) and the Input / Look LUTs (1D shaper and tetrahedral 3D
 cube in the same data buffer) followed, then HSL Secondary: key, median denoise (radius ≤ 3 px)
 and box blur passes beside the image, then the correction (`lumetri-hsl`: 38/154 and 36/156 →
-192/0 twice, UI p95 20 → 12 ms). HDR working spaces still run on the CPU.
+192/0 twice, UI p95 20 → 12 ms). The grade in HDR working spaces (PQ / HLG) followed, but HDR
+sequences don't reach it yet (see below).
+
+## Results (keys and HDR Lumetri on the GPU, before → after)
+
+`bench --section playback --only <scenario>` (release, GPU path, 8 s plays), before = `eb49b29`
+built with the same scenarios, runs alternated. Windows 11, one NVIDIA GPU.
+
+| scenario | before shown/dropped (2 runs) | after shown/dropped (2 runs) | UI p95 ms before → after |
+|---|---|---|---|
+| `keying`: Ultra Key (Choke, Soften, spill) on V2 over V1, Video Limiter on V1 | 17/175, 13/179 | **192/0, 192/0** | 12.5, 17.2 → **4.0, 4.4** |
+| `lumetri-hdr`: the `lumetri-grade` grade in a Rec. 2100 PQ sequence | 99/93, 103/89 | 90/102, 110/82 | unchanged (noisy) |
+
+Ultra Key, Color Key, Luma Key and Video Limiter now run as GPU passes (Ultra Key's Choke and
+Soften blur its matte beside the image). `lumetri-hdr` doesn't move: `plan.rs` renders every HDR
+or wide-gamut sequence on the CPU (decode into the working space, composite, display transform),
+so the GPU never sees it. Moving that pipeline to the GPU is the next step for HDR playback.
 ## Results (Windows: Media Foundation read-back, before → after)
 
 `cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw on|off` (release, GPU

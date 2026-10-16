@@ -633,7 +633,7 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,lumetri-grade,lumetri-hsl,lumetri-hdr,keying,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
@@ -648,6 +648,8 @@ fn parse_args() -> Args {
             "stack3-fx",
             "lumetri-grade",
             "lumetri-hsl",
+            "lumetri-hdr",
+            "keying",
             "h264-2160",
             "hevc-2160",
             "demo",
@@ -669,12 +671,16 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             let a = import(&mut s, &fixture("a1080.mp4")?);
             build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], 20.0)
         }
-        "lumetri-grade" | "lumetri-hsl" => {
+        "lumetri-grade" | "lumetri-hsl" | "lumetri-hdr" => {
             // a typical grade: color wheels, a luma S-curve, Hue vs Sat, split tone and a Look
+            // (lumetri-hdr: the same grade in a Rec. 2100 PQ sequence)
             let a = import(&mut s, &fixture("a1080.mp4")?);
             let seq = build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &["lumetri"], 20.0);
             s.edit("grade", |p, _| {
                 let q = p.sequence_mut(seq).expect("seq");
+                if name == "lumetri-hdr" {
+                    q.settings.color.working = filmcraft_color::WorkingSpace::Rec2100Pq;
+                }
                 for it in &mut q.video_tracks[0].items {
                     let Some(e) = it.effect_mut("lumetri") else { continue };
                     let curve = |pts: &[[f32; 2]]| ParamValue::Curve(pts.to_vec());
@@ -762,6 +768,42 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
                 })
                 .ok()?;
             }
+            seq
+        }
+        "keying" => {
+            // Ultra Key (with Choke, Soften and spill suppression) on V2 over V1, a Video Limiter
+            // on V1
+            let (a, b) = (import(&mut s, &fixture("a1080.mp4")?), import(&mut s, &fixture("b1080.mp4")?));
+            let seq = build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0), (b, 100.0, None, 0.0, 100.0)], &[], 20.0);
+            s.edit("keys", |p, _| {
+                let q = p.sequence_mut(seq).expect("seq");
+                let fx: [(usize, &str, Vec<(&str, ParamValue)>); 2] = [
+                    (0, "video_limiter", vec![]),
+                    (
+                        1,
+                        "ultra_key",
+                        vec![
+                            ("key_color", ParamValue::Color([0.2, 0.6, 0.3, 1.0])),
+                            ("choke", ParamValue::Float(20.0)),
+                            ("soften", ParamValue::Float(30.0)),
+                            ("spill", ParamValue::Float(50.0)),
+                        ],
+                    ),
+                ];
+                for (track, id, params) in fx {
+                    for it in &mut q.video_tracks[track].items {
+                        let mut e = find_effect(id).expect("effect").instance();
+                        for (k, v) in &params {
+                            if let Some(x) = e.params.get_mut(*k) {
+                                x.value = v.clone();
+                            }
+                        }
+                        it.effects.push(e);
+                    }
+                }
+                Ok(())
+            })
+            .ok()?;
             seq
         }
         "h264-2160" | "seek-storm-2160" => {
