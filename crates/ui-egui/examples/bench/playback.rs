@@ -216,7 +216,14 @@ pub fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
+/// The 1/5/15-minute load average: macOS `sysctl`, Linux `/proc/loadavg`; Windows has none.
 pub fn load_avg() -> String {
+    if cfg!(windows) {
+        return "n/a".into();
+    }
+    if let Ok(l) = std::fs::read_to_string("/proc/loadavg") {
+        return l.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+    }
     Command::new("sysctl")
         .args(["-n", "vm.loadavg"])
         .output()

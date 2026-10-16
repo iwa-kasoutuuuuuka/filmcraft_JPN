@@ -12,11 +12,9 @@ pub fn fixtures_dir() -> PathBuf {
     }
 }
 
+/// ffmpeg as the tests find it: `FILMCRAFT_FFMPEG`, `PATH`, the usual install locations (Windows too).
 pub fn ffmpeg() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("FILMCRAFT_FFMPEG") {
-        return Some(PathBuf::from(p));
-    }
-    ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].iter().map(PathBuf::from).find(|p| p.exists())
+    filmcraft_testkit::ffmpeg()
 }
 
 /// A fixture: file name, lavfi video source, seconds, with audio, video encoder arguments.

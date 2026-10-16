@@ -39,6 +39,7 @@ rustix = { version = "1", default-features = false, features = ["std", "time"] }
 
 [dev-dependencies]
 pollster = "0.4"
+filmcraft-testkit = { workspace = true }
 filmcraft-codecs = { workspace = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui
 # itself stays OS-independent and web-portable)
