@@ -519,7 +519,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?}"#,
+            r#"{"items":[id]?,"model":"whisper-base"?,"language":"auto"|"ja"|"en"|ISO 639-1?,"diarize":bool?,"maxSpeakers":n?}"#,
             always,
             generate,
             true,

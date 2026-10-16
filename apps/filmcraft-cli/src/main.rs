@@ -239,6 +239,8 @@ async fn main() {
             } else {
                 std::fs::read_to_string(script).unwrap_or_else(|e| fail(format!("{script}: {e}")))
             };
+            // Windows PowerShell 5 (`-Encoding UTF8`) and many Windows editors start UTF-8 with a BOM
+            let text = text.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(text);
             let mut b = Backend::open(&a);
             let mut failed = 0;
             for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {

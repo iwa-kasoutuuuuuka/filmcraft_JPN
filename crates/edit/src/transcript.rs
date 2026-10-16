@@ -404,6 +404,12 @@ pub fn may_break_between(prev: &str, next: &str) -> bool {
     if is_hiragana(b) || matches!(b, 'ー' | '」' | '）' | '。' | '、' | '！' | '？') {
         return false;
     }
+    // letters or digits written up against the katakana / kanji after them are one compound
+    // (MP4ファイル, 4K動画, Windowsパソコン); half- or full-width, not kana (also "alphanumeric")
+    let latin = |c: char| c.is_ascii_alphanumeric() || matches!(c, '０'..='９' | 'Ａ'..='Ｚ' | 'ａ'..='ｚ');
+    if latin(a) && (is_katakana(b) || is_kanji(b)) {
+        return false;
+    }
     !((is_kanji(a) && is_kanji(b)) || (is_katakana(a) && is_katakana(b)))
 }
 

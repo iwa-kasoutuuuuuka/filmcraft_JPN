@@ -155,11 +155,14 @@ pub fn group_words(tok: &Tokenizer, ids: &[u32]) -> Vec<(String, std::ops::Range
             continue;
         }
         // text without spaces: a new word at every token, once the word before is whole characters
+        // (a word ending in Japanese / Chinese punctuation is whole: "して、" + "MP4", not "して、MP4")
         let unspaced = !starts_space
             && !punct
             && groups.last().is_some_and(|g| {
-                std::str::from_utf8(&g.0)
-                    .is_ok_and(|prev| text.chars().next().is_some_and(is_unspaced_script) || prev.chars().next_back().is_some_and(is_unspaced_script))
+                std::str::from_utf8(&g.0).is_ok_and(|prev| {
+                    text.chars().next().is_some_and(is_unspaced_script)
+                        || prev.chars().next_back().is_some_and(|c| is_unspaced_script(c) || "。、！？：」』）".contains(c))
+                })
             });
         if unspaced {
             groups.push((b.to_vec(), i..i + 1));
@@ -213,6 +216,18 @@ mod tests {
 
     fn texts(tokens: &[&[u8]]) -> Vec<String> {
         words(tokens).into_iter().map(|w| w.0).collect()
+    }
+
+    /// Latin letters or digits after Japanese punctuation start a word of their own: the caption
+    /// layout may break only between words, and "して、" + "MP4" is where the line should break.
+    /// (Before: "押 / して、MP4 / ファイル", so the line broke inside "MP4ファイル".)
+    #[test]
+    fn latin_after_japanese_punctuation_starts_a_word() {
+        let t: Vec<&[u8]> = ["押", "して", "、", "MP", "4", "フ", "ァイル"].iter().map(|s| s.as_bytes()).collect();
+        assert_eq!(texts(&t), ["押", "して、", "MP4", "フ", "ァイル"]);
+        // an opening bracket still goes with what follows
+        let t: Vec<&[u8]> = ["は", "「", "OK", "」"].iter().map(|s| s.as_bytes()).collect();
+        assert_eq!(texts(&t).last().map(String::as_str), Some("「OK」"));
     }
 
     #[test]

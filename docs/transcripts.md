@@ -97,8 +97,15 @@ prints SKIPPED. Measured on 2026-10-01: `whisper-tiny`, English, 12.2 % WER over
 the local speech samples (LibriSpeech read speech and dialogue clips) (about 9.5 minutes for the run in a release build on an
 Apple-silicon laptop CPU).
 
+Japanese, measured on 2026-10-16 through the CLI (`transcript.generate`, then
+`transcript.createCaptions`) on a 17 s narration synthesised with the Windows Japanese voice
+(Haruka) from a known script, release build on a Ryzen 9 9950X3D: `whisper-base` 2.9 % character
+error rate in 3 s (並べます → ならべます, 三つ → 3つ), `whisper-small` 1.0 % in 7 s (三つ → 3つ);
+the language was detected as Japanese with `auto` as well.
+
 Japanese caption lines break between phrases (see `may_break_between`): particles and okurigana
-stay with the word before them, kanji with kanji, katakana with katakana. A phrase wider than a
+stay with the word before them, kanji with kanji, katakana with katakana, and Latin letters or
+digits with the katakana / kanji after them (MP4ファイル, 4K動画). A phrase wider than a
 line is broken after its last particle (わたしは / きのう, ものを / たべました; `soft_break_between`)
 rather than at the line width. There is no morphological analysis, so a line can still break in an
 odd place now and then.

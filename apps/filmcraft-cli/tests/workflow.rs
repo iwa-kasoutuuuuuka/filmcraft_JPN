@@ -69,6 +69,12 @@ fn save_reopen_edit_and_export_under_a_japanese_path() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(std::fs::metadata(&png).unwrap().len() > 0);
 
+    // a `run` script saved with a UTF-8 BOM (Windows PowerShell 5, Notepad) runs
+    let script = d.join("手順.jsonl");
+    std::fs::write(&script, "\u{feff}{\"id\":\"timeline.razor\",\"params\":{\"seconds\":2}}\n").unwrap();
+    let o = cli(&data, &["--project", p, "run", script.to_str().unwrap()]);
+    assert!(o.status.success(), "BOM script: {}", String::from_utf8_lossy(&o.stderr));
+
     // a bad --range is a usage error, not a crash
     assert_eq!(cli(&data, &["--project", p, "export", out.to_str().unwrap(), "--range", "0,x"]).status.code(), Some(2));
     let _ = std::fs::remove_dir_all(d.parent().unwrap());

@@ -424,6 +424,12 @@ fn japanese_captions_break_between_phrases() {
         ("は", "スカイ", true),
         ("コーヒ", "ー", false),
         ("東京", "Tower", true),
+        // letters / digits before katakana or kanji are one compound
+        ("MP4", "ファイル", false),
+        ("4K", "動画", false),
+        ("ＭＰ４", "ファイル", false),
+        ("Windows", "パソコン", false),
+        ("して、", "MP4", true),
         ("", "東", true),
         ("東", "", true),
     ] {
