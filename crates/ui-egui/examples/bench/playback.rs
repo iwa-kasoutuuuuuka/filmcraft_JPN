@@ -641,10 +641,22 @@ fn parse_args() -> Args {
         }
     }
     if a.scenarios.is_empty() {
-        a.scenarios = ["h264-1080", "stack3", "stack3-blend", "stack3-fx", "lumetri-grade", "h264-2160", "hevc-2160", "demo", "after-preview", "seek-storm"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        a.scenarios = [
+            "h264-1080",
+            "stack3",
+            "stack3-blend",
+            "stack3-fx",
+            "lumetri-grade",
+            "lumetri-hsl",
+            "h264-2160",
+            "hevc-2160",
+            "demo",
+            "after-preview",
+            "seek-storm",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     }
     a
 }
@@ -657,7 +669,7 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             let a = import(&mut s, &fixture("a1080.mp4")?);
             build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], 20.0)
         }
-        "lumetri-grade" => {
+        "lumetri-grade" | "lumetri-hsl" => {
             // a typical grade: color wheels, a luma S-curve, Hue vs Sat, split tone and a Look
             let a = import(&mut s, &fixture("a1080.mp4")?);
             let seq = build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &["lumetri"], 20.0);
@@ -677,6 +689,20 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
                     ] {
                         if let Some(x) = e.params.get_mut(k) {
                             x.value = v;
+                        }
+                    }
+                    // lumetri-hsl: HSL Secondary on the skin tones, with Denoise and Blur
+                    if name == "lumetri-hsl" {
+                        for (k, v) in [
+                            ("hsl_on", ParamValue::Bool(true)),
+                            ("hsl_hue", ParamValue::Float(30.0)),
+                            ("hsl_sat", ParamValue::Float(140.0)),
+                            ("hsl_denoise", ParamValue::Float(50.0)),
+                            ("hsl_blur", ParamValue::Float(20.0)),
+                        ] {
+                            if let Some(x) = e.params.get_mut(k) {
+                                x.value = v;
+                            }
                         }
                     }
                 }

@@ -1232,75 +1232,125 @@ fn hsl_key(v: [f32; 3], hc: f32, hr: f32, smin: f32, lmin: f32, lmax: f32, soft:
 /// - **Blur** softens the key's edges: a Gaussian (σ up to 20 px at full resolution, three box
 ///   passes) on the key.
 fn hsl_secondary(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    if !b(e, "hsl_on") {
-        return;
+    if let Some(p) = HslSecondary::from_effect(e, cx) {
+        p.apply(img);
     }
-    let gs = grade_space(e, cx, "curves_hdr_range");
-    let hdr = gs.is_hdr();
-    let (hc, hr) = (f(e, "hsl_hue", cx) / 360.0, (f(e, "hsl_hue_range", cx) / 360.0).max(1e-3));
-    let (smin, lmin, lmax) = (f(e, "hsl_sat_min", cx) / 100.0, f(e, "hsl_luma_min", cx) / 100.0, f(e, "hsl_luma_max", cx) / 100.0);
-    let soft = (f(e, "hsl_soft", cx) / 100.0 * 0.3).max(0.01);
-    let show_mask = choice(e, "hsl_show_mask");
-    let (htemp, htint, hsat, hshift) =
-        (f(e, "hsl_temp", cx) / 100.0, f(e, "hsl_tint", cx) / 100.0, f(e, "hsl_sat", cx) / 100.0, f(e, "hsl_hue_shift", cx) / 360.0);
-    let (denoise, blur) = (f(e, "hsl_denoise", cx).clamp(0.0, 100.0) / 100.0, f(e, "hsl_blur", cx).clamp(0.0, 100.0) / 100.0);
-    let (w, h) = (img.w, img.h);
-    let unit = |c: [f32; 3]| {
-        let v = gs.encode(c);
-        if hdr {
-            let m = v[0].max(v[1]).max(v[2]).max(1.0);
-            v.map(|q| (q / m).max(0.0))
-        } else {
-            v.map(|q| q.clamp(0.0, 1.0))
-        }
-    };
-    // the key
-    let mut mask: Vec<f32> = img
-        .px
-        .par_chunks(4)
-        .map(|p| if p[3] <= 1e-6 { 0.0 } else { hsl_key(unit(Image::unpremul([p[0], p[1], p[2], p[3]])), hc, hr, smin, lmin, lmax, soft) })
-        .collect();
-    if denoise > 0.0 {
-        let r = ((1.0 + 2.0 * denoise) * cx.px_scale).round().max(1.0) as usize;
-        let med = median_filter(&mask, w, h, r);
-        mask.iter_mut().zip(med).for_each(|(m, d)| *m += (d - *m) * denoise.min(1.0));
-    }
-    if blur > 0.0 {
-        let sigma = blur * 20.0 * cx.px_scale;
-        if sigma >= 0.3 {
-            blur_plane(&mut mask, w, h, sigma);
-        }
-    }
-    let mask = &mask;
-    img.map_rgb(|c, x, y| {
-        let m = mask[y * w + x];
-        let v = gs.encode(c);
-        let u = unit(c);
-        let scale = if hdr { v[0].max(v[1]).max(v[2]).max(1.0) } else { 1.0 };
-        let out = match show_mask {
-            1 => {
-                let g = rgb_to_hsl(u[0], u[1], u[2])[2];
-                [g + (u[0] - g) * m, g + (u[1] - g) * m, g + (u[2] - g) * m]
-            }
-            2 => u.map(|q| q * m),
-            3 => [m, m, m],
-            _ => {
-                let mut hh = rgb_to_hsl(u[0], u[1], u[2]);
-                hh[0] = (hh[0] + hshift).rem_euclid(1.0);
-                hh[1] = (hh[1] * hsat).clamp(0.0, 1.0);
-                let mut c2 = hsl_to_rgb(hh[0], hh[1], hh[2]);
-                c2[0] *= 1.0 + 0.25 * htemp;
-                c2[2] *= 1.0 - 0.25 * htemp;
-                c2[1] *= 1.0 - 0.2 * htint;
-                [u[0] + (c2[0] - u[0]) * m, u[1] + (c2[1] - u[1]) * m, u[2] + (c2[2] - u[2]) * m]
-            }
-        };
-        // the mask views are display images (no HDR scaling)
-        let out = if show_mask == 0 { out.map(|q| q * scale) } else { out };
-        gs.decode(out)
-    });
 }
 
+/// Lumetri ▸ HSL Secondary, evaluated: what the grade applies (and the CPU twin of its GPU
+/// passes, `gpufx::FxOp::HslSecondary`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HslSecondary {
+    pub working: filmcraft_color::WorkingSpace,
+    /// The grade's HDR range (cd/m²; HDR working spaces only).
+    pub white: f32,
+    /// Key: hue centre and range, minimum saturation, lightness range (0…1), softness.
+    pub hc: f32,
+    pub hr: f32,
+    pub smin: f32,
+    pub lmin: f32,
+    pub lmax: f32,
+    pub soft: f32,
+    /// 0 correct, 1 colour / grey, 2 colour / black, 3 white / black.
+    pub show_mask: u32,
+    /// Correction: temperature, tint, saturation (×), hue shift (turns).
+    pub htemp: f32,
+    pub htint: f32,
+    pub hsat: f32,
+    pub hshift: f32,
+    /// Denoise amount (0…1) and its median radius (px; 0 without Denoise).
+    pub denoise: f32,
+    pub median_r: usize,
+    /// Box radii of the key's Gaussian blur (empty without Blur).
+    pub blur_radii: Vec<usize>,
+}
+
+impl HslSecondary {
+    /// The section's parameters, or `None` when it is off.
+    pub fn from_effect(e: &EffectInstance, cx: &FxCtx) -> Option<Self> {
+        if !b(e, "hsl_on") {
+            return None;
+        }
+        let denoise = f(e, "hsl_denoise", cx).clamp(0.0, 100.0) / 100.0;
+        let blur = f(e, "hsl_blur", cx).clamp(0.0, 100.0) / 100.0;
+        let sigma = blur * 20.0 * cx.px_scale;
+        Some(Self {
+            working: cx.working,
+            white: f(e, "curves_hdr_range", cx),
+            hc: f(e, "hsl_hue", cx) / 360.0,
+            hr: (f(e, "hsl_hue_range", cx) / 360.0).max(1e-3),
+            smin: f(e, "hsl_sat_min", cx) / 100.0,
+            lmin: f(e, "hsl_luma_min", cx) / 100.0,
+            lmax: f(e, "hsl_luma_max", cx) / 100.0,
+            soft: (f(e, "hsl_soft", cx) / 100.0 * 0.3).max(0.01),
+            show_mask: choice(e, "hsl_show_mask"),
+            htemp: f(e, "hsl_temp", cx) / 100.0,
+            htint: f(e, "hsl_tint", cx) / 100.0,
+            hsat: f(e, "hsl_sat", cx) / 100.0,
+            hshift: f(e, "hsl_hue_shift", cx) / 360.0,
+            denoise,
+            median_r: if denoise > 0.0 { ((1.0 + 2.0 * denoise) * cx.px_scale).round().max(1.0) as usize } else { 0 },
+            blur_radii: if blur > 0.0 && sigma >= 0.3 { boxes_for_gauss(sigma, 3) } else { Vec::new() },
+        })
+    }
+
+    pub fn apply(&self, img: &mut Image) {
+        let gs = GradeSpace::new(self.working, self.white);
+        let hdr = gs.is_hdr();
+        let Self { hc, hr, smin, lmin, lmax, soft, show_mask, htemp, htint, hsat, hshift, denoise, .. } = *self;
+        let (w, h) = (img.w, img.h);
+        let unit = |c: [f32; 3]| {
+            let v = gs.encode(c);
+            if hdr {
+                let m = v[0].max(v[1]).max(v[2]).max(1.0);
+                v.map(|q| (q / m).max(0.0))
+            } else {
+                v.map(|q| q.clamp(0.0, 1.0))
+            }
+        };
+        // the key
+        let mut mask: Vec<f32> = img
+            .px
+            .par_chunks(4)
+            .map(|p| if p[3] <= 1e-6 { 0.0 } else { hsl_key(unit(Image::unpremul([p[0], p[1], p[2], p[3]])), hc, hr, smin, lmin, lmax, soft) })
+            .collect();
+        if self.median_r > 0 {
+            let med = median_filter(&mask, w, h, self.median_r);
+            mask.iter_mut().zip(med).for_each(|(m, d)| *m += (d - *m) * denoise.min(1.0));
+        }
+        if !self.blur_radii.is_empty() {
+            blur_plane(&mut mask, w, h, &self.blur_radii);
+        }
+        let mask = &mask;
+        img.map_rgb(|c, x, y| {
+            let m = mask[y * w + x];
+            let v = gs.encode(c);
+            let u = unit(c);
+            let scale = if hdr { v[0].max(v[1]).max(v[2]).max(1.0) } else { 1.0 };
+            let out = match show_mask {
+                1 => {
+                    let g = rgb_to_hsl(u[0], u[1], u[2])[2];
+                    [g + (u[0] - g) * m, g + (u[1] - g) * m, g + (u[2] - g) * m]
+                }
+                2 => u.map(|q| q * m),
+                3 => [m, m, m],
+                _ => {
+                    let mut hh = rgb_to_hsl(u[0], u[1], u[2]);
+                    hh[0] = (hh[0] + hshift).rem_euclid(1.0);
+                    hh[1] = (hh[1] * hsat).clamp(0.0, 1.0);
+                    let mut c2 = hsl_to_rgb(hh[0], hh[1], hh[2]);
+                    c2[0] *= 1.0 + 0.25 * htemp;
+                    c2[2] *= 1.0 - 0.25 * htemp;
+                    c2[1] *= 1.0 - 0.2 * htint;
+                    [u[0] + (c2[0] - u[0]) * m, u[1] + (c2[1] - u[1]) * m, u[2] + (c2[2] - u[2]) * m]
+                }
+            };
+            // the mask views are display images (no HDR scaling)
+            let out = if show_mask == 0 { out.map(|q| q * scale) } else { out };
+            gs.decode(out)
+        });
+    }
+}
 /// Median of the `(2r+1)²` neighbourhood of every sample of a single-channel plane (edges
 /// clamped).
 fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
@@ -1320,9 +1370,9 @@ fn median_filter(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     out
 }
 
-/// Gaussian blur of a single-channel plane (three box passes per axis, edges clamped).
-fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
-    let radii = boxes_for_gauss(sigma, 3);
+/// Box blur of a single-channel plane with these radii along x, then along y (edges clamped):
+/// three passes per axis approximate a Gaussian.
+fn blur_plane(p: &mut [f32], w: usize, h: usize, radii: &[usize]) {
     let pass = |p: &mut [f32], w: usize, h: usize, r: usize| {
         if r == 0 {
             return;
@@ -1348,11 +1398,11 @@ fn blur_plane(p: &mut [f32], w: usize, h: usize, sigma: f32) {
         }
         t
     };
-    for &r in &radii {
+    for &r in radii {
         pass(p, w, h, r);
     }
     let mut t = transpose(p, w, h);
-    for &r in &radii {
+    for &r in radii {
         pass(&mut t, h, w, r);
     }
     p.copy_from_slice(&transpose(&t, h, w));

@@ -194,6 +194,8 @@ pub enum FxOp {
         /// Split tone, Look, color wheels and curves (`None`: none of them is in use).
         extra: Option<Box<LumetriExtra>>,
     },
+    /// Lumetri ▸ HSL Secondary: key, refine (median, blur), correct (or show the mask).
+    HslSecondary(Box<crate::effects::HslSecondary>),
     /// Several operations of one effect, in order (Lumetri, then its Sharpen).
     Chain(Vec<FxOp>),
 }
@@ -364,6 +366,9 @@ impl LumetriExtra {
         v
     }
 }
+
+/// Widest HSL Secondary denoise median the GPU pass takes (radius in px; 7 × 7 window).
+pub const HSL_MEDIAN_MAX: usize = 3;
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
 pub const GPU_EFFECTS: &[&str] = &[
@@ -622,12 +627,15 @@ impl FxOp {
             }
             "lumetri" => {
                 let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
-                let (curves_on, wheels_on, hsl_on) = (on(e, "curves_on"), on(e, "wheels_on"), on(e, "hsl_on"));
+                let (curves_on, wheels_on) = (on(e, "curves_on"), on(e, "wheels_on"));
                 // Input / Look LUTs (as `effects::lumetri` resolves them; a LUT that does not resolve
                 // is not applied there either)
                 let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
                 let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
-                if hsl_on && b(e, "hsl_on") {
+                // HSL Secondary: its own passes after the grade (a median wider than 3 px stays on
+                // the CPU)
+                let hsl = crate::effects::HslSecondary::from_effect(e, cx);
+                if hsl.as_ref().is_some_and(|h| h.median_r > HSL_MEDIAN_MAX || h.show_mask > 3) {
                     return None;
                 }
                 // Creative ▸ Sharpen: an unsharp mask after the grade (as `effects::lumetri`)
@@ -689,13 +697,17 @@ impl FxOp {
                     aspect,
                     extra,
                 };
+                // the order of `effects::lumetri`: grade, HSL Secondary, Sharpen
+                let mut ops = vec![grade];
+                if let Some(h) = hsl {
+                    ops.push(FxOp::HslSecondary(Box::new(h)));
+                }
                 if sharpen.abs() > 1e-3 {
                     let r = 1.2 * cx.px_scale.max(0.35);
                     let (rx, ry) = gaussian_boxes(w, h, r, r);
-                    FxOp::Chain(vec![grade, FxOp::Unsharp { rx, ry, amount: sharpen.max(-1.0), threshold: 0.0 }])
-                } else {
-                    grade
+                    ops.push(FxOp::Unsharp { rx, ry, amount: sharpen.max(-1.0), threshold: 0.0 });
                 }
+                if ops.len() == 1 { ops.remove(0) } else { FxOp::Chain(ops) }
             }
             "mosaic" => {
                 // Softness blends towards an interpolation of the blocks: the CPU does that
@@ -765,6 +777,12 @@ impl FxOp {
                 fin(&[*temp, *tint, *exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *vib, *faded, *va, *vmid, *vround, *vfeather, *aspect])
                     && *aspect > 0.0
                     && extra.as_ref().is_none_or(|x| x.finite())
+            }
+            FxOp::HslSecondary(h) => {
+                fin(&[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft, h.htemp, h.htint, h.hsat, h.hshift, h.denoise])
+                    && h.median_r <= HSL_MEDIAN_MAX
+                    && h.show_mask <= 3
+                    && h.working == filmcraft_color::WorkingSpace::Rec709
             }
             FxOp::Chain(ops) => ops.iter().all(FxOp::gpu_ok),
         }
@@ -1084,6 +1102,7 @@ impl FxOp {
                     }
                 });
             }
+            FxOp::HslSecondary(h) => h.apply(img),
             FxOp::Chain(ops) => {
                 for op in ops {
                     op.apply(img);

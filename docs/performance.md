@@ -28,7 +28,9 @@ Before, anything beyond Basic (wheels, curves, split tone, Looks) sent the whole
 the CPU. They are now part of the GPU Lumetri pass (curve tables in a storage buffer), matching the
 CPU grade within 1e-5 and the GPU within 1e-6 relative (`lumetri_hdr_tests`, `fx_tests`). Sharpen
 (an Unsharp pass chained after the grade) and the Input / Look LUTs (1D shaper and tetrahedral 3D
-cube in the same data buffer) followed; HSL Secondary and HDR working spaces still run on the CPU.
+cube in the same data buffer) followed, then HSL Secondary: key, median denoise (radius ≤ 3 px)
+and box blur passes beside the image, then the correction (`lumetri-hsl`: 38/154 and 36/156 →
+192/0 twice, UI p95 20 → 12 ms). HDR working spaces still run on the CPU.
 ## Results (Windows: Media Foundation read-back, before → after)
 
 `cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw on|off` (release, GPU

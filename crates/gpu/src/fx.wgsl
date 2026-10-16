@@ -64,6 +64,9 @@ const OP_LUMETRI: u32 = 30u;
 const OP_MOSAIC: u32 = 31u;
 const OP_VIGNETTE: u32 = 32u;
 const OP_MASK: u32 = 33u;
+const OP_HSL_KEY: u32 = 34u;
+const OP_HSL_MEDIAN: u32 = 35u;
+const OP_HSL_APPLY: u32 = 36u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -657,6 +660,52 @@ fn lumetri_advanced(v0: vec3<f32>) -> vec3<f32> {
     }
     return v;
 }
+// ---------- Lumetri ▸ HSL Secondary (`effects::HslSecondary`) ----------
+
+// `effects::hsl_key` (key parameters in p0.x..p1.y: hue centre / range, saturation minimum,
+// lightness range, softness).
+fn hsl_secondary_key(v: vec3<f32>) -> f32 {
+    let hsl = rgb_to_hsl(v);
+    let hc = u.p0.x; let hr = u.p0.y; let smin = u.p0.z; let lmin = u.p0.w; let lmax = u.p1.x; let soft = u.p1.y;
+    let d = abs(hsl.x - hc);
+    let dh = min(d, 1.0 - d);
+    let mh = 1.0 - clamp((dh - hr / 2.0) / soft, 0.0, 1.0);
+    let ms = clamp((hsl.y - smin) / soft, 0.0, 1.0);
+    let ml = min(clamp((hsl.z - lmin) / soft, 0.0, 1.0), clamp((lmax - hsl.z) / soft, 0.0, 1.0));
+    return mh * ms * ml;
+}
+
+// `effects::median_filter`: the median of the window (shrunk at the edges), mixed into the key
+// by the Denoise amount.
+fn hsl_secondary_median(p: vec2<i32>) -> f32 {
+    let r = i32(u.i1.x);
+    let s = size();
+    var win: array<f32, 49>;
+    var n = 0u;
+    for (var y = max(p.y - r, 0); y < min(p.y + r + 1, s.y); y = y + 1) {
+        for (var x = max(p.x - r, 0); x < min(p.x + r + 1, s.x); x = x + 1) {
+            if n < 49u {
+                win[n] = ld(vec2<i32>(x, y)).x;
+                n = n + 1u;
+            }
+        }
+    }
+    // the (n / 2)-th smallest, by selection
+    let k = n / 2u;
+    for (var i = 0u; i <= k; i = i + 1u) {
+        var m = i;
+        for (var j = i + 1u; j < n; j = j + 1u) {
+            if win[j] < win[m] {
+                m = j;
+            }
+        }
+        let t = win[i];
+        win[i] = win[m];
+        win[m] = t;
+    }
+    let c = ld(p).x;
+    return c + (win[k] - c) * u.p0.x;
+}
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
@@ -813,7 +862,51 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             let e = enc(o.rgb / a);
             return vec4(dec(e + (u.p1.xyz - e) * (edge * u.p0.x)) * a, a);
         }
-        case OP_LUMETRI: {
+        case OP_HSL_KEY: {
+            let o = ld(p);
+            if o.a <= 1e-6 {
+                return vec4<f32>(0.0);
+            }
+            let k = hsl_secondary_key(clamp(enc(o.rgb / o.a), vec3<f32>(0.0), vec3<f32>(1.0)));
+            return vec4<f32>(k);
+        }
+        case OP_HSL_MEDIAN: {
+            return vec4<f32>(hsl_secondary_median(p));
+        }
+        case OP_HSL_APPLY: {
+            // src: the key, aux: the image
+            let o = textureLoad(aux, p, 0);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let m = ld(p).x;
+            let uu = clamp(enc(o.rgb / a), vec3<f32>(0.0), vec3<f32>(1.0));
+            var out: vec3<f32>;
+            switch u.i1.x {
+                case 1u: {
+                    let g = rgb_to_hsl(uu).z;
+                    out = vec3<f32>(g) + (uu - vec3<f32>(g)) * m;
+                }
+                case 2u: {
+                    out = uu * m;
+                }
+                case 3u: {
+                    out = vec3<f32>(m);
+                }
+                default: {
+                    var hh = rgb_to_hsl(uu);
+                    hh.x = fract_euclid(hh.x + u.p0.w);
+                    hh.y = clamp(hh.y * u.p0.z, 0.0, 1.0);
+                    var c2 = hsl_to_rgb(hh.x, hh.y, hh.z);
+                    c2.x = c2.x * (1.0 + 0.25 * u.p0.x);
+                    c2.z = c2.z * (1.0 - 0.25 * u.p0.x);
+                    c2.y = c2.y * (1.0 - 0.2 * u.p0.y);
+                    out = uu + (c2 - uu) * m;
+                }
+            }
+            return vec4(dec(out) * a, a);
+        }        case OP_LUMETRI: {
             let o = ld(p);
             let a = o.a;
             if a <= 1e-6 {

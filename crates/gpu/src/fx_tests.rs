@@ -212,6 +212,29 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("lumetri", vec![("vignette_amount", fl(-50.0)), ("vignette_midpoint", fl(40.0)), ("vignette_feather", fl(60.0))], false),
         // beyond Basic: split tone, Looks, color wheels, RGB and hue curves, Sharpen
         ("lumetri", vec![("sharpen", fl(60.0))], false),
+        // HSL Secondary: key, denoise (median), blur, correction and the mask views
+        (
+            "lumetri",
+            vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(30.0)), ("hsl_hue_range", fl(90.0)), ("hsl_sat", fl(160.0)), ("hsl_temp", fl(-30.0))],
+            false,
+        ),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(200.0)), ("hsl_hue_shift", fl(40.0)), ("hsl_denoise", fl(60.0))], false),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(120.0)), ("hsl_tint", fl(25.0)), ("hsl_blur", fl(30.0))], false),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_denoise", fl(100.0)), ("hsl_blur", fl(10.0)), ("hsl_sat", fl(0.0))], false),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_show_mask", ParamValue::Choice(1)), ("hsl_blur", fl(20.0))], false),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_show_mask", ParamValue::Choice(2))], false),
+        ("lumetri", vec![("hsl_on", ParamValue::Bool(true)), ("hsl_show_mask", ParamValue::Choice(3)), ("hsl_denoise", fl(40.0))], false),
+        (
+            "lumetri",
+            vec![
+                ("hsl_on", ParamValue::Bool(true)),
+                ("hsl_hue", fl(30.0)),
+                ("exposure", fl(0.4)),
+                ("curve_luma", curve(&[[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])),
+                ("sharpen", fl(30.0)),
+            ],
+            false,
+        ),
         ("lumetri", vec![("input_lut", ParamValue::Text(builtin_lut("-to-rec709")))], false),
         ("lumetri", vec![("look_lut", ParamValue::Text(builtin_lut("look-"))), ("look_intensity", fl(75.0)), ("contrast", fl(10.0))], false),
         ("lumetri", vec![("sharpen", fl(-40.0)), ("contrast", fl(15.0)), ("curve_luma", curve(&[[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]))], false),

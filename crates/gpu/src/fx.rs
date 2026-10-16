@@ -60,6 +60,9 @@ const OP_LUMETRI: u32 = 30;
 const OP_MOSAIC: u32 = 31;
 const OP_VIGNETTE: u32 = 32;
 const OP_MASK: u32 = 33;
+const OP_HSL_KEY: u32 = 34;
+const OP_HSL_MEDIAN: u32 = 35;
+const OP_HSL_APPLY: u32 = 36;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -244,6 +247,24 @@ fn steps(op: &FxOp) -> Vec<Step> {
             );
             s.data = data;
             out.push(s);
+        }
+        FxOp::HslSecondary(h) => {
+            // the key (and its refinement) is made beside the image, which stays untouched until
+            // the apply pass reads it back (as Unsharp keeps its original)
+            let mut key = vec![step(OP_HSL_KEY, [0; 4], &[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft])];
+            if h.median_r > 0 {
+                key.push(step(OP_HSL_MEDIAN, [h.median_r as u32, 0, 0, 0], &[h.denoise.min(1.0)]));
+            }
+            let radii: Vec<u32> = h.blur_radii.iter().map(|r| *r as u32).collect();
+            boxes(&radii, false, true, &mut key);
+            boxes(&radii, true, true, &mut key);
+            for s in &mut key {
+                s.unsharp_blur = true;
+            }
+            out.append(&mut key);
+            let mut apply = step(OP_HSL_APPLY, [h.show_mask, 0, 0, 0], &[h.htemp, h.htint, h.hsat, h.hshift]);
+            apply.combine = true;
+            out.push(apply);
         }
         FxOp::Chain(ops) => {
             for op in ops {

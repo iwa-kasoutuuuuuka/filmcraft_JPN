@@ -164,6 +164,7 @@ pub fn playback(o: &Opts) -> Vec<Value> {
         ("stack3-blend", "full", 1.0, false),
         ("stack3-fx", "full", 1.0, false),
         ("lumetri-grade", "full", 1.0, false),
+        ("lumetri-hsl", "full", 1.0, false),
         ("h264-2160", "full", 1.0, false),
         ("h264-2160", "half", 0.5, false),
         ("h264-2160", "half draft", 0.5, true),
