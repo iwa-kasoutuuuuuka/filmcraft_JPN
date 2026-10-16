@@ -245,6 +245,11 @@ fn steps(op: &FxOp) -> Vec<Step> {
             s.data = data;
             out.push(s);
         }
+        FxOp::Chain(ops) => {
+            for op in ops {
+                out.extend(steps(op));
+            }
+        }
     }
     out
 }
@@ -459,7 +464,10 @@ impl FxStage {
                 (init(&infos), init(&pts))
             });
             let data_buffer = s.data.as_ref().map(|d| {
-                let bytes: Vec<u8> = d.iter().flat_map(|v| v.to_le_bytes()).collect();
+                let mut bytes: Vec<u8> = d.iter().flat_map(|v| v.to_le_bytes()).collect();
+                // the shader reads the data as `array<vec2<f32>>`: an odd last float would be out
+                // of bounds (read as 0); whole 16-byte units keep every float addressable
+                bytes.resize(bytes.len().div_ceil(16) * 16, 0);
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("fx-data"), contents: &bytes, usage: wgpu::BufferUsages::STORAGE })
             });
             let (infos, pts) = match (&mask_buffers, &data_buffer) {

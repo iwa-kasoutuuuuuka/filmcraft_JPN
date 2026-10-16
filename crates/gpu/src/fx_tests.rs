@@ -210,7 +210,11 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("lumetri", vec![("highlights", fl(40.0)), ("shadows", fl(-30.0)), ("whites", fl(20.0)), ("blacks", fl(-10.0)), ("saturation", fl(130.0))], false),
         ("lumetri", vec![("faded_film", fl(25.0)), ("vibrance", fl(40.0))], false),
         ("lumetri", vec![("vignette_amount", fl(-50.0)), ("vignette_midpoint", fl(40.0)), ("vignette_feather", fl(60.0))], false),
-        // beyond Basic: split tone, Looks, color wheels, RGB and hue curves
+        // beyond Basic: split tone, Looks, color wheels, RGB and hue curves, Sharpen
+        ("lumetri", vec![("sharpen", fl(60.0))], false),
+        ("lumetri", vec![("input_lut", ParamValue::Text(builtin_lut("-to-rec709")))], false),
+        ("lumetri", vec![("look_lut", ParamValue::Text(builtin_lut("look-"))), ("look_intensity", fl(75.0)), ("contrast", fl(10.0))], false),
+        ("lumetri", vec![("sharpen", fl(-40.0)), ("contrast", fl(15.0)), ("curve_luma", curve(&[[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]))], false),
         ("lumetri", vec![("shadow_tint", col(0.3, 0.5, 0.8)), ("highlight_tint", col(0.8, 0.6, 0.4))], false),
         ("lumetri", vec![("look", ParamValue::Choice(1)), ("look_intensity", fl(80.0))], false),
         ("lumetri", vec![("look", ParamValue::Choice(4))], false),
@@ -247,6 +251,12 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             false,
         ),
     ]
+}
+
+/// The id (uiltin:…) of the first built-in LUT whose id contains part.
+fn builtin_lut(part: &str) -> String {
+    let b = filmcraft_render::luts::builtins().iter().find(|b| b.id.contains(part)).unwrap_or_else(|| panic!("no built-in LUT {part}"));
+    format!("builtin:{}", b.id)
 }
 
 fn curve(points: &[[f32; 2]]) -> ParamValue {
@@ -644,5 +654,39 @@ fn mosaic_and_vignette_references_are_the_cpu_effects() {
             op.apply(&mut img);
             assert!(img.px.iter().all(|v| v.is_finite()), "{bx} x {by} blocks on {w}x{h}");
         }
+    }
+}
+
+/// A project LUT with a 1D shaper and a 3D cube (non-unit domains), as Input and Look LUT: the
+/// GPU Lumetri pass against its CPU twin.
+#[test]
+fn lumetri_shaper_and_cube_luts_on_the_gpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    use filmcraft_color::{Lut, Lut1d, Lut3d};
+    let shaper = Lut1d { domain_min: [0.0; 3], domain_max: [1.0; 3], data: (0..9).map(|i| [((i as f32) / 8.0).sqrt(); 3]).collect() };
+    let mut cube = Lut3d::from_fn(9, |c| [c[1] * 0.9 + 0.05, c[2], c[0] * 0.8 + 0.1]);
+    cube.domain_max = [1.2; 3];
+    let lut = Lut { title: "t".into(), shaper: Some(shaper), cube: Some(cube) };
+    let mut p = filmcraft_project::Project::new("t");
+    p.luts.push(filmcraft_project::ProjectLut { id: "s".into(), name: "s".into(), source_path: None, format: "cube".into(), text: lut.to_cube().into() });
+    let p: &'static filmcraft_project::Project = Box::leak(Box::new(p));
+    let cx = FxCtx { project: Some(p), ..cx(Tick::ZERO, 1.0) };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    for params in [vec![("input_lut", ParamValue::Text("lib:s".into()))], vec![("look_lut", ParamValue::Text("lib:s".into())), ("look_intensity", fl(100.0))]] {
+        let e = effect("lumetri", &params);
+        let op = FxOp::eval(&e, &cx, w as usize, h as usize).expect("GPU op");
+        assert!(op.gpu_ok());
+        let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+        op.apply(&mut cpu);
+        let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op], ..Default::default() };
+        let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
+        let (worst, flips) = compare(&cpu.px, &gpu);
+        assert!(worst <= TRANSCENDENTAL && flips == 0.0, "{params:?}: {worst:.2e}, flips {flips}");
     }
 }

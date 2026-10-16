@@ -191,6 +191,8 @@ fn gpu_twin_grades_as_lumetri_with_wheels_curves_and_looks() {
     let cases: Vec<Vec<(&str, ParamValue)>> = vec![
         vec![("shadow_tint", ParamValue::Color([0.3, 0.5, 0.8, 1.0])), ("highlight_tint", ParamValue::Color([0.8, 0.6, 0.4, 1.0]))],
         vec![("look", ParamValue::Choice(3)), ("look_intensity", F(70.0))],
+        vec![("sharpen", F(60.0)), ("wheel_shadows", ParamValue::Vec2(Vec2::new(0.1, 0.2)))],
+        vec![("sharpen", F(-40.0))],
         vec![
             ("wheel_shadows", ParamValue::Vec2(Vec2::new(0.3, -0.2))),
             ("wheel_highlights", ParamValue::Vec2(Vec2::new(0.5, 0.1))),
@@ -208,7 +210,16 @@ fn gpu_twin_grades_as_lumetri_with_wheels_curves_and_looks() {
             ("vignette_amount", F(-40.0)),
         ],
     ];
-    let c = cx(WorkingSpace::Rec709);
+    // a project LUT with a 1D shaper and a 3D cube, as Input and as Look LUT
+    let shaper = filmcraft_color::Lut1d { domain_min: [0.0; 3], domain_max: [1.0; 3], data: (0..9).map(|i| [((i as f32) / 8.0).sqrt(); 3]).collect() };
+    let cube = filmcraft_color::Lut3d::from_fn(9, |c| [c[1] * 0.9 + 0.05, c[2], c[0] * 0.8 + 0.1]);
+    let lut = filmcraft_color::Lut { title: "t".into(), shaper: Some(shaper), cube: Some(cube) };
+    let mut p = filmcraft_project::Project::new("t");
+    p.luts.push(filmcraft_project::ProjectLut { id: "s".into(), name: "s".into(), source_path: None, format: "cube".into(), text: lut.to_cube().into() });
+    let mut cases = cases;
+    cases.push(vec![("input_lut", ParamValue::Text("lib:s".into())), ("exposure", F(0.3))]);
+    cases.push(vec![("look_lut", ParamValue::Text("lib:s".into())), ("look_intensity", F(80.0)), ("wheel_midtones", ParamValue::Vec2(Vec2::new(0.1, 0.1)))]);
+    let c = FxCtx { project: Some(&p), ..cx(WorkingSpace::Rec709) };
     for params in cases {
         let e = lumetri(&params);
         let mut want = Image::new(23, 9);

@@ -443,8 +443,9 @@ fn mask_coverage(p: vec2<f32>) -> f32 {
 
 // One output pixel of every op but the running-sum box blur.
 // ---------- Lumetri beyond Basic (`LumetriExtra` in filmcraft_render::gpufx) ----------
-// Data (bound where the mask points go): 32 header floats (split tone 0..6, wheels 8..20, look
-// intensity 20), then the 1024-sample curve tables at 32 + k * 1024.
+// Data (bound where the mask points go): 64 header floats (split tone 0..6, wheels 8..20, look
+// intensity 20, the input / look LUT descriptions at 24 and 42), the 1024-sample curve tables at
+// 64 + k * 1024, then the LUT tables.
 
 const LUMETRI_CURVE_N: u32 = 1024u;
 
@@ -462,13 +463,88 @@ fn lumetri_has_curve(k: u32) -> bool {
 
 // `sample` of the CPU grade: linear interpolation over the table, input clamped to 0..1.
 fn lumetri_curve(k: u32, x: f32) -> f32 {
-    let base = 32u + k * LUMETRI_CURVE_N;
+    let base = 64u + k * LUMETRI_CURVE_N;
     let pos = clamp(x, 0.0, 1.0) * f32(LUMETRI_CURVE_N - 1u);
     let i = u32(pos);
     let j = min(i + 1u, LUMETRI_CURVE_N - 1u);
     let a = lumetri_data(base + i);
     let b = lumetri_data(base + j);
     return a + (b - a) * (pos - f32(i));
+}
+
+// A LUT entry (r, g, b) at `off`.
+fn lumetri_rgb(off: u32) -> vec3<f32> {
+    return vec3<f32>(lumetri_data(off), lumetri_data(off + 1u), lumetri_data(off + 2u));
+}
+
+// `Lut1d::apply`: per-channel linear interpolation over the shaper of the LUT described at `at`.
+fn lumetri_lut1d(at: u32, c: vec3<f32>) -> vec3<f32> {
+    let n = u32(lumetri_data(at + 1u)) - 1u;
+    let off = u32(lumetri_data(at + 2u));
+    let lo = lumetri_rgb(at + 3u);
+    let hi = lumetri_rgb(at + 6u);
+    var o = vec3<f32>(0.0);
+    for (var k = 0u; k < 3u; k = k + 1u) {
+        let t = clamp((c[k] - lo[k]) / (hi[k] - lo[k]), 0.0, 1.0) * f32(n);
+        let i = min(u32(t), max(n, 1u) - 1u);
+        let f = t - f32(i);
+        let a = lumetri_data(off + i * 3u + k);
+        let b = lumetri_data(off + min(i + 1u, n) * 3u + k);
+        o[k] = a + (b - a) * f;
+    }
+    return o;
+}
+
+// `Lut3d::apply`: tetrahedral interpolation in the cube of the LUT described at `at`.
+fn lumetri_lut3d(at: u32, c: vec3<f32>) -> vec3<f32> {
+    let n = u32(lumetri_data(at + 9u));
+    let off = u32(lumetri_data(at + 10u));
+    let lo = lumetri_rgb(at + 11u);
+    let hi = lumetri_rgb(at + 14u);
+    let t = clamp((c - lo) / (hi - lo), vec3<f32>(0.0), vec3<f32>(1.0)) * f32(n - 1u);
+    let i = min(vec3<u32>(t), vec3<u32>(n - 2u));
+    let fr = t.x - f32(i.x);
+    let fg = t.y - f32(i.y);
+    let fb = t.z - f32(i.z);
+    let c000 = lumetri_rgb(off + (i.x + i.y * n + i.z * n * n) * 3u);
+    let c111 = lumetri_rgb(off + ((i.x + 1u) + (i.y + 1u) * n + (i.z + 1u) * n * n) * 3u);
+    var ca: vec3<f32>;
+    var cb: vec3<f32>;
+    var w: vec4<f32>;
+    let r1 = i.x + 1u;
+    let g1 = (i.y + 1u) * n;
+    let b1 = (i.z + 1u) * n * n;
+    let r0 = i.x;
+    let g0 = i.y * n;
+    let b0 = i.z * n * n;
+    if fr > fg {
+        if fg > fb {
+            ca = lumetri_rgb(off + (r1 + g0 + b0) * 3u); cb = lumetri_rgb(off + (r1 + g1 + b0) * 3u); w = vec4(1.0 - fr, fr - fg, fg - fb, fb);
+        } else if fr > fb {
+            ca = lumetri_rgb(off + (r1 + g0 + b0) * 3u); cb = lumetri_rgb(off + (r1 + g0 + b1) * 3u); w = vec4(1.0 - fr, fr - fb, fb - fg, fg);
+        } else {
+            ca = lumetri_rgb(off + (r0 + g0 + b1) * 3u); cb = lumetri_rgb(off + (r1 + g0 + b1) * 3u); w = vec4(1.0 - fb, fb - fr, fr - fg, fg);
+        }
+    } else if fb > fg {
+        ca = lumetri_rgb(off + (r0 + g0 + b1) * 3u); cb = lumetri_rgb(off + (r0 + g1 + b1) * 3u); w = vec4(1.0 - fb, fb - fg, fg - fr, fr);
+    } else if fb > fr {
+        ca = lumetri_rgb(off + (r0 + g1 + b0) * 3u); cb = lumetri_rgb(off + (r0 + g1 + b1) * 3u); w = vec4(1.0 - fg, fg - fb, fb - fr, fr);
+    } else {
+        ca = lumetri_rgb(off + (r0 + g1 + b0) * 3u); cb = lumetri_rgb(off + (r1 + g1 + b0) * 3u); w = vec4(1.0 - fg, fg - fr, fr - fb, fb);
+    }
+    return w.x * c000 + w.y * ca + w.z * cb + w.w * c111;
+}
+
+// `Lut::apply` of the LUT described at `at`: its shaper, then its cube.
+fn lumetri_lut(at: u32, c0: vec3<f32>) -> vec3<f32> {
+    var c = c0;
+    if lumetri_data(at) > 0.5 {
+        c = lumetri_lut1d(at, c);
+    }
+    if lumetri_data(at + 9u) > 1.5 {
+        c = lumetri_lut3d(at, c);
+    }
+    return c;
 }
 
 fn look_s_curve(v: f32, k: f32) -> f32 {
@@ -521,7 +597,10 @@ fn lumetri_look(look: u32, c: vec3<f32>) -> vec3<f32> {
 fn lumetri_advanced(v0: vec3<f32>) -> vec3<f32> {
     var v = v0;
     let look = u.i1.y;
-    if look > 0u {
+    if (u.i1.x & (1u << 12u)) != 0u {
+        let lk = lumetri_lut(42u, clamp(v, vec3<f32>(0.0), vec3<f32>(1.0)));
+        v = v + (lk - v) * lumetri_data(20u);
+    } else if look > 0u {
         let lk = lumetri_look(look, v);
         v = v + (lk - v) * lumetri_data(20u);
     }
@@ -740,7 +819,11 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             if a <= 1e-6 {
                 return o;
             }
-            let c = o.rgb / a;
+            var c = o.rgb / a;
+            // Basic ▸ Input LUT, first (on the display-encoded value, clamped to 0..1)
+            if (u.i1.x & (1u << 11u)) != 0u {
+                c = dec(lumetri_lut(24u, clamp(enc(c), vec3<f32>(0.0), vec3<f32>(1.0))));
+            }
             let temp = u.p0.x;
             let tint = u.p0.y;
             let exposure = u.p0.z;
@@ -829,7 +912,7 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             }
 
             // the Advanced stage (Look, wheels, curves) reads the pixel the Basic stage wrote
-            if u.i1.y > 0u || (u.i1.x & ~1u) != 0u {
+            if u.i1.y > 0u || (u.i1.x & ~(1u | (1u << 11u))) != 0u {
                 v = lumetri_advanced(enc(dec(v)));
             }
             return vec4(dec(v) * a, a);
