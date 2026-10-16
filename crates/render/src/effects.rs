@@ -328,27 +328,8 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 }
             });
         }
-        "ultra_key" | "color_key" => key(img, e, cx),
-        "luma_key" => {
-            let th = f(e, "threshold", cx) / 100.0;
-            let cut = f(e, "cutoff", cx) / 100.0;
-            img.px.par_chunks_mut(4).for_each(|p| {
-                if p[3] <= 0.0 {
-                    return;
-                }
-                let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
-                let a = if l <= cut {
-                    0.0
-                } else if l >= th.max(cut + 1e-3) {
-                    1.0
-                } else {
-                    (l - cut) / (th - cut).max(1e-3)
-                };
-                for v in p.iter_mut() {
-                    *v *= a;
-                }
-            });
-        }
+        "color_key" => key(img, e, cx),
+        "luma_key" => luma_key(img, f(e, "threshold", cx) / 100.0, f(e, "cutoff", cx) / 100.0),
         "four_color_gradient" => {
             let cs = [color(e, "c1", cx), color(e, "c2", cx), color(e, "c3", cx), color(e, "c4", cx)];
             let op = f(e, "opacity", cx) / 100.0;
@@ -557,53 +538,66 @@ pub(crate) fn crop_px(img: &mut Image, x0: f32, x1: f32, y0: f32, y1: f32, fe: f
 }
 
 pub(crate) fn key(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let ultra = e.effect == "ultra_key";
-    let kc = if ultra { color(e, "key_color", cx) } else { color(e, "color", cx) };
-    let kycc = filmcraft_color::rgb_to_ycbcr(kc[0], kc[1], kc[2], filmcraft_color::Matrix::Bt709);
-    let (tol, soft, spill, output) = if ultra {
-        let tol = 0.05 + f(e, "tolerance", cx) / 100.0 * 0.25 + f(e, "transparency", cx) / 100.0 * 0.05;
-        (tol, 0.05 + f(e, "soften", cx) / 100.0 * 0.2 + f(e, "pedestal", cx) / 100.0 * 0.05, f(e, "spill", cx) / 100.0, choice(e, "output"))
-    } else {
-        (f(e, "tolerance", cx) / 255.0 * 0.6 + 0.01, f(e, "feather", cx) / 50.0 * 0.2 + 0.01, 0.0, 0)
-    };
-    let dom = if kc[1] >= kc[0] && kc[1] >= kc[2] {
-        1
-    } else if kc[2] >= kc[0] {
-        2
-    } else {
-        0
-    };
+    Key::from_effect(e, cx).apply(img);
+}
+
+/// Color Key, evaluated (also the CPU twin of its GPU pass, `gpufx::FxOp::Key`): distance to the key
+/// colour in Y′CbCr (Rec. 709) against a tolerance and feather. (Ultra Key is `vfx::color::ultra_key`,
+/// CPU only: its matte cleanup blurs the alpha.)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Key {
+    /// The key colour in Y′CbCr.
+    pub kycc: [f32; 3],
+    pub tol: f32,
+    pub soft: f32,
+}
+
+impl Key {
+    pub fn from_effect(e: &EffectInstance, cx: &FxCtx) -> Self {
+        let kc = color(e, "color", cx);
+        let kycc = filmcraft_color::rgb_to_ycbcr(kc[0], kc[1], kc[2], filmcraft_color::Matrix::Bt709);
+        Self { kycc, tol: f(e, "tolerance", cx) / 255.0 * 0.6 + 0.01, soft: f(e, "feather", cx) / 50.0 * 0.2 + 0.01 }
+    }
+
+    pub fn apply(&self, img: &mut Image) {
+        let Self { kycc, tol, soft } = *self;
+        img.px.par_chunks_mut(4).for_each(|p| {
+            if p[3] <= 0.0 {
+                return;
+            }
+            let c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
+            let ycc = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
+            let d = ((ycc[1] - kycc[1]).powi(2) + (ycc[2] - kycc[2]).powi(2)).sqrt() + (ycc[0] - kycc[0]).abs() * 0.15;
+            let a = p[3] * ((d - tol) / soft).clamp(0.0, 1.0);
+            let lo = dec(c);
+            p[0] = lo[0] * a;
+            p[1] = lo[1] * a;
+            p[2] = lo[2] * a;
+            p[3] = a;
+        });
+    }
+}
+
+/// Luma Key: transparent at or below `cut` (display-encoded luma, 0…1), opaque from `th` up, a
+/// ramp between (also the CPU twin of `gpufx::FxOp::LumaKey`).
+pub fn luma_key(img: &mut Image, th: f32, cut: f32) {
     img.px.par_chunks_mut(4).for_each(|p| {
         if p[3] <= 0.0 {
             return;
         }
-        let c = enc([p[0] / p[3], p[1] / p[3], p[2] / p[3]]);
-        let ycc = filmcraft_color::rgb_to_ycbcr(c[0], c[1], c[2], filmcraft_color::Matrix::Bt709);
-        let d = ((ycc[1] - kycc[1]).powi(2) + (ycc[2] - kycc[2]).powi(2)).sqrt() + (ycc[0] - kycc[0]).abs() * 0.15;
-        let alpha = ((d - tol) / soft).clamp(0.0, 1.0);
-        let mut o = c;
-        if spill > 0.0 {
-            let others = (o[(dom + 1) % 3] + o[(dom + 2) % 3]) / 2.0;
-            if o[dom] > others {
-                o[dom] -= (o[dom] - others) * spill;
-            }
-        }
-        let a = p[3] * alpha;
-        let lo = dec(o);
-        match output {
-            1 => {
-                p.copy_from_slice(&[alpha * p[3], alpha * p[3], alpha * p[3], p[3]]);
-            }
-            _ => {
-                p[0] = lo[0] * a;
-                p[1] = lo[1] * a;
-                p[2] = lo[2] * a;
-                p[3] = a;
-            }
+        let l = linear_to_srgb(luma709(p[0] / p[3], p[1] / p[3], p[2] / p[3]).max(0.0));
+        let a = if l <= cut {
+            0.0
+        } else if l >= th.max(cut + 1e-3) {
+            1.0
+        } else {
+            (l - cut) / (th - cut).max(1e-3)
+        };
+        for v in p.iter_mut() {
+            *v *= a;
         }
     });
 }
-
 /// The grading signal of the effect's section: HDR White (`white_id`) applies in HDR working
 /// spaces only.
 fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> GradeSpace {

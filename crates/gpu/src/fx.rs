@@ -63,6 +63,9 @@ const OP_MASK: u32 = 33;
 const OP_HSL_KEY: u32 = 34;
 const OP_HSL_MEDIAN: u32 = 35;
 const OP_HSL_APPLY: u32 = 36;
+const OP_KEY: u32 = 37;
+const OP_LUMA_KEY: u32 = 38;
+const OP_VIDEO_LIMITER: u32 = 39;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -247,6 +250,12 @@ fn steps(op: &FxOp) -> Vec<Step> {
             );
             s.data = data;
             out.push(s);
+        }
+        FxOp::Key(k) => out.push(step(OP_KEY, [0; 4], &[k.kycc[0], k.kycc[1], k.kycc[2], k.tol, k.soft])),
+        FxOp::LumaKey { th, cut } => out.push(step(OP_LUMA_KEY, [0; 4], &[*th, *cut])),
+        FxOp::VideoLimiter(v) => {
+            let w = v.warning.unwrap_or_default();
+            out.push(step(OP_VIDEO_LIMITER, [v.axis, v.warning.is_some() as u32, 0, 0], &[v.max, v.comp, 0.0, 0.0, w[0], w[1], w[2]]));
         }
         FxOp::HslSecondary(h) => {
             // the key (and its refinement) is made beside the image, which stays untouched until

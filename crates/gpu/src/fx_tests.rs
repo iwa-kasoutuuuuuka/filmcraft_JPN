@@ -25,7 +25,8 @@ const EXACT: f32 = 1e-4;
 /// error (measured up to 1.8e-3 relative on Windows / D3D12), so they get a wider bound than the
 /// arithmetic-only effects, which stay at `EXACT`.
 const TRANSCENDENTAL: f32 = 4e-3;
-const TRANSCENDENTAL_EFFECTS: &[&str] = &["proc_amp", "gamma_correction", "extract", "invert", "sharpen", "color_replace", "lumetri", "vignette"];
+const TRANSCENDENTAL_EFFECTS: &[&str] =
+    &["proc_amp", "gamma_correction", "extract", "invert", "sharpen", "color_replace", "lumetri", "vignette", "color_key", "luma_key", "video_limiter"];
 const FLIPS: f64 = 0.01;
 
 fn tolerance(id: &str) -> f32 {
@@ -212,6 +213,18 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("lumetri", vec![("vignette_amount", fl(-50.0)), ("vignette_midpoint", fl(40.0)), ("vignette_feather", fl(60.0))], false),
         // beyond Basic: split tone, Looks, color wheels, RGB and hue curves, Sharpen
         ("lumetri", vec![("sharpen", fl(60.0))], false),
+        // keys
+        ("color_key", vec![("color", col(0.2, 0.7, 0.3)), ("tolerance", fl(60.0)), ("feather", fl(10.0))], false),
+        ("color_key", vec![("color", col(1.0, 1.0, 1.0)), ("tolerance", fl(20.0))], false),
+        ("luma_key", vec![("threshold", fl(60.0)), ("cutoff", fl(20.0))], false),
+        ("luma_key", vec![("threshold", fl(10.0)), ("cutoff", fl(40.0))], false),
+        // Video Limiter: every axis, compression knees, clip level and the gamut warning
+        ("video_limiter", vec![], false),
+        ("video_limiter", vec![("axis", ParamValue::Choice(0)), ("compression", ParamValue::Choice(4))], false),
+        ("video_limiter", vec![("axis", ParamValue::Choice(1)), ("compression", ParamValue::Choice(0))], false),
+        ("video_limiter", vec![("axis", ParamValue::Choice(2)), ("clip_level", ParamValue::Choice(5)), ("compression", ParamValue::Choice(3))], false),
+        ("video_limiter", vec![("axis", ParamValue::Choice(3)), ("clip_level", ParamValue::Choice(9)), ("compression", ParamValue::Choice(0))], false),
+        ("video_limiter", vec![("gamut_warning", ParamValue::Bool(true)), ("warning_color", col(0.0, 1.0, 0.5))], true),
         // HSL Secondary: key, denoise (median), blur, correction and the mask views
         (
             "lumetri",

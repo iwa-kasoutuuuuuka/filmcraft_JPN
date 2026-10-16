@@ -194,6 +194,15 @@ pub enum FxOp {
         /// Split tone, Look, color wheels and curves (`None`: none of them is in use).
         extra: Option<Box<LumetriExtra>>,
     },
+    /// Ultra Key / Color Key.
+    Key(crate::effects::Key),
+    /// Video Limiter.
+    VideoLimiter(VideoLimiter),
+    /// Luma Key: threshold and cutoff (display-encoded luma).
+    LumaKey {
+        th: f32,
+        cut: f32,
+    },
     /// Lumetri ▸ HSL Secondary: key, refine (median, blur), correct (or show the mask).
     HslSecondary(Box<crate::effects::HslSecondary>),
     /// Several operations of one effect, in order (Lumetri, then its Sharpen).
@@ -367,12 +376,17 @@ impl LumetriExtra {
     }
 }
 
+pub use crate::vfx::color::VideoLimiter;
+
 /// Widest HSL Secondary denoise median the GPU pass takes (radius in px; 7 × 7 window).
 pub const HSL_MEDIAN_MAX: usize = 3;
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
 pub const GPU_EFFECTS: &[&str] = &[
     "lumetri",
+    "color_key",
+    "luma_key",
+    "video_limiter",
     "mosaic",
     "vignette",
     "brightness_contrast",
@@ -709,6 +723,9 @@ impl FxOp {
                 }
                 if ops.len() == 1 { ops.remove(0) } else { FxOp::Chain(ops) }
             }
+            "color_key" => FxOp::Key(crate::effects::Key::from_effect(e, cx)),
+            "video_limiter" => FxOp::VideoLimiter(crate::vfx::color::VideoLimiter::from_effect(e, cx)),
+            "luma_key" => FxOp::LumaKey { th: f(e, "threshold", cx) / 100.0, cut: f(e, "cutoff", cx) / 100.0 },
             "mosaic" => {
                 // Softness blends towards an interpolation of the blocks: the CPU does that
                 if crate::vfx::fv(e, "softness", cx).abs() > 1e-6 {
@@ -778,6 +795,9 @@ impl FxOp {
                     && *aspect > 0.0
                     && extra.as_ref().is_none_or(|x| x.finite())
             }
+            FxOp::Key(k) => fin(&k.kycc) && fin(&[k.tol, k.soft]) && k.soft > 0.0,
+            FxOp::LumaKey { th, cut } => fin(&[*th, *cut]),
+            FxOp::VideoLimiter(v) => fin(&[v.max, v.comp]) && v.max > 0.0 && v.warning.is_none_or(|w| fin(&w)),
             FxOp::HslSecondary(h) => {
                 fin(&[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft, h.htemp, h.htint, h.hsat, h.hshift, h.denoise])
                     && h.median_r <= HSL_MEDIAN_MAX
@@ -1102,6 +1122,9 @@ impl FxOp {
                     }
                 });
             }
+            FxOp::Key(k) => k.apply(img),
+            FxOp::LumaKey { th, cut } => crate::effects::luma_key(img, *th, *cut),
+            FxOp::VideoLimiter(v) => v.apply(img),
             FxOp::HslSecondary(h) => h.apply(img),
             FxOp::Chain(ops) => {
                 for op in ops {

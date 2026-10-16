@@ -113,20 +113,45 @@ pub(crate) fn cdl(c: [f32; 3], s: [f32; 3], o: [f32; 3], p: [f32; 3], sat: f32) 
 /// Video Limiter: keeps Y′CbCr (Rec. 709, display-encoded) within 0…Clip Level with an
 /// exponential soft knee that starts `compression` below the limit.
 pub fn video_limiter(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let max = 1.0 + chv(e, "clip_level") as f32 / 100.0;
-    let comp = [0.0, 0.03, 0.05, 0.10, 0.20][chv(e, "compression").min(4) as usize];
-    let axis = chv(e, "axis");
-    let warn = bv(e, "gamut_warning");
-    let wc = lin(cv(e, "warning_color", cx));
-    img.map_rgb(|c, _, _| {
-        let v = [linear_to_enc(c[0]), linear_to_enc(c[1]), linear_to_enc(c[2])];
-        let out = limit(v, max, comp, axis);
-        if warn && v.iter().zip(&out).any(|(a, b)| (a - b).abs() > 1e-4) {
-            return wc;
+    VideoLimiter::from_effect(e, cx).apply(img);
+}
+
+/// Video Limiter, evaluated (also the CPU twin of its GPU pass, `gpufx::FxOp::VideoLimiter`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VideoLimiter {
+    /// Clip level (display-encoded; 1 = 100 %).
+    pub max: f32,
+    /// Soft-knee width below the limit (0 = hard clip).
+    pub comp: f32,
+    /// 0 luma, 1 chroma, 2 both, 3 smart.
+    pub axis: u32,
+    /// Gamut warning: pixels the limiter changed show this (linear) colour.
+    pub warning: Option<[f32; 3]>,
+}
+
+impl VideoLimiter {
+    pub fn from_effect(e: &EffectInstance, cx: &FxCtx) -> Self {
+        Self {
+            max: 1.0 + chv(e, "clip_level") as f32 / 100.0,
+            comp: [0.0, 0.03, 0.05, 0.10, 0.20][chv(e, "compression").min(4) as usize],
+            axis: chv(e, "axis"),
+            warning: bv(e, "gamut_warning").then(|| lin(cv(e, "warning_color", cx))),
         }
-        dec_unclamped(out)
-    });
-    let _ = cx;
+    }
+
+    pub fn apply(&self, img: &mut Image) {
+        let Self { max, comp, axis, warning } = *self;
+        img.map_rgb(|c, _, _| {
+            let v = [linear_to_enc(c[0]), linear_to_enc(c[1]), linear_to_enc(c[2])];
+            let out = limit(v, max, comp, axis);
+            if let Some(wc) = warning
+                && v.iter().zip(&out).any(|(a, b)| (a - b).abs() > 1e-4)
+            {
+                return wc;
+            }
+            dec_unclamped(out)
+        });
+    }
 }
 
 /// sRGB encoding that keeps values above 1 (super-whites) instead of clamping them.
@@ -152,6 +177,11 @@ fn knee(v: f32, max: f32, comp: f32) -> f32 {
     k + r * (1.0 - (-(v - k) / r).exp())
 }
 
+/// Overshoot (in encoded units) below which a channel counts as inside the gamut: the Y′CbCr round
+/// trip leaves rounding noise around 0 and Clip Level, which must not trigger chroma reduction
+/// (Smart Limit's knee would otherwise take ~1% chroma off every pixel with a channel at exactly 0).
+const GAMUT_EPS: f32 = 1e-4;
+
 pub(crate) fn limit(v: [f32; 3], max: f32, comp: f32, axis: u32) -> [f32; 3] {
     let m = Matrix::Bt709;
     let ycc = rgb_to_ycbcr(v[0], v[1], v[2], m);
@@ -172,10 +202,10 @@ pub(crate) fn limit(v: [f32; 3], max: f32, comp: f32, axis: u32) -> [f32; 3] {
         let mut s = 1.0f32;
         for &ch in &rgb {
             let d = ch - y;
-            if ch > max && d > 1e-6 {
+            if ch > max + GAMUT_EPS && d > 1e-6 {
                 s = s.min(((max - y) / d).max(0.0));
             }
-            if ch < 0.0 && d < -1e-6 {
+            if ch < -GAMUT_EPS && d < -1e-6 {
                 s = s.min((y / -d).max(0.0));
             }
         }

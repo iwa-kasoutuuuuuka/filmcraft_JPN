@@ -67,6 +67,9 @@ const OP_MASK: u32 = 33u;
 const OP_HSL_KEY: u32 = 34u;
 const OP_HSL_MEDIAN: u32 = 35u;
 const OP_HSL_APPLY: u32 = 36u;
+const OP_KEY: u32 = 37u;
+const OP_LUMA_KEY: u32 = 38u;
+const OP_VIDEO_LIMITER: u32 = 39u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -706,6 +709,72 @@ fn hsl_secondary_median(p: vec2<i32>) -> f32 {
     let c = ld(p).x;
     return c + (win[k] - c) * u.p0.x;
 }
+// ---------- Video Limiter (`vfx::color::VideoLimiter`) ----------
+
+// sRGB encoding that keeps super-whites (above 1: a 1/2.4 slope) and its inverse.
+fn limiter_enc(v: f32) -> f32 {
+    if v <= 1.0 {
+        return linear_to_srgb1(max(v, 0.0));
+    }
+    return 1.0 + (v - 1.0) / 2.4;
+}
+fn limiter_dec(v: f32) -> f32 {
+    if v <= 1.0 {
+        return srgb_to_linear1(max(v, 0.0));
+    }
+    return 1.0 + (v - 1.0) * 2.4;
+}
+
+fn limiter_knee(v: f32, mx: f32, comp: f32) -> f32 {
+    let k = mx * (1.0 - comp);
+    if comp <= 0.0 || v <= k {
+        return min(v, mx);
+    }
+    let r = mx - k;
+    return k + r * (1.0 - exp(-(v - k) / r));
+}
+
+fn limiter_rgb(y: f32, cb: f32, cr: f32) -> vec3<f32> {
+    let kr = 0.2126;
+    let kb = 0.0722;
+    let r = y + 2.0 * (1.0 - kr) * cr;
+    let b = y + 2.0 * (1.0 - kb) * cb;
+    let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+    return vec3<f32>(r, g, b);
+}
+
+// `vfx::color::limit` (1e-4 = `GAMUT_EPS`)
+fn limiter_limit(v: vec3<f32>, mx: f32, comp: f32, axis: u32) -> vec3<f32> {
+    let kr = 0.2126;
+    let kb = 0.0722;
+    let kg = 1.0 - kr - kb;
+    var y = kr * v.x + kg * v.y + kb * v.z;
+    var cb = (v.z - y) / (2.0 * (1.0 - kb));
+    var cr = (v.x - y) / (2.0 * (1.0 - kr));
+    if axis != 1u {
+        y = limiter_knee(max(y, 0.0), mx, comp);
+    }
+    if axis != 0u {
+        let rgb = limiter_rgb(y, cb, cr);
+        var s = 1.0;
+        for (var k = 0u; k < 3u; k = k + 1u) {
+            let ch = rgb[k];
+            let d = ch - y;
+            if ch > mx + 1e-4 && d > 1e-6 {
+                s = min(s, max((mx - y) / d, 0.0));
+            }
+            if ch < -1e-4 && d < -1e-6 {
+                s = min(s, max(y / -d, 0.0));
+            }
+        }
+        if axis == 3u && s < 1.0 {
+            s = min(limiter_knee(s, 1.0, max(comp, 0.03)), 1.0);
+        }
+        cb = cb * s;
+        cr = cr * s;
+    }
+    return clamp(limiter_rgb(y, cb, cr), vec3<f32>(0.0), vec3<f32>(mx));
+}
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
@@ -906,7 +975,61 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 }
             }
             return vec4(dec(out) * a, a);
-        }        case OP_LUMETRI: {
+        }
+        case OP_KEY: {
+            // `effects::Key::apply`: distance to the key colour in Y'CbCr (Rec. 709)
+            let o = ld(p);
+            if o.a <= 0.0 {
+                return o;
+            }
+            let c = enc(o.rgb / o.a);
+            let kr = 0.2126;
+            let kb = 0.0722;
+            let kg = 1.0 - kr - kb;
+            let y = kr * c.x + kg * c.y + kb * c.z;
+            let cb = (c.z - y) / (2.0 * (1.0 - kb));
+            let cr = (c.x - y) / (2.0 * (1.0 - kr));
+            let k = u.p0.xyz;
+            let tol = u.p0.w;
+            let soft = u.p1.x;
+            let d = sqrt((cb - k.y) * (cb - k.y) + (cr - k.z) * (cr - k.z)) + abs(y - k.x) * 0.15;
+            let a = o.a * clamp((d - tol) / soft, 0.0, 1.0);
+            return vec4(dec(c) * a, a);
+        }
+        case OP_LUMA_KEY: {
+            // `effects::luma_key`
+            let o = ld(p);
+            if o.a <= 0.0 {
+                return o;
+            }
+            let th = u.p0.x;
+            let cut = u.p0.y;
+            let l = linear_to_srgb1(max(luma709(o.rgb / o.a), 0.0));
+            var a: f32;
+            if l <= cut {
+                a = 0.0;
+            } else if l >= max(th, cut + 1e-3) {
+                a = 1.0;
+            } else {
+                a = (l - cut) / max(th - cut, 1e-3);
+            }
+            return o * a;
+        }
+        case OP_VIDEO_LIMITER: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let c = o.rgb / a;
+            let v = vec3<f32>(limiter_enc(c.x), limiter_enc(c.y), limiter_enc(c.z));
+            let out = limiter_limit(v, u.p0.x, u.p0.y, u.i1.x);
+            if u.i1.y != 0u && any(abs(v - out) > vec3<f32>(1e-4)) {
+                return vec4(u.p1.xyz * a, a);
+            }
+            return vec4(vec3<f32>(limiter_dec(out.x), limiter_dec(out.y), limiter_dec(out.z)) * a, a);
+        }
+        case OP_LUMETRI: {
             let o = ld(p);
             let a = o.a;
             if a <= 1e-6 {

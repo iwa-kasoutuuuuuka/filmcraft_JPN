@@ -1552,3 +1552,17 @@ fn timecode_with_huge_size_is_bounded() {
     setf(&mut e, "size", 1e7);
     crate::effects::apply(&mut img, &e, &cx());
 }
+
+/// Legal colours with a channel at exactly 0 used to lose ~1% chroma under Smart Limit (rounding noise
+/// from the Y′CbCr round trip counted as out of gamut and went through the knee).
+#[test]
+fn video_limiter_leaves_legal_edge_colours_alone() {
+    for c in [[0.0, 0.0388, 0.2017], [0.0999, 0.0, 0.9116], [0.9116, 0.0, 0.0257]] {
+        let img = Image::filled(2, 2, [c[0], c[1], c[2], 1.0]);
+        let o = run("video_limiter", &inst("video_limiter"), &img, &cx());
+        let p = o.get(0, 0);
+        for k in 0..3 {
+            assert!((p[k] - c[k]).abs() < 1e-5, "{c:?} -> {p:?}");
+        }
+    }
+}

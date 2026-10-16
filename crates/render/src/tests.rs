@@ -412,3 +412,45 @@ fn draft_reduced_resolution_plans_carry_decimated_yuv() {
         }
     }
 }
+
+/// Every GPU-capable effect's CPU twin (`FxOp::apply`, what the GPU pass is tested against) must be
+/// what `effects::apply` actually renders, or GPU and CPU frames disagree (Ultra Key once went to the
+/// GPU with a simplified twin while the CPU ran the full `vfx::color::ultra_key`).
+#[test]
+fn gpu_effect_twins_match_the_cpu_path() {
+    let (w, h) = (23usize, 9usize);
+    let mut img = Image::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let f = x as f32 / (w - 1) as f32;
+            let c = match x % 4 {
+                0 => [f, 0.8 * (1.0 - f), 0.3],
+                1 => [1.4 * f, 1.1 * f, 0.2],
+                2 => [0.1, 0.75, 0.05],
+                _ => [f, f, f],
+            };
+            let a = [1.0, 0.6, 0.0][y % 3];
+            img.px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[c[0] * a, c[1] * a, c[2] * a, a]);
+        }
+    }
+    let cx = crate::effects::FxCtx {
+        t: Tick::ZERO,
+        px_scale: 1.0,
+        seconds: 0.0,
+        timecode: "",
+        clip_name: "",
+        project: None,
+        env: None,
+        working: filmcraft_color::WorkingSpace::Rec709,
+    };
+    for id in crate::gpufx::GPU_EFFECTS {
+        let e = filmcraft_project::find_effect(id).unwrap_or_else(|| panic!("{id}")).instance();
+        let Some(op) = crate::gpufx::FxOp::eval(&e, &cx, w, h) else { continue };
+        let mut twin = img.clone();
+        op.apply(&mut twin);
+        let mut cpu = img.clone();
+        crate::effects::apply(&mut cpu, &e, &cx);
+        let worst = twin.px.iter().zip(&cpu.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(worst < 1e-5, "{id}: twin differs from effects::apply by {worst}");
+    }
+}
