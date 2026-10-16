@@ -442,6 +442,142 @@ fn mask_coverage(p: vec2<f32>) -> f32 {
 }
 
 // One output pixel of every op but the running-sum box blur.
+// ---------- Lumetri beyond Basic (`LumetriExtra` in filmcraft_render::gpufx) ----------
+// Data (bound where the mask points go): 32 header floats (split tone 0..6, wheels 8..20, look
+// intensity 20), then the 1024-sample curve tables at 32 + k * 1024.
+
+const LUMETRI_CURVE_N: u32 = 1024u;
+
+fn lumetri_data(i: u32) -> f32 {
+    let q = mask_pts[i / 2u];
+    if (i & 1u) == 0u {
+        return q.x;
+    }
+    return q.y;
+}
+
+fn lumetri_has_curve(k: u32) -> bool {
+    return (u.i1.x & (4u << k)) != 0u;
+}
+
+// `sample` of the CPU grade: linear interpolation over the table, input clamped to 0..1.
+fn lumetri_curve(k: u32, x: f32) -> f32 {
+    let base = 32u + k * LUMETRI_CURVE_N;
+    let pos = clamp(x, 0.0, 1.0) * f32(LUMETRI_CURVE_N - 1u);
+    let i = u32(pos);
+    let j = min(i + 1u, LUMETRI_CURVE_N - 1u);
+    let a = lumetri_data(base + i);
+    let b = lumetri_data(base + j);
+    return a + (b - a) * (pos - f32(i));
+}
+
+fn look_s_curve(v: f32, k: f32) -> f32 {
+    let x = clamp(v, 0.0, 1.0);
+    return x + (x * x * (3.0 - 2.0 * x) - x) * k;
+}
+
+// `effects::apply_look`: the procedural Looks.
+fn lumetri_look(look: u32, c: vec3<f32>) -> vec3<f32> {
+    let l = 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
+    let g = vec3<f32>(l);
+    switch look {
+        case 1u: {
+            let t = c + vec3<f32>(0.0, 0.08, 0.1) * (1.0 - l) + vec3<f32>(0.1, 0.04, -0.06) * l;
+            return vec3<f32>(look_s_curve(t.x, 0.35), look_s_curve(t.y, 0.35), look_s_curve(t.z, 0.35));
+        }
+        case 2u: {
+            let t = vec3<f32>(c.x * 1.06 + 0.02, c.y * 1.0 + 0.01, c.z * 0.9);
+            return (t + (g - t) * 0.15) * 0.94 + vec3<f32>(0.04);
+        }
+        case 3u: {
+            let t = vec3<f32>(c.x * 0.9, c.y * 0.98, c.z * 1.1 + 0.02);
+            return vec3<f32>(look_s_curve(t.x, 0.2), look_s_curve(t.y, 0.2), look_s_curve(t.z, 0.2));
+        }
+        case 4u: {
+            let t = c + (g - c) * 0.55;
+            return vec3<f32>(look_s_curve(t.x, 0.6), look_s_curve(t.y, 0.6), look_s_curve(t.z, 0.6));
+        }
+        case 5u: {
+            let t = c + (g - c) * 0.25;
+            return vec3<f32>(0.08) + t * 0.84;
+        }
+        case 6u: {
+            return vec3<f32>(look_s_curve(l, 0.3));
+        }
+        case 7u: {
+            let t = vec3<f32>(c.x * 1.1 + 0.03, c.y * 1.02 + 0.01, c.z * 0.82);
+            return vec3<f32>(look_s_curve(t.x, 0.15), look_s_curve(t.y, 0.15), look_s_curve(t.z, 0.15));
+        }
+        case 8u: {
+            return vec3<f32>(c.x * 0.75, c.y * 0.85, c.z * 1.15) * 0.8;
+        }
+        default: {
+            return c;
+        }
+    }
+}
+
+// `LumetriExtra::advanced`: Look, color wheels, RGB curves, hue / saturation / luma curves.
+fn lumetri_advanced(v0: vec3<f32>) -> vec3<f32> {
+    var v = v0;
+    let look = u.i1.y;
+    if look > 0u {
+        let lk = lumetri_look(look, v);
+        v = v + (lk - v) * lumetri_data(20u);
+    }
+    if (u.i1.x & 2u) != 0u {
+        let l = clamp(0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z, 0.0, 1.0);
+        let wsh = (1.0 - l) * (1.0 - l);
+        let whi = l * l;
+        let wmid = max(1.0 - wsh - whi, 0.0);
+        let ws = vec3<f32>(lumetri_data(8u), lumetri_data(9u), lumetri_data(10u));
+        let wm = vec3<f32>(lumetri_data(11u), lumetri_data(12u), lumetri_data(13u));
+        let wh = vec3<f32>(lumetri_data(14u), lumetri_data(15u), lumetri_data(16u));
+        let ls = lumetri_data(17u);
+        let lm = lumetri_data(18u);
+        let lh = lumetri_data(19u);
+        v = v + (ws * 0.3 + vec3<f32>(ls * 0.3)) * wsh;
+        v = v + (wm * 0.3 + vec3<f32>(lm * 0.3)) * wmid;
+        v = v * (vec3<f32>(1.0) + (wh * 0.5 + vec3<f32>(lh * 0.5)) * whi);
+    }
+    if lumetri_has_curve(0u) {
+        v = vec3<f32>(lumetri_curve(0u, v.x), lumetri_curve(0u, v.y), lumetri_curve(0u, v.z));
+    }
+    if lumetri_has_curve(1u) {
+        v.x = lumetri_curve(1u, v.x);
+    }
+    if lumetri_has_curve(2u) {
+        v.y = lumetri_curve(2u, v.y);
+    }
+    if lumetri_has_curve(3u) {
+        v.z = lumetri_curve(3u, v.z);
+    }
+    if (u.i1.x & (31u << 6u)) != 0u {
+        var hsl = rgb_to_hsl(clamp(v, vec3<f32>(0.0), vec3<f32>(1.0)));
+        let h0 = hsl.x;
+        let s0 = hsl.y;
+        let l0 = hsl.z;
+        if lumetri_has_curve(5u) {
+            hsl.x = fract_euclid(hsl.x + (lumetri_curve(5u, h0) - 0.5));
+        }
+        var sm = 1.0;
+        if lumetri_has_curve(4u) {
+            sm = sm * lumetri_curve(4u, h0) * 2.0;
+        }
+        if lumetri_has_curve(7u) {
+            sm = sm * lumetri_curve(7u, l0) * 2.0;
+        }
+        if lumetri_has_curve(8u) {
+            sm = sm * lumetri_curve(8u, s0) * 2.0;
+        }
+        hsl.y = clamp(hsl.y * sm, 0.0, 1.0);
+        if lumetri_has_curve(6u) {
+            hsl.z = clamp(hsl.z + (lumetri_curve(6u, h0) - 0.5) * 0.5, 0.0, 1.0);
+        }
+        v = hsl_to_rgb(hsl.x, hsl.y, hsl.z);
+    }
+    return v;
+}
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
@@ -658,6 +794,14 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 v = v * (1.0 - 0.25 * faded) + vec3<f32>(0.12 * faded);
             }
 
+            // Creative split tone (shadow / highlight tint minus 0.5 in data 0..6)
+            if (u.i1.x & 1u) != 0u {
+                let l2 = clamp(0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z, 0.0, 1.0);
+                let st = vec3<f32>(lumetri_data(0u), lumetri_data(1u), lumetri_data(2u));
+                let ht = vec3<f32>(lumetri_data(3u), lumetri_data(4u), lumetri_data(5u));
+                v = v + st * 0.3 * (1.0 - l2) + ht * 0.3 * l2;
+            }
+
             let l3 = 0.2126 * v.x + 0.7152 * v.y + 0.0722 * v.z;
             let max_c = max(v.x, max(v.y, v.z));
             let min_c = min(v.x, min(v.y, v.z));
@@ -684,6 +828,10 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 }
             }
 
+            // the Advanced stage (Look, wheels, curves) reads the pixel the Basic stage wrote
+            if u.i1.y > 0u || (u.i1.x & ~1u) != 0u {
+                v = lumetri_advanced(enc(dec(v)));
+            }
             return vec4(dec(v) * a, a);
         }
         default: {

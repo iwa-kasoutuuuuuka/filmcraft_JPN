@@ -210,7 +210,47 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("lumetri", vec![("highlights", fl(40.0)), ("shadows", fl(-30.0)), ("whites", fl(20.0)), ("blacks", fl(-10.0)), ("saturation", fl(130.0))], false),
         ("lumetri", vec![("faded_film", fl(25.0)), ("vibrance", fl(40.0))], false),
         ("lumetri", vec![("vignette_amount", fl(-50.0)), ("vignette_midpoint", fl(40.0)), ("vignette_feather", fl(60.0))], false),
+        // beyond Basic: split tone, Looks, color wheels, RGB and hue curves
+        ("lumetri", vec![("shadow_tint", col(0.3, 0.5, 0.8)), ("highlight_tint", col(0.8, 0.6, 0.4))], false),
+        ("lumetri", vec![("look", ParamValue::Choice(1)), ("look_intensity", fl(80.0))], false),
+        ("lumetri", vec![("look", ParamValue::Choice(4))], false),
+        ("lumetri", vec![("look", ParamValue::Choice(6)), ("look_intensity", fl(50.0))], false),
+        ("lumetri", vec![("look", ParamValue::Choice(8))], false),
+        (
+            "lumetri",
+            vec![("wheel_shadows", pt(0.3, -0.2)), ("wheel_midtones", pt(-0.1, 0.4)), ("wheel_highlights", pt(0.5, 0.1)), ("wheel_midtones_l", fl(-20.0))],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![("curve_luma", curve(&[[0.0, 0.05], [0.3, 0.2], [0.7, 0.85], [1.0, 0.95]])), ("curve_red", curve(&[[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]))],
+            false,
+        ),
+        ("lumetri", vec![("hue_vs_sat", curve(&[[0.0, 0.5], [0.33, 0.8], [0.66, 0.2]])), ("hue_vs_hue", curve(&[[0.1, 0.55], [0.6, 0.45]]))], false),
+        (
+            "lumetri",
+            vec![("hue_vs_luma", curve(&[[0.5, 0.7]])), ("luma_vs_sat", curve(&[[0.2, 0.3], [0.8, 0.6]])), ("sat_vs_sat", curve(&[[0.5, 0.4]]))],
+            false,
+        ),
+        (
+            "lumetri",
+            vec![
+                ("exposure", fl(0.5)),
+                ("contrast", fl(20.0)),
+                ("shadow_tint", col(0.4, 0.5, 0.6)),
+                ("look", ParamValue::Choice(2)),
+                ("wheel_highlights", pt(-0.3, 0.2)),
+                ("curve_blue", curve(&[[0.0, 0.1], [1.0, 0.9]])),
+                ("hue_vs_sat", curve(&[[0.0, 0.6], [0.5, 0.4]])),
+                ("vignette_amount", fl(-30.0)),
+            ],
+            false,
+        ),
     ]
+}
+
+fn curve(points: &[[f32; 2]]) -> ParamValue {
+    ParamValue::Curve(points.to_vec())
 }
 
 /// Every effect case on the GPU against its CPU reference, on the working image read back as f32.

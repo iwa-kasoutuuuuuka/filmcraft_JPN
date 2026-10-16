@@ -13,6 +13,21 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Results (Lumetri wheels, curves, split tone and Looks on the GPU, before → after)
+
+`cargo xtask bench --sections playback --only lumetri-grade` (release, GPU path, 8 s plays): one
+1080p clip with Lumetri color wheels (shadows, highlights), a luma S-curve, Hue vs Sat, a shadow
+tint and Look 1 at 60 %. Same machine and date as below.
+
+| | shown/dropped (2 runs) | UI p95 ms |
+|---|---|---|
+| before (whole Lumetri on the CPU) | 96/96, 118/74 | 17.0, 15.1 |
+| **after** (one GPU pass) | **192/0, 192/0** | **3.8, 2.9** |
+
+Before, anything beyond Basic (wheels, curves, split tone, Looks) sent the whole Lumetri back to
+the CPU. They are now part of the GPU Lumetri pass (curve tables in a storage buffer), matching the
+CPU grade within 1e-5 and the GPU within 1e-6 relative (`lumetri_hdr_tests`, `fx_tests`). Input and
+Look LUTs, HSL Secondary and Sharpen still run on the CPU.
 ## Results (Windows: Media Foundation read-back, before → after)
 
 `cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw on|off` (release, GPU

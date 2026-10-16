@@ -109,6 +109,8 @@ struct Step {
     mask_begin: bool,
     /// The mask pass: these masks' coverage mixes the image with the kept one (or scales it).
     masks: Option<Vec<FlatMask>>,
+    /// Tables the pass reads (Lumetri curves), bound where the mask points go.
+    data: Option<Vec<f32>>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -116,7 +118,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, mask_begin: false, masks: None }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, mask_begin: false, masks: None, data: None }
 }
 
 /// The mask pass over `masks` (None without an active mask). `scale`: multiply the image by the
@@ -226,12 +228,22 @@ fn steps(op: &FxOp) -> Vec<Step> {
         FxOp::AlphaAdjust { opacity, ignore, invert, mask_only } => {
             out.push(step(OP_ALPHA_ADJUST, [*ignore as u32, *invert as u32, *mask_only as u32, 0], &[*opacity]));
         }
-        FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect } => {
-            out.push(step(
+        FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra } => {
+            // split tone, Look, wheels and curves: flags and look in the integers, tables in `data`
+            let (flags, look, data) = match extra {
+                Some(x) => {
+                    let (flags, data) = x.packed();
+                    (flags, x.look, Some(data))
+                }
+                None => (0, 0, None),
+            };
+            let mut s = step(
                 OP_LUMETRI,
-                [0; 4],
+                [flags, look, 0, 0],
                 &[*temp, *tint, *exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *vib, *faded, *va, *vmid, *vround, *vfeather, *aspect],
-            ));
+            );
+            s.data = data;
+            out.push(s);
         }
     }
     out
@@ -446,9 +458,14 @@ impl FxStage {
                 };
                 (init(&infos), init(&pts))
             });
-            let (infos, pts) = match &mask_buffers {
-                Some((i, p)) => (i, p),
-                None => (&self.no_masks, &self.no_masks),
+            let data_buffer = s.data.as_ref().map(|d| {
+                let bytes: Vec<u8> = d.iter().flat_map(|v| v.to_le_bytes()).collect();
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("fx-data"), contents: &bytes, usage: wgpu::BufferUsages::STORAGE })
+            });
+            let (infos, pts) = match (&mask_buffers, &data_buffer) {
+                (Some((i, p)), _) => (i, p),
+                (None, Some(d)) => (&self.no_masks, d),
+                (None, None) => (&self.no_masks, &self.no_masks),
             };
             let mut bytes = [0u8; 96];
             for (idx, v) in [s.code, w, h, 0].iter().chain(&s.i1).enumerate() {
