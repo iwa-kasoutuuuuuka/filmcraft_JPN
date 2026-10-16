@@ -70,6 +70,9 @@ const OP_HSL_APPLY: u32 = 36u;
 const OP_KEY: u32 = 37u;
 const OP_LUMA_KEY: u32 = 38u;
 const OP_VIDEO_LIMITER: u32 = 39u;
+const OP_UKEY_MATTE: u32 = 40u;
+const OP_UKEY_CHOKE: u32 = 41u;
+const OP_UKEY_APPLY: u32 = 42u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -775,6 +778,78 @@ fn limiter_limit(v: vec3<f32>, mx: f32, comp: f32, axis: u32) -> vec3<f32> {
     }
     return clamp(limiter_rgb(y, cb, cr), vec3<f32>(0.0), vec3<f32>(mx));
 }
+// ---------- Ultra Key (`vfx::color::UltraKey`) ----------
+
+// `UltraKey::matte` of a premultiplied pixel; the key in p0 (Y′CbCr, tolerance), gain, highlight,
+// shadow and pedestal in p1.
+fn ukey_matte(o: vec4<f32>) -> f32 {
+    if o.a <= 1e-6 {
+        return 0.0;
+    }
+    let v = enc(o.rgb / o.a);
+    let kr = 0.2126;
+    let kb = 0.0722;
+    let y = kr * v.x + (1.0 - kr - kb) * v.y + kb * v.z;
+    let cb = (v.z - y) / (2.0 * (1.0 - kb));
+    let cr = (v.x - y) / (2.0 * (1.0 - kr));
+    let k = u.p0.xyz;
+    let kmag2 = max(k.y * k.y + k.z * k.z, 1e-6);
+    let proj = (cb * k.y + cr * k.z) / kmag2;
+    let perp = sqrt((cb - proj * k.y) * (cb - proj * k.y) + (cr - proj * k.z) * (cr - proj * k.z)) / sqrt(kmag2);
+    let keyness = clamp(proj, 0.0, 1.5) * (1.0 - smoothstep_fx(0.0, u.p0.w, perp));
+    var m = clamp(1.0 - keyness * u.p1.x, 0.0, 1.0);
+    m = m + max(y - k.x, 0.0) * u.p1.y * 2.0 * min(keyness, 1.0);
+    m = m + max(k.x - y, 0.0) * u.p1.z * 2.0 * min(keyness, 1.0);
+    return clamp((clamp(m, 0.0, 1.0) - u.p1.w) / (1.0 - u.p1.w), 0.0, 1.0);
+}
+
+// `UltraKey::finish`: contrast of the cleaned matte, spill suppression, colour correction, output.
+fn ukey_finish(o: vec4<f32>, a0: f32) -> vec4<f32> {
+    var a = a0;
+    if u.p0.x > 1.0 {
+        a = clamp((a - u.p0.y) * u.p0.x + u.p0.y, 0.0, 1.0);
+    }
+    let src_a = o.a;
+    var v = vec3<f32>(0.0);
+    if src_a > 1e-6 {
+        v = enc(o.rgb / src_a);
+    }
+    let dom = u.i1.x;
+    let o1 = v[(dom + 1u) % 3u];
+    let o2 = v[(dom + 2u) % 3u];
+    let range = u.p1.x;
+    let limit = max(o1, o2) * (1.0 - range) + (o1 + o2) * 0.5 * range;
+    let excess = max(v[dom] - limit, 0.0);
+    if excess > 0.0 && u.p0.z > 0.0 {
+        let l0 = luma709(v);
+        v[dom] = v[dom] - excess * u.p0.z;
+        let l1 = luma709(v);
+        v = vec3<f32>(l1) + (v - vec3<f32>(l1)) * (1.0 - u.p0.w * min(excess * 4.0, 1.0));
+        v = v + vec3<f32>((l0 - l1) * u.p1.y);
+    }
+    if u.i1.z != 0u {
+        var h = rgb_to_hsl(clamp(v, vec3<f32>(0.0), vec3<f32>(1.0)));
+        h.x = fract_euclid(h.x + u.p2.x);
+        h.y = clamp(h.y * u.p2.y, 0.0, 1.0);
+        h.z = clamp(h.z * u.p2.z, 0.0, 1.0);
+        v = hsl_to_rgb(h.x, h.y, h.z);
+    }
+    let l = dec(v);
+    switch u.i1.y {
+        case 1u: {
+            let g = srgb_to_linear1(a);
+            return vec4<f32>(g * src_a, g * src_a, g * src_a, src_a);
+        }
+        case 2u: {
+            return vec4(l * src_a, src_a);
+        }
+        default: {
+            let na = a * src_a;
+            return vec4(l * na, na);
+        }
+    }
+}
+
 fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
     let s = size();
     let pc = vec2<f32>(p) + 0.5;
@@ -1028,6 +1103,19 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 return vec4(u.p1.xyz * a, a);
             }
             return vec4(vec3<f32>(limiter_dec(out.x), limiter_dec(out.y), limiter_dec(out.z)) * a, a);
+        }
+        case OP_UKEY_MATTE: {
+            return vec4<f32>(ukey_matte(ld(p)), 0.0, 0.0, 0.0);
+        }
+        case OP_UKEY_CHOKE: {
+            // src: the matte's blur, aux: the image (its matte made again)
+            let c = u.p2.x;
+            let m = ukey_matte(textureLoad(aux, p, 0));
+            return vec4<f32>(min(m, clamp((ld(p).x - c) / (1.0 - c), 0.0, 1.0)), 0.0, 0.0, 0.0);
+        }
+        case OP_UKEY_APPLY: {
+            // src: the cleaned matte, aux: the image
+            return ukey_finish(textureLoad(aux, p, 0), ld(p).x);
         }
         case OP_LUMETRI: {
             let o = ld(p);

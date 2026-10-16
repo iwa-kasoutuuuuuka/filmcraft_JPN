@@ -194,10 +194,12 @@ pub enum FxOp {
         /// Split tone, Look, color wheels and curves (`None`: none of them is in use).
         extra: Option<Box<LumetriExtra>>,
     },
-    /// Ultra Key / Color Key.
+    /// Color Key.
     Key(crate::effects::Key),
     /// Video Limiter.
     VideoLimiter(VideoLimiter),
+    /// Ultra Key: matte, Choke / Soften blurs of it, then the foreground.
+    UltraKey(Box<UltraKey>),
     /// Luma Key: threshold and cutoff (display-encoded luma).
     LumaKey {
         th: f32,
@@ -376,7 +378,7 @@ impl LumetriExtra {
     }
 }
 
-pub use crate::vfx::color::VideoLimiter;
+pub use crate::vfx::color::{UltraKey, VideoLimiter};
 
 /// Widest HSL Secondary denoise median the GPU pass takes (radius in px; 7 × 7 window).
 pub const HSL_MEDIAN_MAX: usize = 3;
@@ -384,6 +386,7 @@ pub const HSL_MEDIAN_MAX: usize = 3;
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
 pub const GPU_EFFECTS: &[&str] = &[
     "lumetri",
+    "ultra_key",
     "color_key",
     "luma_key",
     "video_limiter",
@@ -724,7 +727,8 @@ impl FxOp {
                 if ops.len() == 1 { ops.remove(0) } else { FxOp::Chain(ops) }
             }
             "color_key" => FxOp::Key(crate::effects::Key::from_effect(e, cx)),
-            "video_limiter" => FxOp::VideoLimiter(crate::vfx::color::VideoLimiter::from_effect(e, cx)),
+            "video_limiter" => FxOp::VideoLimiter(VideoLimiter::from_effect(e, cx)),
+            "ultra_key" => FxOp::UltraKey(Box::new(UltraKey::from_effect(e, cx, w, h))),
             "luma_key" => FxOp::LumaKey { th: f(e, "threshold", cx) / 100.0, cut: f(e, "cutoff", cx) / 100.0 },
             "mosaic" => {
                 // Softness blends towards an interpolation of the blocks: the CPU does that
@@ -798,6 +802,14 @@ impl FxOp {
             FxOp::Key(k) => fin(&k.kycc) && fin(&[k.tol, k.soft]) && k.soft > 0.0,
             FxOp::LumaKey { th, cut } => fin(&[*th, *cut]),
             FxOp::VideoLimiter(v) => fin(&[v.max, v.comp]) && v.max > 0.0 && v.warning.is_none_or(|w| fin(&w)),
+            FxOp::UltraKey(k) => {
+                fin(&k.k)
+                    && fin(&[k.tol, k.gain, k.highlight, k.shadow, k.pedestal, k.choke, k.contrast, k.mid, k.spill, k.desat, k.range, k.spill_luma])
+                    && k.cc.is_none_or(|c| fin(&c))
+                    && k.pedestal < 1.0
+                    && k.choke < 1.0
+                    && k.dom < 3
+            }
             FxOp::HslSecondary(h) => {
                 fin(&[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft, h.htemp, h.htint, h.hsat, h.hshift, h.denoise])
                     && h.median_r <= HSL_MEDIAN_MAX
@@ -1125,6 +1137,7 @@ impl FxOp {
             FxOp::Key(k) => k.apply(img),
             FxOp::LumaKey { th, cut } => crate::effects::luma_key(img, *th, *cut),
             FxOp::VideoLimiter(v) => v.apply(img),
+            FxOp::UltraKey(k) => k.apply(img),
             FxOp::HslSecondary(h) => h.apply(img),
             FxOp::Chain(ops) => {
                 for op in ops {

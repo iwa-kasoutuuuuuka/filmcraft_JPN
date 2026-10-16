@@ -25,8 +25,20 @@ const EXACT: f32 = 1e-4;
 /// error (measured up to 1.8e-3 relative on Windows / D3D12), so they get a wider bound than the
 /// arithmetic-only effects, which stay at `EXACT`.
 const TRANSCENDENTAL: f32 = 4e-3;
-const TRANSCENDENTAL_EFFECTS: &[&str] =
-    &["proc_amp", "gamma_correction", "extract", "invert", "sharpen", "color_replace", "lumetri", "vignette", "color_key", "luma_key", "video_limiter"];
+const TRANSCENDENTAL_EFFECTS: &[&str] = &[
+    "proc_amp",
+    "gamma_correction",
+    "extract",
+    "invert",
+    "sharpen",
+    "color_replace",
+    "lumetri",
+    "vignette",
+    "ultra_key",
+    "color_key",
+    "luma_key",
+    "video_limiter",
+];
 const FLIPS: f64 = 0.01;
 
 fn tolerance(id: &str) -> f32 {
@@ -214,6 +226,36 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         // beyond Basic: split tone, Looks, color wheels, RGB and hue curves, Sharpen
         ("lumetri", vec![("sharpen", fl(60.0))], false),
         // keys
+        ("ultra_key", vec![("key_color", col(0.1, 0.8, 0.2))], false),
+        (
+            "ultra_key",
+            vec![("key_color", col(0.1, 0.3, 0.9)), ("tolerance", fl(70.0)), ("spill", fl(80.0)), ("desaturate", fl(50.0)), ("spill_luma", fl(60.0))],
+            false,
+        ),
+        (
+            "ultra_key",
+            vec![("key_color", col(0.2, 0.8, 0.3)), ("choke", fl(40.0)), ("soften", fl(30.0)), ("contrast", fl(50.0)), ("mid_point", fl(40.0))],
+            false,
+        ),
+        (
+            "ultra_key",
+            vec![
+                ("key_color", col(0.9, 0.1, 0.1)),
+                ("pedestal", fl(30.0)),
+                ("transparency", fl(50.0)),
+                ("highlight", fl(40.0)),
+                ("shadow", fl(40.0)),
+                ("setting", ParamValue::Choice(2)),
+            ],
+            false,
+        ),
+        (
+            "ultra_key",
+            vec![("key_color", col(0.1, 0.8, 0.2)), ("cc_hue", fl(90.0)), ("cc_saturation", fl(150.0)), ("cc_luminance", fl(80.0)), ("range", fl(100.0))],
+            false,
+        ),
+        ("ultra_key", vec![("key_color", col(0.1, 0.8, 0.2)), ("soften", fl(20.0)), ("output", ParamValue::Choice(1))], false),
+        ("ultra_key", vec![("key_color", col(0.1, 0.8, 0.2)), ("choke", fl(100.0)), ("output", ParamValue::Choice(2))], false),
         ("color_key", vec![("color", col(0.2, 0.7, 0.3)), ("tolerance", fl(60.0)), ("feather", fl(10.0))], false),
         ("color_key", vec![("color", col(1.0, 1.0, 1.0)), ("tolerance", fl(20.0))], false),
         ("luma_key", vec![("threshold", fl(60.0)), ("cutoff", fl(20.0))], false),

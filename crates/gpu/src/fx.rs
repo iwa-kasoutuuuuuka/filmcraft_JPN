@@ -66,6 +66,9 @@ const OP_HSL_APPLY: u32 = 36;
 const OP_KEY: u32 = 37;
 const OP_LUMA_KEY: u32 = 38;
 const OP_VIDEO_LIMITER: u32 = 39;
+const OP_UKEY_MATTE: u32 = 40;
+const OP_UKEY_CHOKE: u32 = 41;
+const OP_UKEY_APPLY: u32 = 42;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -111,6 +114,8 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
+    /// A pass between the blurs and the combine that also reads the original (as `aux`).
+    aux_orig: bool,
     /// First pass of an effect with masks: the image it reads stays untouched until the mix.
     mask_begin: bool,
     /// The mask pass: these masks' coverage mixes the image with the kept one (or scales it).
@@ -124,7 +129,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, mask_begin: false, masks: None, data: None }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, aux_orig: false, mask_begin: false, masks: None, data: None }
 }
 
 /// The mask pass over `masks` (None without an active mask). `scale`: multiply the image by the
@@ -272,6 +277,34 @@ fn steps(op: &FxOp) -> Vec<Step> {
             }
             out.append(&mut key);
             let mut apply = step(OP_HSL_APPLY, [h.show_mask, 0, 0, 0], &[h.htemp, h.htint, h.hsat, h.hshift]);
+            apply.combine = true;
+            out.push(apply);
+        }
+        FxOp::UltraKey(k) => {
+            // the matte (and its Choke / Soften blurs) is made beside the image, as HSL Secondary's key
+            let m = [k.k[0], k.k[1], k.k[2], k.tol, k.gain, k.highlight, k.shadow, k.pedestal];
+            let mut key = vec![step(OP_UKEY_MATTE, [0; 4], &m)];
+            if k.choke > 0.0 {
+                boxes(&k.choke_boxes.0, false, false, &mut key);
+                boxes(&k.choke_boxes.1, true, false, &mut key);
+                let mut p = m.to_vec();
+                p.push(k.choke);
+                let mut choke = step(OP_UKEY_CHOKE, [0; 4], &p);
+                choke.aux_orig = true;
+                key.push(choke);
+            }
+            boxes(&k.soften_boxes.0, false, false, &mut key);
+            boxes(&k.soften_boxes.1, true, false, &mut key);
+            for s in &mut key {
+                s.unsharp_blur = true;
+            }
+            out.append(&mut key);
+            let cc = k.cc.unwrap_or([0.0, 1.0, 1.0]);
+            let mut apply = step(
+                OP_UKEY_APPLY,
+                [k.dom, k.output, k.cc.is_some() as u32, 0],
+                &[k.contrast, k.mid, k.spill, k.desat, k.range, k.spill_luma, 0.0, 0.0, cc[0], cc[1], cc[2]],
+            );
             apply.combine = true;
             out.push(apply);
         }
@@ -481,7 +514,7 @@ impl FxStage {
             }
             let keep = if s.unsharp_blur || s.combine { orig } else { None };
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep && Some(*k) != before)?;
-            let aux = match (s.combine, orig, s.masks.is_some(), before) {
+            let aux = match (s.combine || s.aux_orig, orig, s.masks.is_some(), before) {
                 (true, Some(o), ..) => views.get(o)?,
                 (_, _, true, Some(b)) => views.get(b)?,
                 _ => dummy,
