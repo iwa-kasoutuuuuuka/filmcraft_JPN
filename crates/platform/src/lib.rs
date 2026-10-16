@@ -101,6 +101,20 @@ pub fn videotoolbox_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option<fi
     }
 }
 
+/// Media Foundation hands every picture back through a synchronous GPU read-back, which on a
+/// many-core CPU is slower than FilmCraft's own frame-threaded H.264 decoder: on a 16-core
+/// Ryzen 9 (32 threads), H.264 playback at 1080p dropped 17–95 % of the frames through Media
+/// Foundation and none in software, and at 2160p 47–92 % against none (docs/performance.md).
+/// From this many threads Auto keeps H.264 in software; below it, or with the setting On, the
+/// hardware decodes it.
+#[cfg(windows)]
+const SOFTWARE_H264_THREADS: usize = 12;
+
+#[cfg(windows)]
+fn software_h264_is_faster() -> bool {
+    std::thread::available_parallelism().is_ok_and(|n| n.get() >= SOFTWARE_H264_THREADS)
+}
+
 /// The Media Foundation factory: a [`HybridDecoder`] around [`mediafoundation::MfDecoder`] for
 /// `avcC` / `hvcC` streams the system decodes on the GPU, `None` otherwise.
 #[cfg(windows)]
@@ -109,6 +123,13 @@ pub fn mediafoundation_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option
         return None;
     }
     let info = filmcraft_codecs::hw::NalStreamInfo::from_entry(entry)?.ok()?;
+    if info.codec == filmcraft_codecs::hw::NalCodec::H264
+        && filmcraft_codecs::hw::hardware_mode() == filmcraft_codecs::hw::HwMode::Auto
+        && software_h264_is_faster()
+    {
+        log::info!("H.264 video decoded in software: faster than Media Foundation on this CPU");
+        return None;
+    }
     match mediafoundation::MfDecoder::new(info.clone()) {
         Ok(mf) => Some(Ok(Box::new(HybridDecoder::new(Box::new(mf), entry.clone(), info)))),
         Err(why) => {

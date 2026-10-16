@@ -16,15 +16,41 @@ use crate::video::{avcc_length_size, h264_disposable, hevc_disposable, hvcc_leng
 use crate::{CodecError, Result};
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
+static FORCED: AtomicBool = AtomicBool::new(false);
 
-/// Settings ▸ Playback ▸ Hardware decoding: `Auto` (true, the default) lets registered hardware
-/// decoders take streams they support; `Off` (false) makes every new decoder a software one.
-/// Decoders already created keep running: a source picks the change up when it is reopened.
-pub fn set_hardware_decoding(on: bool) {
-    ENABLED.store(on, Ordering::Relaxed);
+/// Settings ▸ Playback ▸ Hardware decoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HwMode {
+    /// Hardware decoders take the streams they support where that is the faster path (default).
+    Auto,
+    /// Hardware decoders take every stream they support (to spare the CPU or the battery).
+    On,
+    /// Every new decoder is a software one.
+    Off,
 }
 
-/// Whether hardware decoders may be used for new decoders ([`set_hardware_decoding`]).
+/// Set the mode for new decoders. Decoders already created keep running: a source picks the
+/// change up when it is reopened.
+pub fn set_hardware_mode(m: HwMode) {
+    ENABLED.store(m != HwMode::Off, Ordering::Relaxed);
+    FORCED.store(m == HwMode::On, Ordering::Relaxed);
+}
+
+/// The mode set with [`set_hardware_mode`].
+pub fn hardware_mode() -> HwMode {
+    match (ENABLED.load(Ordering::Relaxed), FORCED.load(Ordering::Relaxed)) {
+        (false, _) => HwMode::Off,
+        (true, true) => HwMode::On,
+        (true, false) => HwMode::Auto,
+    }
+}
+
+/// `true`: [`HwMode::Auto`]; `false`: [`HwMode::Off`].
+pub fn set_hardware_decoding(on: bool) {
+    set_hardware_mode(if on { HwMode::Auto } else { HwMode::Off });
+}
+
+/// Whether hardware decoders may be used for new decoders (Auto or On).
 pub fn hardware_decoding() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }

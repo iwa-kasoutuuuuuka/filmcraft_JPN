@@ -13,6 +13,29 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Results (Windows: Media Foundation vs software H.264, Hardware decoding Auto / On / Off)
+
+`cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw auto|on|off` (release, GPU
+path, 8 s plays), 2026-10-16, AMD Ryzen 9 9950X3D (16 cores, 32 threads, 63 GB), Windows 11 Pro
+26300, otherwise idle. Shown/dropped of 192 frames; decode ms per frame job.
+
+| case | Media Foundation (`On`) | software (`Off`) | `Auto` before → **after** |
+|---|---|---|---|
+| H.264 1080p Full | 102/90, 186 ms (runs: 10/182 – 160/32) | 192/0, 3.9 ms | 160/32 → **192/0** |
+| H.264 2160p Full | 102/90 – 192/0, 21–191 ms | 192/0, 18.6 ms | 102/90 → **192/0** |
+| H.264 2160p 1/2 | 17/175 | 192/0 | 17/175 → **192/0** |
+
+Media Foundation hands every picture back through a synchronous GPU read-back
+(`IMF2DBuffer2::Lock2DSize`): ~30 ms per picture inside playback (9.6 ms decoding one stream
+sequentially), against 4–20 ms for FilmCraft's frame-threaded H.264 decoder on this CPU. Keeping
+a few access units in flight before taking pictures out did not help (same numbers), so the
+read-back itself is the cost; zero-copy upload of the decoded texture into wgpu (#30) is the fix.
+Until then `Auto` keeps H.264 in software on CPUs with 12 or more threads
+(`filmcraft_platform::SOFTWARE_H264_THREADS`); `On` still forces the hardware (to spare the CPU or
+the battery), and HEVC keeps using Media Foundation (Windows ships no HEVC decoder of its own; the
+HEVC Video Extensions are needed, and the Events panel says so when they are missing). The bench
+now runs on Windows (no `/usr/bin/time`: no peak RSS; no load average).
+
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
 Before = this change with clips that carry standard effects sent back to the CPU layer path in

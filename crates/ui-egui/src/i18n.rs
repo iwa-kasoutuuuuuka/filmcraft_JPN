@@ -1620,6 +1620,7 @@ fn tr_settings_ja(s: &str) -> &str {
         // --- shared words ---
         "None" => "なし",
         "Auto" => "自動",
+        "On" => "オン",
         "Off" => "オフ",
         _ => tr(s),
     }

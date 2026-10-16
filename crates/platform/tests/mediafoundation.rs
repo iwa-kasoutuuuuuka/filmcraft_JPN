@@ -92,6 +92,8 @@ fn hardware_pictures_are_the_software_decoders() {
 
 #[test]
 fn the_factory_decodes_in_hardware_and_follows_the_setting() {
+    // On: the factory takes every stream it can (Auto may keep H.264 in software on a many-core CPU)
+    filmcraft_codecs::hw::set_hardware_mode(filmcraft_codecs::hw::HwMode::On);
     let s = stream(640, 360, 24);
     if hardware(&s).is_none() {
         return;
@@ -132,6 +134,8 @@ fn bounded(what: &str, limit: Duration, f: impl FnOnce() + Send + 'static) {
 
 #[test]
 fn damaged_samples_and_parameter_sets_never_crash_or_hang() {
+    // On: the factory takes every stream it can (Auto may keep H.264 in software on a many-core CPU)
+    filmcraft_codecs::hw::set_hardware_mode(filmcraft_codecs::hw::HwMode::On);
     let s = stream(640, 360, 40);
     if hardware(&s).is_none() {
         return;
@@ -249,6 +253,8 @@ fn cpu_time() -> f64 {
 #[test]
 #[ignore = "needs FILMCRAFT_HW_FILE"]
 fn a_file_decodes_like_the_software_decoder() {
+    // On: the factory takes every stream it can (Auto may keep H.264 in software on a many-core CPU)
+    filmcraft_codecs::hw::set_hardware_mode(filmcraft_codecs::hw::HwMode::On);
     let Some(path) = std::env::var_os("FILMCRAFT_HW_FILE") else { return };
     let s = read_stream(std::path::Path::new(&path));
     eprintln!("entry: {:?} {:?}, {} samples", s.entry.format, s.entry.video.as_ref().map(|v| (v.width, v.height)), s.samples.len());

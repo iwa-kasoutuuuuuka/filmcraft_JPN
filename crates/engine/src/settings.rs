@@ -662,7 +662,7 @@ const CACHE_MGMT: &[(&str, &str)] = &[
 ];
 const AUTO_SCROLL: &[(&str, &str)] = &[("noScroll", "No Scroll"), ("pageScroll", "Page Scroll"), ("smoothScroll", "Smooth Scroll")];
 const MOUSE_SCROLL: &[(&str, &str)] = &[("vertical", "Vertical"), ("horizontal", "Horizontal")];
-const HW_DECODE: &[(&str, &str)] = &[("auto", "Auto"), ("off", "Off")];
+const HW_DECODE: &[(&str, &str)] = &[("auto", "Auto"), ("on", "On"), ("off", "Off")];
 const TRACKS: &[(&str, &str)] = &[("useFile", "Use File"), ("mono", "Mono"), ("stereo", "Stereo"), ("5.1", "5.1"), ("adaptive", "Adaptive")];
 pub const DURATION_UNITS: &[(&str, &str)] = &[("frames", "Frames"), ("seconds", "Seconds")];
 
@@ -1140,7 +1140,13 @@ impl crate::autosave::Preferences {
     /// Settings ▸ Playback ▸ Hardware decoding as the process-wide switch the hardware decoder
     /// factories consult (new decoders only).
     pub fn apply_hardware_decoding(&self) {
-        filmcraft_codecs::hw::set_hardware_decoding(self.playback.hardware_decoding != "off");
+        use filmcraft_codecs::hw::{HwMode, set_hardware_mode};
+        // Auto: the hardware where it is the faster path; On: wherever it can (spares the CPU)
+        set_hardware_mode(match self.playback.hardware_decoding.as_str() {
+            "off" => HwMode::Off,
+            "on" => HwMode::On,
+            _ => HwMode::Auto,
+        });
     }
 
     /// Values of one category as a JSON object.
