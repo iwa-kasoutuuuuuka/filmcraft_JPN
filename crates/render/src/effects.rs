@@ -608,7 +608,7 @@ fn grade_space(e: &EffectInstance, cx: &FxCtx, white_id: &str) -> GradeSpace {
 /// into 0…1 first and back afterwards, so operations defined on 0…1 (LUTs, HSL) keep the
 /// highlights instead of clipping them. SDR signals are clamped as before.
 #[inline]
-fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32; 3] {
+pub(crate) fn within_unit(v: [f32; 3], hdr: bool, f: impl Fn([f32; 3]) -> [f32; 3]) -> [f32; 3] {
     if !hdr {
         return f(v.map(|q| q.clamp(0.0, 1.0)));
     }
@@ -1288,8 +1288,13 @@ impl HslSecondary {
         })
     }
 
+    /// The grading signal the key and the correction work on.
+    pub fn grade_space(&self) -> GradeSpace {
+        GradeSpace::new(self.working, self.white)
+    }
+
     pub fn apply(&self, img: &mut Image) {
-        let gs = GradeSpace::new(self.working, self.white);
+        let gs = self.grade_space();
         let hdr = gs.is_hdr();
         let Self { hc, hr, smin, lmin, lmax, soft, show_mask, htemp, htint, hsat, hshift, denoise, .. } = *self;
         let (w, h) = (img.w, img.h);

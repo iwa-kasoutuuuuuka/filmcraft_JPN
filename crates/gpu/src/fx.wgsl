@@ -181,6 +181,79 @@ fn round_away(x: f32) -> f32 {
     return select(r, -r, x < 0.0);
 }
 
+// ---- grading signals (`filmcraft_color::GradeSpace`): mode 0 SDR, 1 PQ (pa: normalisation),
+// 2 HLG (pa: HDR White, pb: system gamma); lw: the BT.2020 luma weights
+
+fn pq_inverse_eotf1(y: f32) -> f32 {
+    let m1 = 0.15930176;
+    let m2 = 78.84375;
+    let p = powf(max(y, 0.0), m1);
+    return powf((0.8359375 + 18.851563 * p) / (1.0 + 18.6875 * p), m2);
+}
+
+fn pq_eotf1(e: f32) -> f32 {
+    let m1 = 0.15930176;
+    let m2 = 78.84375;
+    let p = powf(max(e, 0.0), 1.0 / m2);
+    return powf(max(p - 0.8359375, 0.0) / (18.851563 - 18.6875 * p), 1.0 / m1);
+}
+
+fn hlg_oetf1(l: f32) -> f32 {
+    if l <= 1.0 / 12.0 {
+        return sqrt(3.0 * max(l, 0.0));
+    }
+    return 0.17883277 * log(12.0 * l - 0.28466892) + 0.5599107;
+}
+
+fn hlg_inverse_oetf1(e: f32) -> f32 {
+    if e <= 0.5 {
+        return e * e / 3.0;
+    }
+    return (exp((e - 0.5599107) / 0.17883277) + 0.28466892) / 12.0;
+}
+
+// `GradeSpace::encode`: working linear -> grading signal.
+fn gs_encode(c: vec3<f32>, mode: u32, pa: f32, pb: f32, lw: vec3<f32>) -> vec3<f32> {
+    if mode == 1u {
+        let y = min(max(c, vec3<f32>(0.0)) * 203.0 / 10000.0, vec3<f32>(1.0));
+        return vec3<f32>(pq_inverse_eotf1(y.x), pq_inverse_eotf1(y.y), pq_inverse_eotf1(y.z)) / pa;
+    }
+    if mode == 2u {
+        let fd = max(c, vec3<f32>(0.0)) * 203.0 / pa;
+        let yd = lw.x * fd.x + lw.y * fd.y + lw.z * fd.z;
+        if yd <= 0.0 {
+            return vec3<f32>(0.0);
+        }
+        let k = powf(yd, (1.0 - pb) / pb);
+        return vec3<f32>(hlg_oetf1(fd.x * k), hlg_oetf1(fd.y * k), hlg_oetf1(fd.z * k));
+    }
+    return enc(c);
+}
+
+// `GradeSpace::decode`: grading signal -> working linear.
+fn gs_decode(v: vec3<f32>, mode: u32, pa: f32, pb: f32, lw: vec3<f32>) -> vec3<f32> {
+    if mode == 1u {
+        let e = clamp(v * pa, vec3<f32>(0.0), vec3<f32>(1.0));
+        return vec3<f32>(pq_eotf1(e.x), pq_eotf1(e.y), pq_eotf1(e.z)) * 10000.0 / 203.0;
+    }
+    if mode == 2u {
+        let q = clamp(v, vec3<f32>(0.0), vec3<f32>(1.5));
+        let es = vec3<f32>(hlg_inverse_oetf1(q.x), hlg_inverse_oetf1(q.y), hlg_inverse_oetf1(q.z));
+        let ys = lw.x * es.x + lw.y * es.y + lw.z * es.z;
+        if ys <= 0.0 {
+            return vec3<f32>(0.0);
+        }
+        let k = powf(ys, pb - 1.0);
+        return es * k * pa / 203.0;
+    }
+    return dec(v);
+}
+
+// `effects::within_unit`'s scale: an HDR signal above 1 is divided by its largest channel.
+fn unit_scale(v: vec3<f32>) -> f32 {
+    return max(max(v.x, v.y), max(v.z, 1.0));
+}
+
 // `rem_euclid(1.0)`
 fn fract_euclid(x: f32) -> f32 {
     return x - floor(x);
@@ -457,6 +530,8 @@ fn mask_coverage(p: vec2<f32>) -> f32 {
 // 64 + k * 1024, then the LUT tables.
 
 const LUMETRI_CURVE_N: u32 = 1024u;
+// `gpufx::HEADER` (the HDR block, `LumetriHdr::pack`, at 64)
+const LUMETRI_HEADER: u32 = 72u;
 
 fn lumetri_data(i: u32) -> f32 {
     let q = mask_pts[i / 2u];
@@ -472,7 +547,11 @@ fn lumetri_has_curve(k: u32) -> bool {
 
 // `sample` of the CPU grade: linear interpolation over the table, input clamped to 0..1.
 fn lumetri_curve(k: u32, x: f32) -> f32 {
-    let base = 64u + k * LUMETRI_CURVE_N;
+    let base = LUMETRI_HEADER + k * LUMETRI_CURVE_N;
+    // HDR: above HDR White a curve continues with slope 1 from its end point
+    if u.i1.w != 0u && x > 1.0 {
+        return lumetri_data(base + LUMETRI_CURVE_N - 1u) + (x - 1.0);
+    }
     let pos = clamp(x, 0.0, 1.0) * f32(LUMETRI_CURVE_N - 1u);
     let i = u32(pos);
     let j = min(i + 1u, LUMETRI_CURVE_N - 1u);
@@ -602,15 +681,53 @@ fn lumetri_look(look: u32, c: vec3<f32>) -> vec3<f32> {
     }
 }
 
+// Lumetri's grading signals: Basic (mode u.i1.z) and Advanced (mode u.i1.w), parameters in the
+// data header (only read in HDR, where the data buffer always exists).
+fn lumetri_lw() -> vec3<f32> {
+    return vec3<f32>(lumetri_data(65u), lumetri_data(66u), lumetri_data(67u));
+}
+fn lumetri_enc(c: vec3<f32>, basic: bool) -> vec3<f32> {
+    let mode = select(u.i1.w, u.i1.z, basic);
+    if mode == 0u {
+        return enc(c);
+    }
+    let at = select(70u, 68u, basic);
+    return gs_encode(c, mode, lumetri_data(at), lumetri_data(at + 1u), lumetri_lw());
+}
+fn lumetri_dec(v: vec3<f32>, basic: bool) -> vec3<f32> {
+    let mode = select(u.i1.w, u.i1.z, basic);
+    if mode == 0u {
+        return dec(v);
+    }
+    let at = select(70u, 68u, basic);
+    return gs_decode(v, mode, lumetri_data(at), lumetri_data(at + 1u), lumetri_lw());
+}
+
+// A LUT on a grading signal (`within_unit`: SDR clamps to 0..1, HDR scales into it and back).
+fn lumetri_lut_unit(at: u32, v: vec3<f32>, hdr: bool) -> vec3<f32> {
+    if !hdr {
+        return lumetri_lut(at, clamp(v, vec3<f32>(0.0), vec3<f32>(1.0)));
+    }
+    let m = unit_scale(v);
+    return lumetri_lut(at, max(v / m, vec3<f32>(0.0))) * m;
+}
+
 // `LumetriExtra::advanced`: Look, color wheels, RGB curves, hue / saturation / luma curves.
 fn lumetri_advanced(v0: vec3<f32>) -> vec3<f32> {
     var v = v0;
     let look = u.i1.y;
+    let hdr = u.i1.w != 0u;
     if (u.i1.x & (1u << 12u)) != 0u {
-        let lk = lumetri_lut(42u, clamp(v, vec3<f32>(0.0), vec3<f32>(1.0)));
+        let lk = lumetri_lut_unit(42u, v, hdr);
         v = v + (lk - v) * lumetri_data(20u);
     } else if look > 0u {
-        let lk = lumetri_look(look, v);
+        var lk: vec3<f32>;
+        if hdr {
+            let m = unit_scale(v);
+            lk = lumetri_look(look, max(v / m, vec3<f32>(0.0))) * m;
+        } else {
+            lk = lumetri_look(look, v);
+        }
         v = v + (lk - v) * lumetri_data(20u);
     }
     if (u.i1.x & 2u) != 0u {
@@ -641,7 +758,13 @@ fn lumetri_advanced(v0: vec3<f32>) -> vec3<f32> {
         v.z = lumetri_curve(3u, v.z);
     }
     if (u.i1.x & (31u << 6u)) != 0u {
-        var hsl = rgb_to_hsl(clamp(v, vec3<f32>(0.0), vec3<f32>(1.0)));
+        var m = 1.0;
+        var uu = clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
+        if hdr {
+            m = unit_scale(v);
+            uu = max(v / m, vec3<f32>(0.0));
+        }
+        var hsl = rgb_to_hsl(uu);
         let h0 = hsl.x;
         let s0 = hsl.y;
         let l0 = hsl.z;
@@ -662,7 +785,7 @@ fn lumetri_advanced(v0: vec3<f32>) -> vec3<f32> {
         if lumetri_has_curve(6u) {
             hsl.z = clamp(hsl.z + (lumetri_curve(6u, h0) - 0.5) * 0.5, 0.0, 1.0);
         }
-        v = hsl_to_rgb(hsl.x, hsl.y, hsl.z);
+        v = hsl_to_rgb(hsl.x, hsl.y, hsl.z) * m;
     }
     return v;
 }
@@ -1011,7 +1134,13 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             if o.a <= 1e-6 {
                 return vec4<f32>(0.0);
             }
-            let k = hsl_secondary_key(clamp(enc(o.rgb / o.a), vec3<f32>(0.0), vec3<f32>(1.0)));
+            // the grading signal in 0..1 (HDR: scaled into it), grade space in i1.y / p2.xy / p3.xyz
+            let v = gs_encode(o.rgb / o.a, u.i1.y, u.p2.x, u.p2.y, u.p3.xyz);
+            var uu = clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
+            if u.i1.y != 0u {
+                uu = max(v / unit_scale(v), vec3<f32>(0.0));
+            }
+            let k = hsl_secondary_key(uu);
             return vec4<f32>(k);
         }
         case OP_HSL_MEDIAN: {
@@ -1025,7 +1154,14 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 return o;
             }
             let m = ld(p).x;
-            let uu = clamp(enc(o.rgb / a), vec3<f32>(0.0), vec3<f32>(1.0));
+            // the grading signal (grade space in i1.y / p1.xy / p2.xyz); HDR scales it into 0..1
+            let v = gs_encode(o.rgb / a, u.i1.y, u.p1.x, u.p1.y, u.p2.xyz);
+            var scale = 1.0;
+            var uu = clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
+            if u.i1.y != 0u {
+                scale = unit_scale(v);
+                uu = max(v / scale, vec3<f32>(0.0));
+            }
             var out: vec3<f32>;
             switch u.i1.x {
                 case 1u: {
@@ -1049,7 +1185,11 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                     out = uu + (c2 - uu) * m;
                 }
             }
-            return vec4(dec(out) * a, a);
+            // the mask views are display images (no HDR scaling)
+            if u.i1.x == 0u {
+                out = out * scale;
+            }
+            return vec4(gs_decode(out, u.i1.y, u.p1.x, u.p1.y, u.p2.xyz) * a, a);
         }
         case OP_KEY: {
             // `effects::Key::apply`: distance to the key colour in Y'CbCr (Rec. 709)
@@ -1125,8 +1265,9 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             }
             var c = o.rgb / a;
             // Basic ▸ Input LUT, first (on the display-encoded value, clamped to 0..1)
+            let hdr = u.i1.z != 0u;
             if (u.i1.x & (1u << 11u)) != 0u {
-                c = dec(lumetri_lut(24u, clamp(enc(c), vec3<f32>(0.0), vec3<f32>(1.0))));
+                c = lumetri_dec(lumetri_lut_unit(24u, lumetri_enc(c, true), hdr), true);
             }
             let temp = u.p0.x;
             let tint = u.p0.y;
@@ -1150,7 +1291,7 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
 
             let gains = vec3<f32>(1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp);
             let lin = vec3<f32>(c.x * gains.x * exposure, c.y * gains.y * exposure, c.z * gains.z * exposure);
-            var v = enc(lin);
+            var v = lumetri_enc(lin, true);
 
             let b0 = -bl * 0.15;
             let w0 = 1.0 - wh * 0.15;
@@ -1170,10 +1311,21 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                 let k = 1.0 + contrast;
                 let q = clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
                 let s = q * q * (vec3<f32>(3.0) - 2.0 * q);
+                var cv: vec3<f32>;
                 if k >= 1.0 {
-                    v = q + (s - q) * (k - 1.0);
+                    cv = q + (s - q) * (k - 1.0);
                 } else {
-                    v = vec3<f32>(0.5) + (q - vec3<f32>(0.5)) * k;
+                    cv = vec3<f32>(0.5) + (q - vec3<f32>(0.5)) * k;
+                }
+                // HDR: speculars above HDR White keep their distance from white
+                v = select(cv, v, (v > vec3<f32>(1.0)) & vec3<bool>(hdr));
+            }
+
+            // HDR Specular: brightness of the highlights above HDR White
+            if hdr {
+                let sp = lumetri_data(64u);
+                if abs(sp) > 1e-4 {
+                    v = select(v, vec3<f32>(1.0) + (v - vec3<f32>(1.0)) * max(1.0 + sp, 0.0), v > vec3<f32>(1.0));
                 }
             }
 
@@ -1217,9 +1369,10 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
 
             // the Advanced stage (Look, wheels, curves) reads the pixel the Basic stage wrote
             if u.i1.y > 0u || (u.i1.x & ~(1u | (1u << 11u))) != 0u {
-                v = lumetri_advanced(enc(dec(v)));
+                v = lumetri_advanced(lumetri_enc(lumetri_dec(v, true), false));
+                return vec4(lumetri_dec(v, false) * a, a);
             }
-            return vec4(dec(v) * a, a);
+            return vec4(lumetri_dec(v, true) * a, a);
         }
         default: {
             let o = ld(p);

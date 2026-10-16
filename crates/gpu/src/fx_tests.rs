@@ -768,3 +768,60 @@ fn lumetri_shaper_and_cube_luts_on_the_gpu() {
         assert!(worst <= TRANSCENDENTAL && flips == 0.0, "{params:?}: {worst:.2e}, flips {flips}");
     }
 }
+
+/// Lumetri in the HDR working spaces (PQ, HLG): the grading signals of Basic and of the curves,
+/// contrast and HDR Specular around HDR White, Looks / LUTs / hue curves scaled into 0…1, curves
+/// continuing above HDR White, and HSL Secondary, on an image with highlights up to ~2000 cd/m².
+#[test]
+fn lumetri_hdr_on_the_gpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    use filmcraft_color::{Lut, Lut3d, WorkingSpace};
+    let cube = Lut3d::from_fn(9, |c| [c[1] * 0.9 + 0.05, c[2], c[0] * 0.8 + 0.1]);
+    let lut = Lut { title: "t".into(), shaper: None, cube: Some(cube) };
+    let mut p = filmcraft_project::Project::new("t");
+    p.luts.push(filmcraft_project::ProjectLut { id: "s".into(), name: "s".into(), source_path: None, format: "cube".into(), text: lut.to_cube().into() });
+    let p: &'static filmcraft_project::Project = Box::leak(Box::new(p));
+    let curve = |pts: &[[f32; 2]]| ParamValue::Curve(pts.to_vec());
+    let cases: Vec<Vec<(&str, ParamValue)>> = vec![
+        vec![],
+        vec![("exposure", fl(0.7)), ("contrast", fl(40.0)), ("hdr_specular", fl(-50.0)), ("hdr_white", fl(600.0)), ("highlights", fl(-30.0))],
+        vec![("contrast", fl(-30.0)), ("hdr_specular", fl(80.0)), ("whites", fl(20.0)), ("blacks", fl(-15.0)), ("saturation", fl(130.0))],
+        vec![("curve_luma", curve(&[[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])), ("curve_red", curve(&[[0.0, 0.1], [1.0, 0.9]])), ("curves_hdr_range", fl(2000.0))],
+        vec![("look", ParamValue::Choice(1)), ("look_intensity", fl(80.0)), ("hue_vs_luma", curve(&[[0.6, 0.7]])), ("curves_hdr_range", fl(400.0))],
+        vec![
+            ("wheel_highlights", ParamValue::Vec2(Vec2::new(0.4, 0.1))),
+            ("hue_vs_sat", curve(&[[0.0, 0.5], [0.33, 0.8]])),
+            ("shadow_tint", col(0.3, 0.5, 0.8)),
+        ],
+        vec![("input_lut", ParamValue::Text("lib:s".into())), ("look_lut", ParamValue::Text("lib:s".into())), ("look_intensity", fl(60.0))],
+        vec![("hsl_on", ParamValue::Bool(true)), ("hsl_hue", fl(200.0)), ("hsl_sat", fl(150.0)), ("hsl_hue_shift", fl(30.0)), ("hsl_blur", fl(20.0))],
+        vec![("hsl_on", ParamValue::Bool(true)), ("hsl_show_mask", ParamValue::Choice(1)), ("hsl_denoise", fl(40.0))],
+    ];
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67u32, 41u32);
+    // highlights up to 10× reference white (~2000 cd/m²)
+    let px: Vec<f32> = picture(w, h).chunks(4).flat_map(|p| [p[0] * 10.0, p[1] * 3.0, p[2] * 6.0, p[3]].map(half)).collect();
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let mut failures = Vec::new();
+    for working in [WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg] {
+        let cx = FxCtx { project: Some(p), working, ..cx(Tick::ZERO, 1.0) };
+        for params in &cases {
+            let e = effect("lumetri", params);
+            let op = FxOp::eval(&e, &cx, w as usize, h as usize).unwrap_or_else(|| panic!("{working:?} {params:?}: no GPU op"));
+            assert!(op.gpu_ok(), "{working:?} {params:?}: not GPU-capable");
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut cpu);
+            let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op], ..Default::default() };
+            let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("{working:?} {params:?}: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            if worst > TRANSCENDENTAL || flips > 0.0 {
+                failures.push(format!("{working:?} {params:?}: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "HDR Lumetri differs on the GPU:\n{}", failures.join("\n"));
+}

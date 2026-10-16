@@ -9,7 +9,7 @@
 //! op to the GPU when [`FxOp::gpu_ok`] says the shader covers it (finite numbers, no minifying
 //! resample), otherwise the clip is rendered on the CPU as before.
 
-use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
+use filmcraft_color::{GradeSpace, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
 use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
@@ -193,6 +193,8 @@ pub enum FxOp {
         aspect: f32,
         /// Split tone, Look, color wheels and curves (`None`: none of them is in use).
         extra: Option<Box<LumetriExtra>>,
+        /// HDR working spaces (`None`: SDR).
+        hdr: Option<LumetriHdr>,
     },
     /// Color Key.
     Key(crate::effects::Key),
@@ -234,7 +236,58 @@ pub struct LumetriExtra {
 }
 
 /// Header floats of [`LumetriExtra::packed`] before the curve tables.
-const HEADER: usize = 64;
+const HEADER: usize = 72;
+/// Where the HDR grade spaces go in the header ([`LumetriHdr::pack`]).
+const HDR_AT: usize = 64;
+
+/// Lumetri in an HDR working space: the grading signals of Basic Correction (HDR White) and of
+/// the curves / wheels / Looks (HDR Range), and HDR Specular.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LumetriHdr {
+    pub basic: GradeSpace,
+    pub advanced: GradeSpace,
+    pub specular: f32,
+}
+
+impl LumetriHdr {
+    /// The GPU's code of a grade space (0 SDR, 1 PQ, 2 HLG) and its two parameters (PQ: the
+    /// normalisation; HLG: HDR White and the system gamma).
+    pub fn code(gs: GradeSpace) -> (u32, [f32; 2]) {
+        match gs {
+            GradeSpace::Sdr => (0, [0.0; 2]),
+            GradeSpace::Pq { norm, .. } => (1, [norm, 0.0]),
+            GradeSpace::Hlg { white, gamma } => (2, [white, gamma]),
+        }
+    }
+
+    /// The grade spaces' codes (Basic, Advanced) and the header floats at `HDR_AT`: specular,
+    /// the BT.2020 luma weights, the Basic then the Advanced parameters.
+    pub fn pack(&self, d: &mut Vec<f32>) -> [u32; 2] {
+        if d.len() < HEADER {
+            d.resize(HEADER, 0.0);
+        }
+        let (bm, bp) = Self::code(self.basic);
+        let (am, ap) = Self::code(self.advanced);
+        let l = luma2020();
+        let v = [self.specular, l[0], l[1], l[2], bp[0], bp[1], ap[0], ap[1]];
+        if let Some(dst) = d.get_mut(HDR_AT..HDR_AT + v.len()) {
+            dst.copy_from_slice(&v);
+        }
+        [bm, am]
+    }
+
+    fn finite(&self) -> bool {
+        let (_, b) = Self::code(self.basic);
+        let (_, a) = Self::code(self.advanced);
+        b.iter().chain(&a).all(|v| v.is_finite()) && self.specular.is_finite()
+    }
+}
+
+/// BT.2020 luma weights (the HLG grading signal's OOTF).
+pub fn luma2020() -> [f32; 3] {
+    let l = filmcraft_color::Gamut::Bt2020.luma();
+    [l[0] as f32, l[1] as f32, l[2] as f32]
+}
 /// Where the two LUT descriptions start in the header (18 floats each).
 const LUT_SLOTS: [usize; 2] = [24, 42];
 
@@ -249,9 +302,9 @@ fn lut_ok(l: &filmcraft_color::Lut) -> bool {
 
 impl LumetriExtra {
     /// Flags (bit 0 split tone, bit 1 wheels, bit 2 + k curve k, bit 11 input LUT, bit 12 look LUT)
-    /// and the data the GPU pass reads: 64 header floats (split tone at 0, wheels at 8, look
-    /// intensity at 20, the two LUT descriptions at 24 and 42), the curve tables at
-    /// `64 + k * CURVE_N`, then the LUT tables.
+    /// and the data the GPU pass reads: 72 header floats (split tone at 0, wheels at 8, look
+    /// intensity at 20, the two LUT descriptions at 24 and 42, the HDR block at 64), the curve
+    /// tables at `HEADER + k * CURVE_N`, then the LUT tables.
     pub fn packed(&self) -> (u32, Vec<f32>) {
         let mut flags = 0u32;
         let mut d = vec![0f32; HEADER + 9 * CURVE_N];
@@ -311,20 +364,25 @@ impl LumetriExtra {
         self.look > 0 || self.look_lut.is_some() || self.wheels.is_some() || self.curves.iter().any(Option::is_some)
     }
 
-    /// The Advanced stage of the CPU grade (`effects::lumetri_advanced`, SDR) on a display-encoded
-    /// value, after the Basic stage.
-    fn advanced(&self, mut v: [f32; 3]) -> [f32; 3] {
+    /// The Advanced stage of the CPU grade (`effects::lumetri_advanced`) on a grading signal,
+    /// after the Basic stage (`hdr`: an HDR signal, whose values above 1 are kept).
+    fn advanced(&self, mut v: [f32; 3], hdr: bool) -> [f32; 3] {
+        use crate::effects::within_unit;
         let sample = |l: &Vec<f32>, x: f32| {
+            // above HDR White a curve continues with slope 1 from its end point
+            if hdr && x > 1.0 {
+                return l.last().copied().unwrap_or(0.0) + (x - 1.0);
+            }
             let p = x.clamp(0.0, 1.0) * (CURVE_N - 1) as f32;
             let i = p as usize;
             let j = (i + 1).min(CURVE_N - 1);
             l[i] + (l[j] - l[i]) * (p - i as f32)
         };
         if let Some(l) = &self.look_lut {
-            let lk = l.apply(v.map(|q| q.clamp(0.0, 1.0)));
+            let lk = within_unit(v, hdr, |u| l.apply(u));
             v = [v[0] + (lk[0] - v[0]) * self.look_k, v[1] + (lk[1] - v[1]) * self.look_k, v[2] + (lk[2] - v[2]) * self.look_k];
         } else if self.look > 0 {
-            let lk = crate::effects::apply_look(self.look, v);
+            let lk = if hdr { within_unit(v, true, |u| crate::effects::apply_look(self.look, u)) } else { crate::effects::apply_look(self.look, v) };
             v = [v[0] + (lk[0] - v[0]) * self.look_k, v[1] + (lk[1] - v[1]) * self.look_k, v[2] + (lk[2] - v[2]) * self.look_k];
         }
         if let Some(w) = self.wheels {
@@ -352,27 +410,28 @@ impl LumetriExtra {
             v[2] = sample(l, v[2]);
         }
         if hvs.is_some() || hvh.is_some() || hvl.is_some() || lvs.is_some() || svs.is_some() {
-            let u = v.map(|q| q.clamp(0.0, 1.0));
-            let mut hsl = filmcraft_color::rgb_to_hsl(u[0], u[1], u[2]);
-            let (h0, s0, l0) = (hsl[0], hsl[1], hsl[2]);
-            if let Some(t) = hvh {
-                hsl[0] = (hsl[0] + (sample(t, h0) - 0.5)).rem_euclid(1.0);
-            }
-            let mut sm = 1.0;
-            if let Some(t) = hvs {
-                sm *= sample(t, h0) * 2.0;
-            }
-            if let Some(t) = lvs {
-                sm *= sample(t, l0) * 2.0;
-            }
-            if let Some(t) = svs {
-                sm *= sample(t, s0) * 2.0;
-            }
-            hsl[1] = (hsl[1] * sm).clamp(0.0, 1.0);
-            if let Some(t) = hvl {
-                hsl[2] = (hsl[2] + (sample(t, h0) - 0.5) * 0.5).clamp(0.0, 1.0);
-            }
-            v = filmcraft_color::hsl_to_rgb(hsl[0], hsl[1], hsl[2]);
+            v = within_unit(v, hdr, |u| {
+                let mut hsl = filmcraft_color::rgb_to_hsl(u[0], u[1], u[2]);
+                let (h0, s0, l0) = (hsl[0], hsl[1], hsl[2]);
+                if let Some(t) = hvh {
+                    hsl[0] = (hsl[0] + (sample(t, h0) - 0.5)).rem_euclid(1.0);
+                }
+                let mut sm = 1.0;
+                if let Some(t) = hvs {
+                    sm *= sample(t, h0) * 2.0;
+                }
+                if let Some(t) = lvs {
+                    sm *= sample(t, l0) * 2.0;
+                }
+                if let Some(t) = svs {
+                    sm *= sample(t, s0) * 2.0;
+                }
+                hsl[1] = (hsl[1] * sm).clamp(0.0, 1.0);
+                if let Some(t) = hvl {
+                    hsl[2] = (hsl[2] + (sample(t, h0) - 0.5) * 0.5).clamp(0.0, 1.0);
+                }
+                filmcraft_color::hsl_to_rgb(hsl[0], hsl[1], hsl[2])
+            });
         }
         v
     }
@@ -657,9 +716,12 @@ impl FxOp {
                 }
                 // Creative ▸ Sharpen: an unsharp mask after the grade (as `effects::lumetri`)
                 let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
-                if cx.working != filmcraft_color::WorkingSpace::Rec709 {
-                    return None;
-                }
+                // HDR working spaces: the grading signals and HDR Specular (`effects::lumetri`)
+                let hdr = (cx.working != filmcraft_color::WorkingSpace::Rec709).then(|| LumetriHdr {
+                    basic: GradeSpace::new(cx.working, f(e, "hdr_white", cx)),
+                    advanced: GradeSpace::new(cx.working, f(e, "curves_hdr_range", cx)),
+                    specular: if basic_on { f(e, "hdr_specular", cx) / 100.0 } else { 0.0 },
+                });
                 let split = creative_on
                     .then(|| {
                         let (st, ht) = (color(e, "shadow_tint", cx), color(e, "highlight_tint", cx));
@@ -713,6 +775,7 @@ impl FxOp {
                     vfeather: f(e, "vignette_feather", cx) / 100.0,
                     aspect,
                     extra,
+                    hdr,
                 };
                 // the order of `effects::lumetri`: grade, HSL Secondary, Sharpen
                 let mut ops = vec![grade];
@@ -794,10 +857,11 @@ impl FxOp {
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
             FxOp::Mosaic { bw, bh } => fin(&[*bw, *bh]) && *bw >= 1.0 && *bh >= 1.0,
             FxOp::Vignette { amount, mid, round, feather, target } => fin(&[*amount, *mid, *round, *feather]) && fin(target),
-            FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra } => {
+            FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra, hdr } => {
                 fin(&[*temp, *tint, *exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *vib, *faded, *va, *vmid, *vround, *vfeather, *aspect])
                     && *aspect > 0.0
                     && extra.as_ref().is_none_or(|x| x.finite())
+                    && hdr.is_none_or(|h| h.finite())
             }
             FxOp::Key(k) => fin(&k.kycc) && fin(&[k.tol, k.soft]) && k.soft > 0.0,
             FxOp::LumaKey { th, cut } => fin(&[*th, *cut]),
@@ -814,7 +878,7 @@ impl FxOp {
                 fin(&[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft, h.htemp, h.htint, h.hsat, h.hshift, h.denoise])
                     && h.median_r <= HSL_MEDIAN_MAX
                     && h.show_mask <= 3
-                    && h.working == filmcraft_color::WorkingSpace::Rec709
+                    && LumetriHdr::code(h.grade_space()).1.iter().all(|v| v.is_finite())
             }
             FxOp::Chain(ops) => ops.iter().all(FxOp::gpu_ok),
         }
@@ -1070,7 +1134,9 @@ impl FxOp {
                     }
                 });
             }
-            FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra } => {
+            FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra, hdr } => {
+                let (gb, ga, specular) = hdr.map(|h| (h.basic, h.advanced, h.specular)).unwrap_or((GradeSpace::Sdr, GradeSpace::Sdr, 0.0));
+                let is_hdr = gb.is_hdr();
                 let split = extra.as_ref().and_then(|x| x.split);
                 let input_lut = extra.as_ref().and_then(|x| x.input_lut.clone());
                 let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
@@ -1081,11 +1147,11 @@ impl FxOp {
                 let (vmid, vround, vfeather, aspect) = (*vmid, *vround, *vfeather, *aspect);
                 img.map_rgb(|c, x, y| {
                     let c = match &input_lut {
-                        Some(l) => dec(l.apply(enc(c).map(|q| q.clamp(0.0, 1.0)))),
+                        Some(l) => gb.decode(crate::effects::within_unit(gb.encode(c), is_hdr, |v| l.apply(v))),
                         None => c,
                     };
                     let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
-                    let mut v = enc(lin);
+                    let mut v = gb.encode(lin);
                     let b0 = -bl * 0.15;
                     let w0 = 1.0 - wh * 0.15;
                     v = v.map(|q| (q - b0) / (w0 - b0).max(1e-3));
@@ -1100,10 +1166,16 @@ impl FxOp {
                     if contrast.abs() > 1e-4 {
                         let k = 1.0 + contrast;
                         v = v.map(|q| {
+                            if is_hdr && q > 1.0 {
+                                return q;
+                            }
                             let q = q.clamp(0.0, 1.0);
                             let s = q * q * (3.0 - 2.0 * q);
                             if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
                         });
+                    }
+                    if specular.abs() > 1e-4 {
+                        v = v.map(|q| if q > 1.0 { 1.0 + (q - 1.0) * (1.0 + specular).max(0.0) } else { q });
                     }
                     if faded > 0.0 {
                         v = v.map(|q| q * (1.0 - 0.25 * faded) + 0.12 * faded);
@@ -1129,8 +1201,8 @@ impl FxOp {
                     }
                     // the Advanced stage reads the pixel the Basic stage wrote
                     match extra.as_ref().filter(|x| x.has_advanced()) {
-                        Some(x) => dec(x.advanced(enc(dec(v)))),
-                        None => dec(v),
+                        Some(x) => ga.decode(x.advanced(ga.encode(gb.decode(v)), is_hdr)),
+                        None => gb.decode(v),
                     }
                 });
             }

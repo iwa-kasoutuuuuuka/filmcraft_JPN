@@ -20,7 +20,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use filmcraft_render::gpufx::FxOp;
+use filmcraft_render::gpufx::{FxOp, LumetriHdr, luma2020};
 use filmcraft_render::mask::FlatMask;
 use filmcraft_render::plan::LayerFx;
 
@@ -239,18 +239,23 @@ fn steps(op: &FxOp) -> Vec<Step> {
         FxOp::AlphaAdjust { opacity, ignore, invert, mask_only } => {
             out.push(step(OP_ALPHA_ADJUST, [*ignore as u32, *invert as u32, *mask_only as u32, 0], &[*opacity]));
         }
-        FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra } => {
+        FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra, hdr } => {
             // split tone, Look, wheels and curves: flags and look in the integers, tables in `data`
-            let (flags, look, data) = match extra {
+            let (flags, look, mut data) = match extra {
                 Some(x) => {
                     let (flags, data) = x.packed();
                     (flags, x.look, Some(data))
                 }
                 None => (0, 0, None),
             };
+            // HDR: the grade spaces' codes in the integers, their parameters in the data header
+            let [bm, am] = match hdr {
+                Some(h) => h.pack(data.get_or_insert_with(Vec::new)),
+                None => [0, 0],
+            };
             let mut s = step(
                 OP_LUMETRI,
-                [flags, look, 0, 0],
+                [flags, look, bm, am],
                 &[*temp, *tint, *exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *vib, *faded, *va, *vmid, *vround, *vfeather, *aspect],
             );
             s.data = data;
@@ -265,7 +270,11 @@ fn steps(op: &FxOp) -> Vec<Step> {
         FxOp::HslSecondary(h) => {
             // the key (and its refinement) is made beside the image, which stays untouched until
             // the apply pass reads it back (as Unsharp keeps its original)
-            let mut key = vec![step(OP_HSL_KEY, [0; 4], &[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft])];
+            // the grading signal (HDR: its code in i1.y, parameters and the BT.2020 luma weights)
+            let (gm, gp) = LumetriHdr::code(h.grade_space());
+            let l = luma2020();
+            let mut key =
+                vec![step(OP_HSL_KEY, [0, gm, 0, 0], &[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft, 0.0, 0.0, gp[0], gp[1], 0.0, 0.0, l[0], l[1], l[2]])];
             if h.median_r > 0 {
                 key.push(step(OP_HSL_MEDIAN, [h.median_r as u32, 0, 0, 0], &[h.denoise.min(1.0)]));
             }
@@ -276,7 +285,7 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 s.unsharp_blur = true;
             }
             out.append(&mut key);
-            let mut apply = step(OP_HSL_APPLY, [h.show_mask, 0, 0, 0], &[h.htemp, h.htint, h.hsat, h.hshift]);
+            let mut apply = step(OP_HSL_APPLY, [h.show_mask, gm, 0, 0], &[h.htemp, h.htint, h.hsat, h.hshift, gp[0], gp[1], 0.0, 0.0, l[0], l[1], l[2]]);
             apply.combine = true;
             out.push(apply);
         }

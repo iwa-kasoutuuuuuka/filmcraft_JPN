@@ -182,8 +182,9 @@ fn hsl_refine_blur_softens_the_key() {
     assert!(speck[0] > speck[1], "speckle left alone after denoise: {speck:?}");
 }
 
-/// The GPU operation's CPU twin (what both the GPU and the CPU path now run for Lumetri with
-/// split tone, Looks, color wheels and curves) grades exactly as the Lumetri grade itself.
+/// The GPU operation's CPU twin (what the GPU pass is tested against) grades exactly as the
+/// Lumetri grade itself: split tone, Looks, color wheels, curves, LUTs and HSL Secondary, in SDR
+/// and in the HDR (PQ / HLG) working spaces.
 #[test]
 fn gpu_twin_grades_as_lumetri_with_wheels_curves_and_looks() {
     use filmcraft_geom::Vec2;
@@ -219,19 +220,41 @@ fn gpu_twin_grades_as_lumetri_with_wheels_curves_and_looks() {
     let mut cases = cases;
     cases.push(vec![("input_lut", ParamValue::Text("lib:s".into())), ("exposure", F(0.3))]);
     cases.push(vec![("look_lut", ParamValue::Text("lib:s".into())), ("look_intensity", F(80.0)), ("wheel_midtones", ParamValue::Vec2(Vec2::new(0.1, 0.1)))]);
-    let c = FxCtx { project: Some(&p), ..cx(WorkingSpace::Rec709) };
-    for params in cases {
-        let e = lumetri(&params);
-        let mut want = Image::new(23, 9);
-        for (i, p) in want.px.chunks_mut(4).enumerate() {
-            let t = i as f32 / 207.0;
-            p.copy_from_slice(&[t, (t * 7.3).fract(), 1.0 - t, if i % 5 == 0 { 0.5 } else { 1.0 }]);
+    // HDR: contrast and specular around HDR White, its own HDR White / HDR Range, HSL Secondary
+    cases.push(vec![("contrast", F(40.0)), ("hdr_specular", F(-50.0)), ("hdr_white", F(600.0)), ("highlights", F(-30.0))]);
+    cases.push(vec![
+        ("contrast", F(-30.0)),
+        ("hdr_specular", F(80.0)),
+        ("curve_luma", curve(&[[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])),
+        ("curves_hdr_range", F(2000.0)),
+    ]);
+    cases.push(vec![("look", ParamValue::Choice(1)), ("hue_vs_luma", curve(&[[0.6, 0.7]])), ("curves_hdr_range", F(400.0))]);
+    cases.push(vec![
+        ("hsl_on", ParamValue::Bool(true)),
+        ("hsl_hue", F(200.0)),
+        ("hsl_sat", F(150.0)),
+        ("hsl_hue_shift", F(30.0)),
+        ("curves_hdr_range", F(1500.0)),
+    ]);
+    cases.push(vec![("hsl_on", ParamValue::Bool(true)), ("hsl_show_mask", ParamValue::Choice(2))]);
+    for working in [WorkingSpace::Rec709, WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg] {
+        let c = FxCtx { project: Some(&p), ..cx(working) };
+        // HDR images reach well above reference white (up to ~20× = 4000 cd/m²)
+        let peak = if working == WorkingSpace::Rec709 { 1.0 } else { 20.0 };
+        for params in &cases {
+            let e = lumetri(params);
+            let mut want = Image::new(23, 9);
+            for (i, p) in want.px.chunks_mut(4).enumerate() {
+                let t = i as f32 / 207.0;
+                let a = if i % 5 == 0 { 0.5 } else { 1.0 };
+                p.copy_from_slice(&[t * peak * a, (t * 7.3).fract() * a, (1.0 - t) * peak * a, a]);
+            }
+            let mut got = want.clone();
+            crate::effects::apply(&mut want, &e, &c);
+            let op = crate::gpufx::FxOp::eval(&e, &c, got.w, got.h).unwrap_or_else(|| panic!("{working:?} {params:?}: no GPU op"));
+            op.apply(&mut got);
+            let worst = want.px.iter().zip(&got.px).map(|(a, b)| (a - b).abs() / (1.0 + a.abs())).fold(0.0f32, f32::max);
+            assert!(worst < 1e-5, "{working:?} {params:?}: differs by {worst}");
         }
-        let mut got = want.clone();
-        crate::effects::lumetri(&mut want, &e, &c);
-        let op = crate::gpufx::FxOp::eval(&e, &c, got.w, got.h).unwrap_or_else(|| panic!("{params:?}: no GPU op"));
-        op.apply(&mut got);
-        let worst = want.px.iter().zip(&got.px).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        assert!(worst < 1e-5, "{params:?}: differs by {worst}");
     }
 }
