@@ -52,13 +52,13 @@ const MAX_OUTPUTS: usize = 64;
 /// Decoder transforms tried for a codec.
 const MAX_TRANSFORMS: usize = 8;
 
-fn err(what: &str, e: windows::core::Error) -> String {
+pub(crate) fn err(what: &str, e: windows::core::Error) -> String {
     format!("{what} failed ({:#010x})", e.code().0)
 }
 
 /// COM (multithreaded apartment) and Media Foundation, started once for the process and never
 /// stopped: decoders live on any thread until the app exits.
-fn runtime() -> std::result::Result<(), String> {
+pub(crate) fn runtime() -> std::result::Result<(), String> {
     static STARTED: OnceLock<std::result::Result<(), String>> = OnceLock::new();
     STARTED
         .get_or_init(|| {
@@ -107,8 +107,8 @@ fn layout(info: &NalStreamInfo) -> std::result::Result<Layout, String> {
 
 /// The Direct3D 11 device every decoder of the process decodes on, with the device manager that
 /// shares it between them. Created once: making a device costs far more than decoding a picture.
-struct Device {
-    manager: IMFDXGIDeviceManager,
+pub(crate) struct Device {
+    pub(crate) manager: IMFDXGIDeviceManager,
     // Kept alive for the manager; read-back copies run on it.
     device: ID3D11Device,
 }
@@ -153,7 +153,7 @@ impl Device {
     }
 
     /// The process's device, or why there is none (no video-capable adapter).
-    fn shared() -> std::result::Result<&'static Device, String> {
+    pub(crate) fn shared() -> std::result::Result<&'static Device, String> {
         static DEVICE: OnceLock<std::result::Result<Device, String>> = OnceLock::new();
         DEVICE.get_or_init(Device::new).as_ref().map_err(Clone::clone)
     }

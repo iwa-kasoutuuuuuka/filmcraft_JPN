@@ -5,7 +5,7 @@
 //! ```sh
 //! cargo xtask bench                                   # every section, writes target/bench/bench-<label>.{json,md}
 //! cargo xtask bench --sections decode,scrub --repeat 3 --label after
-//! cargo xtask bench --sections decode --hw off --label hw-off   # FilmCraft's own decoders only
+//! cargo xtask bench --sections decode --hw off --label hw-off   # FilmCraft's own decoders (and encoders) only
 //! cargo run --release -p filmcraft-ui-egui --example bench -- --section timeline   # one section, this process
 //! ```
 //!
@@ -71,6 +71,8 @@ fn main() {
         "on" => filmcraft_codecs::hw::HwMode::On,
         _ => filmcraft_codecs::hw::HwMode::Auto,
     });
+    // `--hw off`: our encoders too (hardware H.264 encoding on Windows)
+    filmcraft_engine::export::hw::set_hardware_encoding(opts.hw != "off");
     if let Some(section) = arg_value(&args, "--section") {
         let v = run_section(&section, &opts);
         let text = serde_json::to_string_pretty(&v).unwrap_or_default();

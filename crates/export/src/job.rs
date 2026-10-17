@@ -79,6 +79,17 @@ fn mux_missing() -> ExportError {
     ExportError::Encode("muxer not created".into())
 }
 
+/// Our own encoder for the settings (hardware encoders skipped): where a hardware encoder failed.
+fn make_software_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
+    video_factories()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter_map(|fac| fac(settings.video_format(), w, h, rate, settings))
+        .find(|r| !r.as_ref().is_ok_and(|e| e.is_hardware()))
+        .ok_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", settings.video_format().label())))?
+}
+
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
     video_factories()
         .read()
@@ -372,6 +383,19 @@ impl Exporter {
     }
 
     fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
+        match self.encode_with_current(frames, f) {
+            // a hardware encoder failing before anything was written: our encoder takes over
+            Err(e) if self.venc.is_hardware() && f == self.f0 && self.mux.is_none() && self.mxf.is_none() => {
+                log::warn!("hardware encoder failed ({e}); exporting with FilmCraft's encoder");
+                crate::hw::note_hw_encode_fallback();
+                self.venc = make_software_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?;
+                self.encode_with_current(frames, f)
+            }
+            r => r,
+        }
+    }
+
+    fn encode_with_current(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
         let mut packets = Vec::new();
         for (k, (rgba, hdr)) in frames.iter().enumerate() {
             let fr = EncoderFrame {

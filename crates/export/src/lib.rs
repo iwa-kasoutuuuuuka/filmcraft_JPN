@@ -5,7 +5,8 @@
 //! are shared atomics so the UI (Export mode, header progress) and MCP can observe/cancel jobs.
 //!
 //! Video encoders implement [`VideoEncoder`]; codec crates register theirs with
-//! [`register_encoder`] (H.264, ProRes …). Built in: Motion-JPEG (MOV), PNG / TIFF / BMP
+//! [`register_encoder`] (H.264, ProRes …), and `filmcraft-platform` registers the OS hardware
+//! encoders in front of ours ([`hw`]). Built in: Motion-JPEG (MOV), PNG / TIFF / BMP
 //! sequences, GIF, WAV and AIFF.
 //!
 //! [`ExportSettings`] carries every Export-mode setting (frame size, rate, bitrate encoding, audio
@@ -16,6 +17,7 @@
 use std::io::Write;
 
 mod audio_out;
+pub mod hw;
 mod job;
 mod mxf_out;
 mod pcm;
@@ -236,6 +238,10 @@ pub struct ExportSettings {
     /// H.264 level × 10 (41 = 4.1); None = the lowest level that fits. A level below what the
     /// stream needs is raised.
     pub h264_level: Option<u8>,
+    /// Encoding Settings ▸ Performance (H.264): Hardware Encoding (the GPU's media engine where
+    /// the system has one: [`hw`]) or Software Encoding (always our encoder). Hardware is used for
+    /// single-pass SDR MP4 / MOV exports with square pixels; anything else uses ours.
+    pub hardware_encoding: bool,
     pub bitrate_mode: BitrateMode,
     /// VBR maximum bitrate (None = 1.5 × target).
     pub max_bitrate_kbps: Option<u32>,
@@ -428,6 +434,7 @@ impl Default for ExportSettings {
             effects: ExportEffects::default(),
             metadata: ExportMetadata::default(),
             h264_pass: H264Pass::Single,
+            hardware_encoding: true,
             signal: ColorSignal::default(),
             sink: None,
         }
@@ -515,6 +522,11 @@ pub trait VideoEncoder: Send {
     /// First-pass statistics of a two-pass encode (H.264).
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
         None
+    }
+    /// An OS hardware encoder ([`hw`]): if it fails on the first frames, the export carries on
+    /// with our own encoder.
+    fn is_hardware(&self) -> bool {
+        false
     }
 }
 

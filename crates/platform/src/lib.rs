@@ -1,4 +1,5 @@
-//! OS media integration (layer L5): hardware video decoding through the operating system's codecs.
+//! OS media integration (layer L5): hardware video decoding and encoding through the operating
+//! system's codecs.
 //!
 //! [`register`] puts the platform's hardware decoder factory in front of FilmCraft's own decoders
 //! (`filmcraft_codecs::register_video_decoder`), for H.264 (`avcC`) and HEVC (`hvcC`) streams:
@@ -20,6 +21,12 @@
 //! Pictures are the software decoder's: same planes (bit-exact on the parity fixtures), colour,
 //! pixel aspect, pts and presentation order, so the two are interchangeable.
 //!
+//! On Windows, [`register`] also puts a Media Foundation hardware H.264 encoder (the GPU's media
+//! engine) in front of our encoder for MP4 / MOV exports (`filmcraft_export::register_encoder`;
+//! Settings ▸ Export ▸ Hardware encoding, `filmcraft_export::hw`). It declines HDR, two-pass,
+//! MXF and non-square-pixel exports, and an export whose hardware encoder fails on its first
+//! frames finishes with our encoder.
+//!
 //! This is the one crate allowed to use `unsafe` (OS FFI), and only in its FFI modules
 //! (docs/adr/0001-platform-ffi.md).
 
@@ -30,6 +37,9 @@ pub mod locale;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub mod mediafoundation;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub mod mfencode;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox;
@@ -56,7 +66,11 @@ pub fn register() -> Availability {
     }
     #[cfg(windows)]
     {
-        filmcraft_codecs::register_video_decoder(mediafoundation_factory);
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            filmcraft_codecs::register_video_decoder(mediafoundation_factory);
+            filmcraft_export::register_encoder(mediafoundation_encoder_factory);
+        });
         Availability::Available("Media Foundation")
     }
     #[cfg(not(any(target_os = "macos", windows)))]
@@ -114,6 +128,39 @@ pub fn mediafoundation_factory(entry: &filmcraft_isobmff::SampleEntry) -> Option
         Err(why) => {
             log::info!("hardware decoding declined for {} video: {why}", entry.codec.name());
             filmcraft_codecs::hw::note_hw_declined_because(entry.codec.name(), &why);
+            None
+        }
+    }
+}
+
+/// The Media Foundation hardware H.264 encoder for MP4 / MOV exports, `None` (our encoder) when
+/// hardware encoding is off, for settings it does not take, or without a hardware encoder.
+#[cfg(windows)]
+pub fn mediafoundation_encoder_factory(
+    format: filmcraft_export::Format,
+    w: u32,
+    h: u32,
+    rate: filmcraft_time::FrameRate,
+    s: &filmcraft_export::ExportSettings,
+) -> Option<filmcraft_export::Result<Box<dyn filmcraft_export::VideoEncoder>>> {
+    if format != filmcraft_export::Format::H264
+        || !filmcraft_export::hw::hardware_encoding()
+        || !s.hardware_encoding
+        || s.format.is_mxf()
+        || s.signal.is_hdr()
+        || !matches!(s.h264_pass, filmcraft_export::H264Pass::Single)
+        || s.pixel_aspect.is_some_and(|(n, d)| n != d)
+    {
+        return None;
+    }
+    match mfencode::MfEncoder::new(w, h, rate, s) {
+        Ok(e) => {
+            log::info!("hardware H.264 encoding with {}", e.name());
+            filmcraft_export::hw::note_hw_encode_session();
+            Some(Ok(Box::new(e)))
+        }
+        Err(why) => {
+            log::info!("hardware H.264 encoding declined: {why}");
             None
         }
     }

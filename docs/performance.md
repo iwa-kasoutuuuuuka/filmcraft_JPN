@@ -33,6 +33,23 @@ and box blur passes beside the image, then the correction (`lumetri-hsl`: 38/154
 192/0 twice, UI p95 20 → 12 ms). The grade in HDR working spaces (PQ / HLG) followed, but HDR
 sequences don't reach it yet (see below).
 
+## Results (Windows: hardware H.264 export, software → hardware)
+
+`bench --section export --only h264 --hw off|auto` (release; 8 s of a 1080p23.976 clip, H.264 +
+AAC MP4, default bitrate), runs alternated. Windows 11, NVIDIA (NVIDIA H.264 Encoder MFT).
+
+| | seconds (2 runs) | file |
+|---|---|---|
+| our encoder (`--hw off`) | 4.8, 4.9 | 20.4 MB |
+| **hardware** (Media Foundation) | **2.5, 2.3** | 21.5 MB |
+
+Before, a batch of frames rendered in parallel (≈1.3 s in total) and then encoded on the CPU
+(≈3.1 s in total for H.264, ≈3.4 s for ProRes); the encode now runs on the GPU's media engine.
+`crates/platform/src/mfencode.rs` drives the asynchronous encoder transform (NV12 in system memory,
+no B-frames, Annex B → length-prefixed samples with the parameter sets in the `avcC`). The stream
+decodes with our decoder (PSNR > 30 dB against the source) and with ffmpeg without errors
+(`tests/mfencode.rs`). Rendering is now most of the time: overlapping it with the encode is next.
+
 ## Results (keys and HDR Lumetri on the GPU, before → after)
 
 `bench --section playback --only <scenario>` (release, GPU path, 8 s plays), before = `eb49b29`

@@ -274,3 +274,44 @@ fn hdr_exports_signal_pq_and_hlg() {
         eprintln!("{path}:\n{txt}");
     }
 }
+
+/// A hardware encoder that fails on its first picture (`hw`): only for exports whose path says so.
+struct FailingHardware;
+
+impl VideoEncoder for FailingHardware {
+    fn sample_entry(&self) -> SampleEntry {
+        SampleEntry::avc(filmcraft_isobmff::AvcConfig::new(Vec::new(), Vec::new(), 4), 320, 180)
+    }
+    fn timescale(&self) -> u32 {
+        24
+    }
+    fn encode(&mut self, _: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        Err(ExportError::Encode("device lost".into()))
+    }
+    fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
+        Ok(Vec::new())
+    }
+    fn is_hardware(&self) -> bool {
+        true
+    }
+}
+
+fn failing_hardware_factory(format: Format, _: u32, _: u32, _: FrameRate, s: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+    (format == Format::H264 && s.path.contains("failing-hw")).then(|| Ok(Box::new(FailingHardware) as Box<dyn VideoEncoder>))
+}
+
+/// A hardware encoder failing on the first frames: the export finishes with our encoder.
+#[test]
+fn failing_hardware_encoder_falls_back_to_ours() {
+    register_encoder(failing_hardware_factory);
+    let (p, seq, m) = project();
+    let path = tmp("failing-hw.mp4");
+    let before = hw::hw_encode_stats();
+    let r = export(&p, seq, &ExportSettings { format: Format::H264, path: path.clone(), ..Default::default() }, &m, &Progress::default()).unwrap();
+    assert_eq!(r.frames, 24);
+    assert!(hw::hw_encode_stats().fallbacks > before.fallbacks);
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = filmcraft_codecs::open_bytes("failing-hw.mp4", bytes).unwrap();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
+    assert!(f[0] > 230 && f[1] < 30, "red, from our encoder: {:?}", &f[..4]);
+}

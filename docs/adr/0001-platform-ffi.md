@@ -18,7 +18,7 @@ Using it needs FFI into C / Objective-C APIs, which is `unsafe` Rust. The bindin
 ## Decision
 
 Allow `unsafe` in exactly one crate, `crates/platform` (`filmcraft-platform`, layer L5), for one
-job: OS media FFI (hardware decoding now, hardware encoding later). Audio output, dialogs, menus
+job: OS media FFI (hardware decoding, and hardware H.264 encoding through Media Foundation on Windows: `mfencode.rs`). Audio output, dialogs, menus
 and other OS integration do not go in it.
 
 Containment rules:

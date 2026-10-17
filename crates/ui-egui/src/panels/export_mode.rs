@@ -708,6 +708,13 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     s.h264_level = levels[i];
                 }
             });
+            row(ui, t, "Performance", |ui| {
+                let labels: Vec<(String, bool)> = ["Hardware Encoding", "Software Encoding"].iter().map(|l| (l.to_string(), true)).collect();
+                let cur = if s.hardware_encoding { "Hardware Encoding" } else { "Software Encoding" };
+                if let Some(i) = combo(ui, reg, "export.video.performance", cur, &labels, 160.0) {
+                    s.hardware_encoding = i == 0;
+                }
+            });
             row(ui, t, "Bitrate Encoding", |ui| {
                 let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass];
                 let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), true)).collect();
