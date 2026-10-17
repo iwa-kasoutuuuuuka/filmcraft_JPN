@@ -76,9 +76,6 @@ pub struct MfEncoder {
     pps: Option<Vec<u8>>,
     /// Sample time of the last output (presentation order is checked: no B-frames).
     last_time: Option<i64>,
-    y: Vec<u8>,
-    u: Vec<u8>,
-    v: Vec<u8>,
 }
 
 // SAFETY: a Media Foundation transform and its event generator are free-threaded objects of the
@@ -216,9 +213,6 @@ impl MfEncoder {
             sps: None,
             pps: None,
             last_time: None,
-            y: Vec::new(),
-            u: Vec::new(),
-            v: Vec::new(),
         })
     }
 
@@ -234,13 +228,11 @@ impl MfEncoder {
     }
 
     /// An NV12 sample of the picture (BT.709 limited range, as our H.264 encoder converts).
-    fn input_sample(&mut self, f: &EncoderFrame) -> std::result::Result<IMFSample, String> {
+    fn input_sample(&self, f: &EncoderFrame) -> std::result::Result<IMFSample, String> {
         let (w, h) = (self.w as usize, self.h as usize);
         if f.width != self.w || f.height != self.h || f.rgba.len() < w * h * 4 {
             return Err("picture size changed".into());
         }
-        filmcraft_export::rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v);
-        let cw = w / 2;
         let len = w * h + w * (h / 2);
         let len32 = u32::try_from(len).map_err(|_| "picture too large")?;
         // SAFETY: plain value in, interface out.
@@ -249,16 +241,18 @@ impl MfEncoder {
         let mut capacity = 0u32;
         // SAFETY: valid out pointers; the buffer stays locked until `Unlock` below.
         unsafe { buffer.Lock(&mut dst, Some(&mut capacity), None) }.map_err(|e| err("IMFMediaBuffer::Lock", e))?;
-        let fits = !dst.is_null() && capacity as usize >= len && self.y.len() >= w * h && self.u.len() >= cw * (h / 2) && self.v.len() >= cw * (h / 2);
+        let fits = !dst.is_null() && capacity as usize >= len;
         if fits {
             // SAFETY: the locked buffer holds at least `capacity >= len` writable bytes at `dst`,
-            // and a fresh buffer cannot overlap our planes.
+            // and a fresh buffer cannot overlap the picture.
             let out = unsafe { std::slice::from_raw_parts_mut(dst, len) };
-            let (luma, chroma) = out.split_at_mut(w * h);
-            luma.copy_from_slice(&self.y[..w * h]);
-            for (k, uv) in chroma.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                uv[0] = self.u.get(k).copied().unwrap_or(128);
-                uv[1] = self.v.get(k).copied().unwrap_or(128);
+            match f.prepared.filter(|p| p.len() == len) {
+                // converted while rendering (`input_converter`)
+                Some(p) => out.copy_from_slice(p),
+                None => {
+                    let (luma, chroma) = out.split_at_mut(w * h);
+                    filmcraft_export::rgba_to_nv12(f.rgba, w, h, luma, chroma);
+                }
             }
         }
         // SAFETY: the buffer was locked above.
@@ -477,6 +471,9 @@ impl VideoEncoder for MfEncoder {
     }
     fn is_hardware(&self) -> bool {
         true
+    }
+    fn input_converter(&self) -> Option<filmcraft_export::InputConverter> {
+        Some(filmcraft_export::InputConverter { id: "nv12", convert: filmcraft_export::rgba_to_nv12_vec })
     }
 }
 

@@ -507,6 +507,18 @@ pub struct EncoderFrame<'a> {
     pub rgba: &'a [u8],
     pub hdr: Option<&'a [f32]>,
     pub index: u64,
+    /// The SDR picture already converted by the encoder's [`VideoEncoder::input_converter`]
+    /// (the exporter runs it while rendering, in parallel); None: convert `rgba` here.
+    pub prepared: Option<&'a [u8]>,
+}
+
+/// A per-picture input conversion (RGBA8 -> the encoder's own layout) that the exporter runs
+/// while rendering, frame-parallel, instead of the encoder converting serially. `id` names the
+/// layout, so a picture prepared for one encoder is never fed to another.
+#[derive(Clone, Copy, Debug)]
+pub struct InputConverter {
+    pub id: &'static str,
+    pub convert: fn(rgba: &[u8], w: usize, h: usize) -> Vec<u8>,
 }
 
 pub trait VideoEncoder: Send {
@@ -527,6 +539,11 @@ pub trait VideoEncoder: Send {
     /// with our own encoder.
     fn is_hardware(&self) -> bool {
         false
+    }
+    /// The SDR input conversion the exporter may run ahead of [`Self::encode`]
+    /// ([`EncoderFrame::prepared`]).
+    fn input_converter(&self) -> Option<InputConverter> {
+        None
     }
 }
 
@@ -841,15 +858,24 @@ impl VideoEncoder for H264Encoder {
         self.rate.num as u32
     }
     fn encode(&mut self, f: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
+        let (w, h) = (f.width as usize, f.height as usize);
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        // converted while rendering (`input_converter`): the three planes back to back
+        if let Some(p) = f.prepared.filter(|p| f.hdr.is_none() && p.len() == w * h + 2 * cw * ch) {
+            let (y, uv) = p.split_at(w * h);
+            let (u, v) = uv.split_at(cw * ch);
+            let frame = filmcraft_h264enc::YuvFrame { y, u, v, y_stride: w, uv_stride: cw };
+            let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
+            return Ok(self.packets(ps));
+        }
         match f.hdr {
             Some(rgb) => {
                 let (kr, kb) = self.signal.kr_kb();
-                rgbf_to_yuv420_8(rgb, f.width as usize, f.height as usize, kr, kb, &mut self.y, &mut self.u, &mut self.v)
+                rgbf_to_yuv420_8(rgb, w, h, kr, kb, &mut self.y, &mut self.u, &mut self.v)
             }
-            None => rgba_to_yuv420_8(f.rgba, f.width as usize, f.height as usize, &mut self.y, &mut self.u, &mut self.v),
+            None => rgba_to_yuv420_8(f.rgba, w, h, &mut self.y, &mut self.u, &mut self.v),
         }
-        let cw = (f.width as usize).div_ceil(2);
-        let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: f.width as usize, uv_stride: cw };
+        let frame = filmcraft_h264enc::YuvFrame { y: &self.y, u: &self.u, v: &self.v, y_stride: w, uv_stride: cw };
         let ps = self.enc.try_encode(&frame, f.index as i64 * self.rate.den).map_err(|e| ExportError::Encode(e.to_string()))?;
         Ok(self.packets(ps))
     }
@@ -864,6 +890,27 @@ impl VideoEncoder for H264Encoder {
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
         self.enc.pass_stats()
     }
+    fn input_converter(&self) -> Option<InputConverter> {
+        Some(InputConverter { id: "i420", convert: rgba_to_i420 })
+    }
+}
+
+/// [`rgba_to_yuv420_8`] as one buffer: Y, then Cb, then Cr (the H.264 encoder's prepared input).
+pub fn rgba_to_i420(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+    rgba_to_yuv420_8(rgba, w, h, &mut y, &mut u, &mut v);
+    y.extend_from_slice(&u);
+    y.extend_from_slice(&v);
+    y
+}
+
+/// [`rgba_to_nv12`] into a new buffer (Y, then interleaved Cb/Cr).
+pub fn rgba_to_nv12_vec(rgba: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let mut out = vec![0u8; w * h + cw * 2 * ch];
+    let (y, uv) = out.split_at_mut(w * h);
+    rgba_to_nv12(rgba, w, h, y, uv);
+    out
 }
 
 /// BT.709 limited-range 8-bit 4:2:0 from straight RGBA8 (2×2 chroma average).
@@ -892,6 +939,48 @@ pub fn rgba_to_yuv420_8(rgba: &[u8], w: usize, h: usize, y: &mut Vec<u8>, u: &mu
         for cx in 0..cw {
             ur[cx] = (128.0 + 224.0 * us[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
             vr[cx] = (128.0 + 224.0 * vs[cx] / cnt[cx]).round().clamp(1.0, 254.0) as u8;
+        }
+    });
+}
+
+/// [`rgba_to_yuv420_8`] straight into an NV12 picture (hardware encoders): `y` holds `w × h`
+/// luma bytes, `uv` the interleaved Cb/Cr rows (`2 × ⌈w/2⌉` bytes each, `⌈h/2⌉` rows). Same values
+/// bit for bit (same arithmetic in the same order), without intermediate planes.
+pub fn rgba_to_nv12(rgba: &[u8], w: usize, h: usize, y: &mut [u8], uv: &mut [u8]) {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    if w == 0 || h == 0 || rgba.len() < w * h * 4 || y.len() < w * h || uv.len() < cw * 2 * ch {
+        return;
+    }
+    // x / 255.0 for every byte (the same quotient as dividing per pixel)
+    let unit: [f32; 256] = std::array::from_fn(|i| i as f32 / 255.0);
+    let y = &mut y[..w * h];
+    let uv = &mut uv[..cw * 2 * ch];
+    y.par_chunks_mut(w * 2).zip(uv.par_chunks_mut(cw * 2)).enumerate().with_min_len(4).for_each(|(cy, (yr, uvr))| {
+        let rows = yr.len() / w;
+        for cx in 0..cw {
+            let (mut us, mut vs, mut cnt) = (0f32, 0f32, 0f32);
+            for dy in 0..rows {
+                let row = cy * 2 + dy;
+                for x in [cx * 2, cx * 2 + 1] {
+                    if x >= w {
+                        continue;
+                    }
+                    let i = (row * w + x) * 4;
+                    let Some(p) = rgba.get(i..i + 3) else { continue };
+                    let (r, g, b) = (unit[p[0] as usize], unit[p[1] as usize], unit[p[2] as usize]);
+                    let yy = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                    if let Some(o) = yr.get_mut(dy * w + x) {
+                        *o = (16.0 + 219.0 * yy).round().clamp(1.0, 254.0) as u8;
+                    }
+                    us += (b - yy) / 1.8556;
+                    vs += (r - yy) / 1.5748;
+                    cnt += 1.0;
+                }
+            }
+            if let Some(o) = uvr.get_mut(cx * 2..cx * 2 + 2) {
+                o[0] = (128.0 + 224.0 * us / cnt).round().clamp(1.0, 254.0) as u8;
+                o[1] = (128.0 + 224.0 * vs / cnt).round().clamp(1.0, 254.0) as u8;
+            }
         }
     });
 }

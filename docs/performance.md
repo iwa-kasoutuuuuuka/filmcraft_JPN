@@ -48,7 +48,19 @@ Before, a batch of frames rendered in parallel (≈1.3 s in total) and then enco
 `crates/platform/src/mfencode.rs` drives the asynchronous encoder transform (NV12 in system memory,
 no B-frames, Annex B → length-prefixed samples with the parameter sets in the `avcC`). The stream
 decodes with our decoder (PSNR > 30 dB against the source) and with ffmpeg without errors
-(`tests/mfencode.rs`). Rendering is now most of the time: overlapping it with the encode is next.
+(`tests/mfencode.rs`).
+
+Then the export overlapped rendering and encoding: each step renders a batch while the previous
+one encodes (`rayon::join`; in turn on hosts without threads), and the encoders' RGBA → YUV
+conversion (`VideoEncoder::input_converter`: NV12 for the hardware encoder, I420 for ours) runs
+inside the frame-parallel render instead of serially in the encoder, where it had cost ≈7 ms per
+1080p frame. Batches are capped at 256 MB of pictures (4K and HDR render fewer frames at once).
+
+| | before | after (2 runs) |
+|---|---|---|
+| H.264, hardware | 2.4 s | **2.0, 2.0 s** |
+| H.264, our encoder | 4.8 s | **4.6, 4.5 s** |
+| ProRes 422 HQ | 4.8 s | 4.8, 4.7 s (the encoder itself is the limit) |
 
 ## Results (keys and HDR Lumetri on the GPU, before → after)
 

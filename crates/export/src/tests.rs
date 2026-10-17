@@ -315,3 +315,29 @@ fn failing_hardware_encoder_falls_back_to_ours() {
     let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 2))).unwrap().to_rgba8();
     assert!(f[0] > 230 && f[1] < 30, "red, from our encoder: {:?}", &f[..4]);
 }
+
+/// The NV12 converter of the hardware encoders gives exactly the planes of `rgba_to_yuv420_8`.
+#[test]
+fn rgba_to_nv12_matches_the_planar_conversion() {
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    for (w, h) in [(64usize, 36usize), (33, 17), (1, 1), (2, 3)] {
+        let rgba: Vec<u8> = (0..w * h * 4)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed >> 24) as u8
+            })
+            .collect();
+        let (mut y, mut u, mut v) = (Vec::new(), Vec::new(), Vec::new());
+        rgba_to_yuv420_8(&rgba, w, h, &mut y, &mut u, &mut v);
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        let (mut ny, mut nuv) = (vec![0u8; w * h], vec![0u8; cw * 2 * ch]);
+        rgba_to_nv12(&rgba, w, h, &mut ny, &mut nuv);
+        assert_eq!(ny, y, "{w}x{h} luma");
+        let inter: Vec<u8> = u.iter().zip(&v).flat_map(|(a, b)| [*a, *b]).collect();
+        assert_eq!(nuv, inter, "{w}x{h} chroma");
+        // short buffers are left alone, not indexed out of bounds
+        rgba_to_nv12(&rgba[..4], w, h, &mut ny, &mut nuv);
+    }
+}

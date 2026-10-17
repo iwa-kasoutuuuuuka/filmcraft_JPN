@@ -50,7 +50,8 @@ fn hardware_stream_decodes_with_our_decoder() {
     let mut packets = Vec::new();
     for n in 0..frames {
         let rgba = picture(w, h, n, &mut seed);
-        packets.extend(enc.encode(&EncoderFrame { width: w as u32, height: h as u32, rgba: &rgba, hdr: None, index: n as u64 }).expect("encode"));
+        packets
+            .extend(enc.encode(&EncoderFrame { width: w as u32, height: h as u32, rgba: &rgba, hdr: None, index: n as u64, prepared: None }).expect("encode"));
         sources.push(rgba);
     }
     packets.extend(enc.flush().expect("flush"));
