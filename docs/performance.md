@@ -79,9 +79,21 @@ built with the same scenarios, runs alternated. Windows 11, one NVIDIA GPU.
 | `lumetri-hdr`: the `lumetri-grade` grade in a Rec. 2100 PQ sequence | 99/93, 103/89 | 90/102, 110/82 | unchanged (noisy) |
 
 Ultra Key, Color Key, Luma Key and Video Limiter now run as GPU passes (Ultra Key's Choke and
-Soften blur its matte beside the image). `lumetri-hdr` doesn't move: `plan.rs` renders every HDR
-or wide-gamut sequence on the CPU (decode into the working space, composite, display transform),
-so the GPU never sees it. Moving that pipeline to the GPU is the next step for HDR playback.
+Soften blur its matte beside the image). `lumetri-hdr` didn't move then: `plan.rs` rendered every
+HDR or wide-gamut sequence on the CPU (decode into the working space, composite, display
+transform), so the GPU never saw it.
+
+Then HDR and wide-gamut sequences moved to the GPU: BT.709 / sRGB media is decoded there and
+converted into the working gamut (`plan::input_matrix`, a 3×3 matrix after the decode), effects
+run in the working space (Lumetri's HDR grade), and the final pass converts for the monitor
+(BT.2390 tone mapping on max(R,G,B), gamut matrix, desaturation into the target gamut). Log, HDR
+and other-gamut media are still converted on the CPU per layer; exports, captions and blend modes
+other than Normal in such sequences keep the CPU compositor. GPU and CPU agree within 1 code value
+(p99) in PQ, HLG and wide-gamut plans, and on the HDR golden scenes (61–63 dB).
+
+| scenario | before (2 runs) | after (2 runs) | UI p95 ms |
+|---|---|---|---|
+| `lumetri-hdr` | 99/93, 103/89 | **192/0, 192/0** | 2.9, 3.0 |
 ## Results (Windows: Media Foundation read-back, before → after)
 
 `cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw on|off` (release, GPU

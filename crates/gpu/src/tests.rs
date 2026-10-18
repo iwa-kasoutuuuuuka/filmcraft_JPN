@@ -38,6 +38,7 @@ fn gpu_matches_cpu_plan() {
     let rgba = Arc::new(VideoFrame::rgba8(320, 180, pixels));
     let (w, h) = (320usize, 180usize);
     let plan = FramePlan::Layers {
+        color: Default::default(),
         width: w,
         height: h,
         layers: vec![
@@ -109,6 +110,7 @@ fn prepared_upload_matches_inline_conversion() {
     let f32_layer: Vec<f32> = (0..w * h * 4).map(|i| ((i * 37) % 1000) as f32 / 1000.0 * if i % 4 == 3 { 1.0 } else { 0.6 }).collect();
     let rgbaf = Arc::new(VideoFrame::rgba_f32(w, h, f32_layer.clone()));
     let layers = FramePlan::Layers {
+        color: Default::default(),
         width: w as usize,
         height: h as usize,
         layers: vec![
@@ -143,6 +145,7 @@ fn upload_cache_keeps_buffers_alive() {
     let px = Arc::new(vec![200u8; 16 * 8 * 4]);
     let frame = Arc::new(VideoFrame { width: 16, height: 8, data: PixelData::Rgba8(px.clone()), ..(*yuv_frame(16, 8)).clone() });
     let plan = FramePlan::Layers {
+        color: Default::default(),
         width: 16,
         height: 8,
         layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false }],
@@ -260,6 +263,7 @@ fn texture_pool_recycles_textures() {
     for _ in 0..30 {
         let frame = yuv_frame(64, 36);
         let plan = FramePlan::Layers {
+            color: Default::default(),
             width: 64,
             height: 36,
             layers: vec![PlanLayer { frame, matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false }],
@@ -281,6 +285,7 @@ fn uniform_pool_recycles_buffers() {
     let frame1 = yuv_frame(64, 36);
     let frame2 = yuv_frame(64, 36);
     let plan = FramePlan::Layers {
+        color: Default::default(),
         width: 64,
         height: 36,
         layers: vec![
@@ -307,7 +312,7 @@ fn active_frame_textures_are_not_evicted() {
     let layers: Vec<PlanLayer> = (0..26)
         .map(|_| PlanLayer { frame: yuv_frame(64, 36), matrix: Affine::IDENTITY, opacity: 1.0, blend: Blend::Normal, fx: None, is_adjustment: false })
         .collect();
-    let plan = FramePlan::Layers { width: 64, height: 36, layers };
+    let plan = FramePlan::Layers { color: Default::default(), width: 64, height: 36, layers };
     c.composite(&plan);
     // Since all 26 frames were used in the active frame, none should be evicted to pool during this frame
     assert_eq!(c.pool_texture_count(), 0, "active frame textures must not be evicted to pool");
@@ -329,6 +334,7 @@ fn gpu_adjustment_layer_matches_cpu() {
     let mut pictures = Vec::new();
     for fx in [plain, masked] {
         let plan = FramePlan::Layers {
+            color: Default::default(),
             width: w,
             height: h,
             layers: vec![

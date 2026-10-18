@@ -895,7 +895,8 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
                 is_adjustment: false,
             });
         }
-        return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);
+        // (a preview is rendered for the monitor already: no display transform)
+        return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers, color: filmcraft_color::ColorPipeline::REC709 }, true);
     }
     let provider = provider(job, pool, services);
     (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider), false)

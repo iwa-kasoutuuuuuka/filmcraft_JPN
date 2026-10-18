@@ -78,6 +78,8 @@ pub struct GpuCompositor {
     layer_bgl: wgpu::BindGroupLayout,
     blend_bgl: wgpu::BindGroupLayout,
     final_bgl: wgpu::BindGroupLayout,
+    /// The final pass's display transform (HDR / wide-gamut pipelines; [`display_uniforms`]).
+    final_u: wgpu::Buffer,
     accum: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     /// Copy of the accumulator under a blend-mode layer (allocated on first use).
     backdrop: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
@@ -97,6 +99,35 @@ pub struct GpuCompositor {
     frame_start: u64,
     /// Recycled uniform buffers to eliminate buffer allocations during playback.
     uniform_pool: Vec<wgpu::Buffer>,
+}
+
+/// Floats of a layer draw's uniforms (`composite.wgsl` `U`).
+const LAYER_FLOATS: usize = 40;
+/// Floats of the final pass's display transform (`composite.wgsl` `D`).
+const DISPLAY_FLOATS: usize = 24;
+
+/// The working → monitor conversion of a pipeline (`colorman::to_display`) for the final pass:
+/// tone mapping (on, BT.2390 constants, peaks), the gamut matrix rows (with an on flag) and the
+/// desaturation's luma weights (with an on flag). All off for a plain pipeline.
+fn display_uniforms(pipe: &filmcraft_color::ColorPipeline) -> [f32; DISPLAY_FLOATS] {
+    let mut d = [0f32; DISPLAY_FLOATS];
+    if pipe.is_plain() {
+        return d;
+    }
+    let st = filmcraft_render::colorman::display_transform(pipe).stages();
+    if let Some((src, dst)) = st.tone {
+        let pq = |n: f32| filmcraft_color::pq_inverse_eotf((n / 10_000.0).clamp(0.0, 1.0));
+        let smax = pq(src);
+        let max_lum = pq(dst) / smax.max(1e-9);
+        d[..8].copy_from_slice(&[1.0, smax, max_lum, 1.5 * max_lum - 0.5, src, dst, 0.0, 0.0]);
+    }
+    if let Some(m) = st.matrix {
+        d[8..20].copy_from_slice(&[m[0][0], m[0][1], m[0][2], 1.0, m[1][0], m[1][1], m[1][2], 0.0, m[2][0], m[2][1], m[2][2], 0.0]);
+    }
+    if let Some(l) = st.desaturate {
+        d[20..24].copy_from_slice(&[l[0], l[1], l[2], 1.0]);
+    }
+    d
 }
 
 fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -258,7 +289,21 @@ impl GpuCompositor {
         });
         let final_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("final"),
-            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, ..tex_entry(0) }],
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, ..tex_entry(0) },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+            ],
+        });
+        let final_u = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("final-u"),
+            size: (DISPLAY_FLOATS * 4) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let pl =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("layer"), bind_group_layouts: &[Some(&layer_bgl)], immediate_size: 0 });
@@ -342,6 +387,7 @@ impl GpuCompositor {
             layer_bgl,
             blend_bgl,
             final_bgl,
+            final_u,
             accum: None,
             backdrop: None,
             output: None,
@@ -541,7 +587,10 @@ impl GpuCompositor {
         Some(SrcInfo { kind: up.kind, code_scale: up.code_scale, chroma: up.chroma, size: (f.width, f.height), color: f.color })
     }
 
-    fn uniforms(src: &SrcInfo, m: &filmcraft_geom::Affine, opacity: f32, blend: Blend, out: (u32, u32)) -> [f32; 28] {
+    /// A layer draw's uniforms; `cm`: the decoded colour's gamut matrix into the working gamut.
+    fn uniforms(src: &SrcInfo, m: &filmcraft_geom::Affine, opacity: f32, blend: Blend, out: (u32, u32), cm: Option<[[f32; 3]; 3]>) -> [f32; LAYER_FLOATS] {
+        let k = cm.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        let on = if cm.is_some() { 1.0 } else { 0.0 };
         let (kr, kb) = src.color.matrix.kr_kb();
         let bits_scale = src.code_scale / 255.0; // code units relative to 8-bit
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
@@ -590,11 +639,23 @@ impl GpuCompositor {
             0.0,
             0.0,
             0.0,
+            k[0][0],
+            k[0][1],
+            k[0][2],
+            on,
+            k[1][0],
+            k[1][1],
+            k[1][2],
+            0.0,
+            k[2][0],
+            k[2][1],
+            k[2][2],
+            0.0,
         ]
     }
 
-    fn uniform_buffer(&mut self, u: &[f32; 28]) -> wgpu::Buffer {
-        let mut bytes = [0u8; 28 * 4];
+    fn uniform_buffer(&mut self, u: &[f32; LAYER_FLOATS]) -> wgpu::Buffer {
+        let mut bytes = [0u8; LAYER_FLOATS * 4];
         for (i, v) in u.iter().enumerate() {
             bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
         }
@@ -621,8 +682,13 @@ impl GpuCompositor {
         self.frame_start = self.clock;
         let mut used_uniforms: Vec<wgpu::Buffer> = Vec::new();
         let owned;
+        // the sequence's pipeline (a CPU-rendered frame comes converted for the monitor already)
+        let pipe = match plan {
+            FramePlan::Layers { color, .. } => *color,
+            FramePlan::Image(_) => filmcraft_color::ColorPipeline::REC709,
+        };
         let (w, h, layers): (u32, u32, &[PlanLayer]) = match plan {
-            FramePlan::Layers { width, height, layers } => (*width as u32, *height as u32, layers.as_slice()),
+            FramePlan::Layers { width, height, layers, .. } => (*width as u32, *height as u32, layers.as_slice()),
             FramePlan::Image(img) => {
                 let frame = match prep.and_then(|p| p.image.as_ref()) {
                     // The texels come from `prep`; the frame only carries size and colour.
@@ -710,7 +776,14 @@ impl GpuCompositor {
                 Some(lfx) => {
                     // the source drawn onto the working image (box-decimated by n, as the CPU decodes)
                     let n = lfx.decimation.max(1) as f64;
-                    let su = Self::uniforms(&src, &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (lfx.size.0.max(1), lfx.size.1.max(1)));
+                    let su = Self::uniforms(
+                        &src,
+                        &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n),
+                        1.0,
+                        Blend::Normal,
+                        (lfx.size.0.max(1), lfx.size.1.max(1)),
+                        lfx.input_matrix,
+                    );
                     let sbuf = self.uniform_buffer(&su);
                     let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("fx-source"),
@@ -735,7 +808,7 @@ impl GpuCompositor {
             let (u, tex) = match &job {
                 Some(j) => {
                     let s = SrcInfo { kind: 1, code_scale: 1.0, chroma: l.size(), size: l.size(), color: l.frame.color };
-                    (Self::uniforms(&s, &l.matrix, l.opacity, l.blend, (w, h)), [j.result.clone(), self.dummy.clone(), self.dummy.clone()])
+                    (Self::uniforms(&s, &l.matrix, l.opacity, l.blend, (w, h), None), [j.result.clone(), self.dummy.clone(), self.dummy.clone()])
                 }
                 None => {
                     // (a layer with effects only gets here if its job failed, which the CPU
@@ -748,7 +821,8 @@ impl GpuCompositor {
                         }
                         None => l.matrix,
                     };
-                    (Self::uniforms(&src, &m, l.opacity, l.blend, (w, h)), views)
+                    let cm = if l.is_adjustment { None } else { filmcraft_render::plan::input_matrix(&pipe, &l.frame) };
+                    (Self::uniforms(&src, &m, l.opacity, l.blend, (w, h), cm), views)
                 }
             };
             jobs.push(job);
@@ -773,10 +847,19 @@ impl GpuCompositor {
         if let Some(f) = self.fx.as_mut() {
             f.end_frame();
         }
+        let display = display_uniforms(&pipe);
+        let mut dbytes = [0u8; DISPLAY_FLOATS * 4];
+        for (i, v) in display.iter().enumerate() {
+            dbytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        self.queue.write_buffer(&self.final_u, 0, &dbytes);
         let final_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("final"),
             layout: &self.final_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&accum_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: self.final_u.as_entire_binding() },
+            ],
         });
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("filmcraft-composite") });
         // Runs of fixed-function layers draw in one pass. A layer that reads the destination
@@ -877,7 +960,7 @@ impl GpuCompositor {
         let views = self.uploads.get(&key)?.views.clone();
         let n = fx.decimation.max(1) as f64;
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
-        let su = Self::uniforms(&src, &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (w, h));
+        let su = Self::uniforms(&src, &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (w, h), fx.input_matrix);
         let sbuf = self.uniform_buffer(&su);
         let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fx-source"),

@@ -590,6 +590,7 @@ fn gpu_effect_layers_match_cpu_plan() {
     let ramp = ramp_layer(160, 120, 0);
     for mode in [Blend::Normal, Blend::Screen, Blend::Multiply, Blend::Overlay] {
         let plan = FramePlan::Layers {
+            color: Default::default(),
             width: w,
             height: h,
             layers: vec![
@@ -640,11 +641,17 @@ fn plain_layers_skip_the_effect_stage() {
         return;
     };
     let mut c = GpuCompositor::new(&dev, &q);
-    let plan = FramePlan::Layers { width: 64, height: 36, layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)] };
+    let plan = FramePlan::Layers {
+        color: Default::default(),
+        width: 64,
+        height: 36,
+        layers: vec![PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal)],
+    };
     c.composite(&plan);
     assert!(c.fx.as_ref().is_some_and(fx::FxStage::is_idle));
     let fx = LayerFx { size: (64, 36), decimation: 1, ops: vec![FxOp::BlackWhite], ..Default::default() };
     let with = FramePlan::Layers {
+        color: Default::default(),
         width: 64,
         height: 36,
         layers: vec![PlanLayer { fx: Some(Arc::new(fx)), ..PlanLayer::new(yuv_frame(64, 36), Affine::IDENTITY, 1.0, Blend::Normal) }],
@@ -669,6 +676,7 @@ fn layers_with_effects_fall_back_to_the_cpu_without_a_stage() {
         .filter_map(|e| FxOp::eval(e, &cx(Tick::ZERO, 1.0), 160, 120))
         .collect();
     let plan = FramePlan::Layers {
+        color: Default::default(),
         width: 200,
         height: 150,
         layers: vec![
@@ -824,4 +832,61 @@ fn lumetri_hdr_on_the_gpu() {
         }
     }
     assert!(failures.is_empty(), "HDR Lumetri differs on the GPU:\n{}", failures.join("\n"));
+}
+
+/// HDR and wide-gamut pipelines on the GPU: YUV (BT.709) frames converted into the working gamut
+/// (with and without effects: Lumetri in the HDR grade), a CPU-converted float layer with
+/// highlights far above reference white, and the monitor conversion (BT.2390 tone mapping, gamut
+/// matrix, desaturation) in the final pass, against the plan run on the CPU.
+#[test]
+fn hdr_and_wide_gamut_plans_match_cpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (320usize, 180usize);
+    // a float layer in working units: a ramp up to 12× reference white (≈ 2400 cd/m²)
+    let hot: Vec<f32> = (0..160 * 90)
+        .flat_map(|i| {
+            let t = (i % 160) as f32 / 159.0;
+            [12.0 * t, 6.0 * t * t, 0.3 + t, 1.0]
+        })
+        .collect();
+    let hot = Arc::new(VideoFrame::rgba_f32(160, 90, hot));
+    for (name, color) in [
+        ("pq", ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 }),
+        ("hlg", ColorPipeline { working: WorkingSpace::Rec2100Hlg, ..ColorPipeline::REC709 }),
+        ("wide", ColorPipeline { wide_gamut: true, ..ColorPipeline::REC709 }),
+    ] {
+        let frame = yuv_frame(640, 360);
+        let grade = effect("lumetri", &[("exposure", fl(0.6)), ("contrast", fl(35.0)), ("saturation", fl(150.0)), ("hdr_specular", fl(30.0))]);
+        let cxw = FxCtx { working: color.working, ..cx(Tick::ZERO, 0.5) };
+        let ops: Vec<FxOp> = FxOp::eval(&grade, &cxw, 320, 180).into_iter().collect();
+        assert!(ops.iter().all(FxOp::gpu_ok));
+        let fx = LayerFx { size: (320, 180), decimation: 2, ops, input_matrix: filmcraft_render::plan::input_matrix(&color, &frame), ..Default::default() };
+        let plan = FramePlan::Layers {
+            width: w,
+            height: h,
+            color,
+            layers: vec![
+                PlanLayer { fx: Some(Arc::new(fx)), ..PlanLayer::new(frame.clone(), Affine::IDENTITY, 1.0, Blend::Normal) },
+                PlanLayer::new(
+                    yuv_frame(320, 180),
+                    Affine::motion(Vec2::new(200.0, 60.0), Vec2::new(0.4, 0.4), 10.0, Vec2::new(160.0, 90.0)),
+                    0.8,
+                    Blend::Normal,
+                ),
+                PlanLayer::new(hot.clone(), Affine::translate(20.0, 80.0), 0.9, Blend::Normal),
+            ],
+        };
+        let cpu = execute_cpu(&plan).over_black_rgba8();
+        c.composite(&plan);
+        let (_, _, gpu) = c.read_output().expect("readback");
+        let keep = interior(&plan);
+        let (p99, mean, max) = stats8(&cpu, &gpu, &keep);
+        eprintln!("{name}: interior 8-bit p99 {p99} mean {mean:.3} max {max}");
+        assert!(p99 <= 2 && mean < 0.5, "{name}: p99 {p99}, mean {mean}, max {max}");
+    }
 }

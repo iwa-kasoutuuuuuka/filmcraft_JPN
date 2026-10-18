@@ -283,6 +283,14 @@ pub fn desaturate_into_gamut(c: [f32; 3], luma: [f32; 3]) -> [f32; 3] {
     c.map(|v| (y + (v - y) * t).max(0.0))
 }
 
+/// [`OutputTransform::stages`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputStages {
+    pub tone: Option<(f32, f32)>,
+    pub matrix: Option<[[f32; 3]; 3]>,
+    pub desaturate: Option<[f32; 3]>,
+}
+
 /// Working space → monitor (display-referred SDR BT.709) or → encoded export signal.
 #[derive(Clone, Debug)]
 pub struct OutputTransform {
@@ -310,6 +318,17 @@ impl OutputTransform {
     }
     pub fn is_identity(&self) -> bool {
         self.identity_matrix && self.tone.is_none()
+    }
+    /// The stages of [`Self::apply`] as plain numbers, for a GPU pass that computes the same
+    /// conversion: the tone mapping's source and target peaks (cd/m²; BT.2390 on max(R,G,B), in
+    /// working units of 1.0 = [`REFERENCE_WHITE_NITS`]), the gamut matrix (None: identity) and the
+    /// luma weights of the desaturation into the target gamut.
+    pub fn stages(&self) -> OutputStages {
+        OutputStages {
+            tone: self.tone.as_ref().map(|t| (t.src_peak_nits as f32, t.dst_peak_nits as f32)),
+            matrix: (!self.identity_matrix).then_some(self.matrix),
+            desaturate: self.compress,
+        }
     }
     /// Working linear → target linear (SDR: 1.0 = white; HDR: working units).
     #[inline]

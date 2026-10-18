@@ -97,7 +97,7 @@ pub(crate) fn stats8(a: &[u8], b: &[u8], keep: &[bool]) -> (u32, f64, u32) {
 /// Pixels at least 1.5 px away from every layer's quad outline (the CPU resampler fades a layer's
 /// edge over a pixel beyond it, the GPU rasterises the quad: compared separately).
 pub(crate) fn interior(plan: &FramePlan) -> Vec<bool> {
-    let FramePlan::Layers { width, height, layers } = plan else { return Vec::new() };
+    let FramePlan::Layers { width, height, layers, .. } = plan else { return Vec::new() };
     let inv: Vec<(Affine, f64, f64)> = layers.iter().filter_map(|l| Some((l.matrix.inverse()?, l.size().0 as f64, l.size().1 as f64))).collect();
     let mut keep = vec![true; width * height];
     for (i, k) in keep.iter_mut().enumerate() {
@@ -165,6 +165,7 @@ fn gpu_blend_modes_match_cpu() {
     let top = ramp_layer(160, 120, 0);
     for mode in Blend::ALL {
         let plan = FramePlan::Layers {
+            color: Default::default(),
             width: w,
             height: h,
             layers: vec![
@@ -242,6 +243,7 @@ fn gpu_blend_edge_cases_match_cpu() {
     for mode in Blend::ALL {
         for opacity in [1.0f32, 0.5] {
             let plan = FramePlan::Layers {
+                color: Default::default(),
                 width: n,
                 height: n,
                 layers: vec![
@@ -283,6 +285,7 @@ fn gpu_dissolve_pattern_is_exact() {
     let mut c = GpuCompositor::new(&dev, &q);
     for op in [0.1f32, 0.5, 0.9] {
         let plan = FramePlan::Layers {
+            color: Default::default(),
             width: w,
             height: h,
             layers: vec![
@@ -321,11 +324,12 @@ fn normal_fast_path_and_blend_layers_off_output() {
     let mut c = GpuCompositor::new(&dev, &q);
     let grey = Arc::new(VideoFrame::rgba_f32(4, 4, vec![0.2; 64]));
     let layer = |m: Affine, blend: Blend| PlanLayer { frame: grey.clone(), matrix: m, opacity: 1.0, blend, fx: None, is_adjustment: false };
-    let normal = FramePlan::Layers { width: 32, height: 16, layers: vec![layer(Affine::scale(8.0, 4.0), Blend::Normal)] };
+    let normal = FramePlan::Layers { color: Default::default(), width: 32, height: 16, layers: vec![layer(Affine::scale(8.0, 4.0), Blend::Normal)] };
     c.composite(&normal);
     assert!(c.backdrop.is_none());
     let (_, _, before) = c.read_output().expect("readback");
     let off = FramePlan::Layers {
+        color: Default::default(),
         width: 32,
         height: 16,
         layers: vec![
@@ -338,7 +342,7 @@ fn normal_fast_path_and_blend_layers_off_output() {
     let (_, _, after) = c.read_output().expect("readback");
     assert_eq!(before, after);
     // only blend-mode layers first: the accumulator is still cleared
-    let only = FramePlan::Layers { width: 32, height: 16, layers: vec![layer(Affine::translate(100.0, 0.0), Blend::Multiply)] };
+    let only = FramePlan::Layers { color: Default::default(), width: 32, height: 16, layers: vec![layer(Affine::translate(100.0, 0.0), Blend::Multiply)] };
     c.composite(&only);
     let (_, _, empty) = c.read_output().expect("readback");
     assert!(empty.chunks(4).all(|p| p[..3] == [0, 0, 0]));

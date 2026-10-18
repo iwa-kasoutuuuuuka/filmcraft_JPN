@@ -454,3 +454,42 @@ fn gpu_effect_twins_match_the_cpu_path() {
         assert!(worst < 1e-5, "{id}: twin differs from effects::apply by {worst}");
     }
 }
+
+/// HDR and wide-gamut sequences are planned for the GPU too: BT.709 media is decoded there and
+/// converted into the working gamut (`plan::input_matrix`), effects run in the working space, and
+/// the plan converts for the monitor at the end. Run on the CPU (the GPU's reference), the plan
+/// gives the frame `render_sequence` gives.
+#[test]
+fn hdr_and_wide_gamut_sequences_plan_for_the_gpu() {
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    for color in [
+        ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 },
+        ColorPipeline { working: WorkingSpace::Rec2100Hlg, ..ColorPipeline::REC709 },
+        ColorPipeline { wide_gamut: true, ..ColorPipeline::REC709 },
+    ] {
+        let (mut p, red, ocean, seq, map) = setup();
+        place(&mut p, seq, 0, ocean, 0, 48);
+        let top = place(&mut p, seq, 1, red, 0, 48);
+        {
+            let s = p.sequence_mut(seq).unwrap();
+            s.settings.color = color;
+            let it = s.video_tracks[1].items.iter_mut().find(|i| i.id == top).unwrap();
+            let mut l = filmcraft_project::find_effect("lumetri").unwrap().instance();
+            for (k, v) in [("exposure", 0.8), ("contrast", 30.0), ("saturation", 140.0)] {
+                l.params.get_mut(k).unwrap().value = ParamValue::Float(v);
+            }
+            it.effects.push(l);
+            if let Some(o) = it.effect_mut("opacity").and_then(|o| o.params.get_mut("opacity")) {
+                o.value = ParamValue::Float(60.0);
+            }
+        }
+        let t = Tick(1000);
+        let plan = plan::plan_frame(&p, seq, t, RenderOptions::default(), &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("{color:?}: GPU-drawable") };
+        assert!(layers.iter().any(|l| l.fx.as_ref().is_some_and(|f| !f.ops.is_empty())), "{color:?}: Lumetri on the GPU");
+        let cpu = render_sequence(&p, seq, t, RenderOptions::default(), &map);
+        let via_plan = plan::execute_cpu(&plan);
+        let worst = cpu.px.iter().zip(&via_plan.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(worst < 4e-3, "{color:?}: plan differs from render_sequence by {worst}");
+    }
+}

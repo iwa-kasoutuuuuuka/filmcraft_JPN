@@ -16,7 +16,8 @@
 
 use std::sync::Arc;
 
-use filmcraft_frame::VideoFrame;
+use filmcraft_color::{ColorPipeline, ColorSpace};
+use filmcraft_frame::{PixelData, VideoFrame};
 use filmcraft_geom::Affine;
 use filmcraft_media::FrameRequest;
 use filmcraft_project::{ItemId, ItemKind, Project, Sequence, TrackItem};
@@ -55,6 +56,8 @@ pub struct LayerFx {
     pub masks: Vec<Vec<FlatMask>>,
     /// The masks of the clip's Opacity effect: they scale the result of the ops.
     pub opacity_masks: Vec<FlatMask>,
+    /// The frame's [`input_matrix`] into the working gamut (applied when it is decoded).
+    pub input_matrix: Option<[[f32; 3]; 3]>,
 }
 
 /// Polygon points of all the masks of a layer the GPU evaluates per pixel; a layer with more is
@@ -111,8 +114,11 @@ impl PlanLayer {
 
 #[derive(Clone)]
 pub enum FramePlan {
-    /// Draw these layers over black.
-    Layers { width: usize, height: usize, layers: Vec<PlanLayer> },
+    /// Draw these layers over black. `color` is the sequence's colour pipeline: YUV / RGBA8
+    /// frames are converted into its working gamut ([`input_matrix`]), and a pipeline that is not
+    /// plain (HDR or wide gamut) is converted for the monitor at the end
+    /// (`colorman::to_display`).
+    Layers { width: usize, height: usize, layers: Vec<PlanLayer>, color: ColorPipeline },
     /// The CPU produced the final image (fallback).
     Image(crate::Image),
 }
@@ -179,8 +185,12 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> FramePlan {
     let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
     let (w, h) = output_size(seq, opts.scale);
-    // HDR / wide-gamut sequences composite and convert on the CPU.
-    if !seq.settings.color.is_plain() {
+    // HDR / wide-gamut sequences composite on the GPU too (BT.709 / sRGB media decoded there,
+    // everything else converted on the CPU per layer), except where the CPU composites outside
+    // the working space: working-space output (exports), captions (drawn after the display
+    // transform) and blend modes other than Normal (checked below).
+    let pipe = seq.settings.color;
+    if !pipe.is_plain() && (opts.working_output || (opts.captions && !crate::caption_overlays(seq, t, w, h).is_empty())) {
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     // Whole-frame fallback: adjustment layers or complex transitions anywhere at t.
@@ -247,7 +257,41 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
             ));
         }
     }
-    FramePlan::Layers { width: w, height: h, layers }
+    if !pipe.is_plain() && layers.iter().any(|l| l.blend != Blend::Normal) {
+        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+    }
+    FramePlan::Layers { width: w, height: h, layers, color: pipe }
+}
+
+/// The gamut matrix from a GPU-decoded frame's own primaries into the working gamut of a
+/// non-plain `pipe` (None: nothing to convert). The compositor applies it after decoding YUV and
+/// RGBA8 frames, as `colorman::decode` does on the CPU; RGBA float frames (CPU-rendered layers,
+/// effect results, transition colours) are in the working space already.
+pub fn input_matrix(pipe: &ColorPipeline, frame: &VideoFrame) -> Option<[[f32; 3]; 3]> {
+    if pipe.is_plain() || matches!(frame.data, PixelData::RgbaF32(_)) {
+        return None;
+    }
+    let (src, wg) = (ColorSpace::from_info(&frame.color).gamut(), pipe.working_gamut());
+    (src != wg).then(|| filmcraft_color::spaces::to_f32(&filmcraft_color::spaces::gamut_matrix(src, wg)))
+}
+
+/// Whether the GPU decodes a frame into the working space itself: the default (transfer-only)
+/// decode of BT.709 / sRGB / linear media, plus [`input_matrix`] into a wide working gamut (YUV
+/// and RGBA8 frames). Everything else (log, HDR, other gamuts, Interpret Footage overrides) is
+/// converted on the CPU.
+fn gpu_decodes(pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> bool {
+    if pipe.is_plain() {
+        return !crate::colorman::needs_management(pipe, cs, frame);
+    }
+    let default_decode = cs == ColorSpace::from_info(&frame.color) && matches!(cs, ColorSpace::Rec709 | ColorSpace::Srgb | ColorSpace::Linear709);
+    default_decode && !matches!(frame.data, PixelData::RgbaF32(_))
+}
+
+fn apply_matrix(img: &mut crate::Image, m: &[[f32; 3]; 3]) {
+    for p in img.px.as_chunks_mut::<4>().0 {
+        let c = filmcraft_color::spaces::apply3(m, [p[0], p[1], p[2]]);
+        p[..3].copy_from_slice(&c);
+    }
 }
 
 /// Push the layer(s) of `item`. `blend` overrides the item's own blend mode: inside a transition
@@ -326,7 +370,7 @@ fn push_item(
         {
             // (in sequence pixels, as the CPU applies them; `gpu_adjustment_ok` checked their number)
             let masks = enabled().map(|e| crate::mask::prepare(&e.masks, mt, opts.scale)).collect();
-            let fx = LayerFx { size: (w as u32, h as u32), decimation: 1, ops, masks, opacity_masks: Vec::new() };
+            let fx = LayerFx { size: (w as u32, h as u32), decimation: 1, ops, masks, opacity_masks: Vec::new(), input_matrix: None };
             out.push(PlanLayer::adjustment(Affine::IDENTITY, op * extra_opacity, bl, Arc::new(fx)));
         }
         return;
@@ -341,8 +385,7 @@ fn push_item(
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // log / HDR / wide-gamut media is converted on the CPU (below), and so are blended
         // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
-        let plain =
-            !crate::colorman::needs_management(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
+        let plain = gpu_decodes(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
         // (the Opacity effect's masks apply with effects off too, like on the CPU)
         let opacity_masks = item.effect("opacity").filter(|_| item.has_opacity_masks());
         if plain && (!chain.is_empty() || opacity_masks.is_some()) {
@@ -366,6 +409,7 @@ fn push_item(
             let fx = ops.map(|ops| LayerFx {
                 size: (lw as u32, lh as u32),
                 decimation: n as u32,
+                input_matrix: input_matrix(&seq.settings.color, &frame),
                 ops,
                 masks: chain.iter().map(|e| crate::mask::prepare(&e.masks, mt, px_scale)).collect(),
                 opacity_masks: opacity_masks.map(|e| crate::mask::prepare(&e.masks, mt, px_scale)).unwrap_or_default(),
@@ -409,6 +453,9 @@ fn near_identity(m: &Affine) -> bool {
 pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
     let (w, h, px) = frame.to_linear_f32_decimated(fx.decimation.max(1) as usize);
     let mut img = crate::Image { w, h, px };
+    if let Some(m) = &fx.input_matrix {
+        apply_matrix(&mut img, m);
+    }
     fx.apply(&mut img);
     img
 }
@@ -417,7 +464,7 @@ pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
 pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
     match plan {
         FramePlan::Image(img) => img.clone(),
-        FramePlan::Layers { width, height, layers } => {
+        FramePlan::Layers { width, height, layers, color } => {
             let mut canvas = crate::Image::new(*width, *height);
             for l in layers {
                 let src = if l.is_adjustment {
@@ -429,7 +476,13 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
                 } else {
                     match &l.fx {
                         Some(fx) => effect_image(&l.frame, fx),
-                        None => crate::Image { w: l.frame.width as usize, h: l.frame.height as usize, px: l.frame.to_linear_f32() },
+                        None => {
+                            let mut img = crate::Image { w: l.frame.width as usize, h: l.frame.height as usize, px: l.frame.to_linear_f32() };
+                            if let Some(m) = input_matrix(color, &l.frame) {
+                                apply_matrix(&mut img, &m);
+                            }
+                            img
+                        }
                     }
                 };
                 let placed = if l.matrix == Affine::scale(*width as f64, *height as f64) && src.w == 1 && src.h == 1 {
@@ -441,6 +494,7 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
                 };
                 crate::blend::composite(&mut canvas, &placed, l.opacity, l.blend);
             }
+            crate::colorman::to_display(&mut canvas, color);
             canvas
         }
     }

@@ -216,7 +216,7 @@ pub struct GpuState {
 fn plan_side(plan: &filmcraft_render::plan::FramePlan) -> usize {
     use filmcraft_render::plan::FramePlan;
     match plan {
-        FramePlan::Layers { width, height, layers } => {
+        FramePlan::Layers { width, height, layers, .. } => {
             layers.iter().map(|l| l.frame.width.max(l.frame.height) as usize).fold((*width).max(*height), usize::max)
         }
         FramePlan::Image(img) => img.w.max(img.h),
@@ -1321,9 +1321,9 @@ mod gpu_fallback_tests {
             is_adjustment: false,
         };
         // a 4K source in an HD sequence still needs a 3840-wide texture on the GPU
-        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![layer(64, 64), layer(3840, 2160)] };
+        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![layer(64, 64), layer(3840, 2160)], color: Default::default() };
         assert_eq!(super::plan_side(&p), 3840);
-        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![] };
+        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![], color: Default::default() };
         assert_eq!(super::plan_side(&p), 1920);
         let p = FramePlan::Image(filmcraft_render::Image::new(800, 4000));
         assert_eq!(super::plan_side(&p), 4000);
