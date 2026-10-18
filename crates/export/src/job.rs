@@ -91,7 +91,7 @@ pub struct Exporter {
 
 /// Whether [`Exporter`] handles a format.
 pub fn stepped(format: Format) -> bool {
-    matches!(format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
+    matches!(format, Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
 }
 
 /// The muxer is created before the first write; reaching a write without it is a logic error.
@@ -111,12 +111,12 @@ fn make_software_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate
 }
 
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
-    video_factories()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find_map(|fac| fac(settings.video_format(), w, h, rate, settings))
-        .ok_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", settings.video_format().label())))?
+    video_factories().read().unwrap_or_else(|e| e.into_inner()).iter().find_map(|fac| fac(settings.video_format(), w, h, rate, settings)).ok_or_else(|| {
+        match settings.video_format() {
+            Format::Hevc => ExportError::Unsupported("HEVC export needs a hardware HEVC encoder, and this system has none".into()),
+            f => ExportError::Unsupported(format!("{} encoder not available yet", f.label())),
+        }
+    })?
 }
 
 impl Exporter {
@@ -153,7 +153,7 @@ impl Exporter {
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
-        let brand = if settings.format == Format::H264 && settings.multiplexer == Multiplexer::Mp4 { Brand::Mp4 } else { Brand::Mov };
+        let brand = if settings.format.is_delivery() && settings.multiplexer == Multiplexer::Mp4 { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
             (Some(a), AudioCodec::Aac) => {

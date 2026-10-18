@@ -374,6 +374,54 @@ fn queue_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 const LABEL_W: f32 = 132.0;
 
 /// A labelled settings row.
+/// Bitrate Encoding, Target / Maximum Bitrate and Key Frame Distance of the delivery codecs
+/// (H.264, HEVC), with the bitrate modes the codec offers.
+fn delivery_bitrate_rows(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, modes: &[BitrateMode]) {
+    row(ui, t, "Bitrate Encoding", |ui| {
+        let o = modes;
+        let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), true)).collect();
+        if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
+            s.bitrate_mode = o[i];
+        }
+    });
+    if let Some(bpp) = s.adaptive_bitrate {
+        row(ui, t, "Target Bitrate", |ui| {
+            ui.label(egui::RichText::new(crate::tf!("Adaptive ({bpp} bits per pixel)", "アダプティブ({bpp} ビット/ピクセル)")).size(12.0));
+            let r = ui.small_button(crate::i18n::t("Set", "設定"));
+            reg.add("export.video.fixedBitrate", r.rect, "Set a fixed bitrate");
+            if r.clicked() {
+                s.adaptive_bitrate = None;
+            }
+        });
+    } else {
+        row(ui, t, "Target Bitrate", |ui| {
+            let mut mbps = s.bitrate_kbps as f64 / 1000.0;
+            if drag(ui, reg, "export.video.target", &mut mbps, 0.1..=800.0, 0.1, " Mbps", 1) {
+                s.bitrate_kbps = (mbps * 1000.0).round() as u32;
+            }
+        });
+        if s.bitrate_mode != BitrateMode::Cbr {
+            row(ui, t, "Maximum Bitrate", |ui| {
+                let mut mbps = s.max_bitrate_kbps.unwrap_or(s.bitrate_kbps * 3 / 2) as f64 / 1000.0;
+                if drag(ui, reg, "export.video.max", &mut mbps, 0.1..=1000.0, 0.1, " Mbps", 1) {
+                    s.max_bitrate_kbps = Some((mbps * 1000.0).round() as u32);
+                }
+            });
+        }
+    }
+    row(ui, t, "Key Frame Distance", |ui| {
+        let mut on = s.keyframe_distance.is_some();
+        if check(ui, reg, "export.video.keyframeOn", &mut on, "") {
+            s.keyframe_distance = on.then_some(48);
+        }
+        if let Some(k) = s.keyframe_distance.as_mut() {
+            let mut v = *k as f64;
+            drag(ui, reg, "export.video.keyframe", &mut v, 1.0..=600.0, 1.0, " frames", 0);
+            *k = v as u32;
+        }
+    });
+}
+
 fn row<R>(ui: &mut egui::Ui, t: &Tokens, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal(|ui| {
         ui.add_sized(vec2(LABEL_W, 20.0), egui::Label::new(egui::RichText::new(crate::i18n::tr_export(label)).color(t.text_dim).size(12.0)).truncate());
@@ -549,7 +597,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         if (s.has_audio()
             || !s.has_video()
-            || s.format == Format::H264
+            || s.format.is_delivery()
             || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Mjpeg)
             || s.format.is_mxf())
             && !s.is_image_sequence()
@@ -558,7 +606,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         {
             audio_section(ui, &mut reg, s, &t, seq_sr);
         }
-        if s.format == Format::H264 && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", crate::i18n::t("Multiplexer", "マルチプレクサー"), &t)
+        if s.format.is_delivery() && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", crate::i18n::t("Multiplexer", "マルチプレクサー"), &t)
         {
             row(ui, &t, crate::i18n::t("Multiplexer", "多重化"), |ui| {
                 let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
@@ -605,7 +653,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if section(ui, &mut reg, &mut ex.open_sections, "effects", crate::i18n::t("Effects", "エフェクト"), &t) {
             pick_overlay = effects_section(ui, &mut reg, s, &t);
         }
-        if matches!(s.format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg)
+        if matches!(s.format, Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Mjpeg)
             && section(ui, &mut reg, &mut ex.open_sections, "metadata", crate::i18n::t("Metadata", "メタデータ"), &t)
         {
             let m = &mut s.metadata;
@@ -691,6 +739,15 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         });
     }
     match s.video_format() {
+        Format::Hevc => {
+            row(ui, t, "Profile", |ui| {
+                ui.label(egui::RichText::new("Main").size(12.0));
+            });
+            row(ui, t, "Performance", |ui| {
+                ui.label(egui::RichText::new(crate::i18n::tr_export("Hardware Encoding")).size(12.0));
+            });
+            delivery_bitrate_rows(ui, reg, s, t, &[BitrateMode::Cbr, BitrateMode::Vbr1Pass]);
+        }
         Format::H264 => {
             row(ui, t, "Profile", |ui| {
                 let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High];
@@ -715,49 +772,7 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
                     s.hardware_encoding = i == 0;
                 }
             });
-            row(ui, t, "Bitrate Encoding", |ui| {
-                let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass];
-                let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), true)).collect();
-                if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
-                    s.bitrate_mode = o[i];
-                }
-            });
-            if let Some(bpp) = s.adaptive_bitrate {
-                row(ui, t, "Target Bitrate", |ui| {
-                    ui.label(egui::RichText::new(crate::tf!("Adaptive ({bpp} bits per pixel)", "アダプティブ({bpp} ビット/ピクセル)")).size(12.0));
-                    let r = ui.small_button(crate::i18n::t("Set", "設定"));
-                    reg.add("export.video.fixedBitrate", r.rect, "Set a fixed bitrate");
-                    if r.clicked() {
-                        s.adaptive_bitrate = None;
-                    }
-                });
-            } else {
-                row(ui, t, "Target Bitrate", |ui| {
-                    let mut mbps = s.bitrate_kbps as f64 / 1000.0;
-                    if drag(ui, reg, "export.video.target", &mut mbps, 0.1..=800.0, 0.1, " Mbps", 1) {
-                        s.bitrate_kbps = (mbps * 1000.0).round() as u32;
-                    }
-                });
-                if s.bitrate_mode != BitrateMode::Cbr {
-                    row(ui, t, "Maximum Bitrate", |ui| {
-                        let mut mbps = s.max_bitrate_kbps.unwrap_or(s.bitrate_kbps * 3 / 2) as f64 / 1000.0;
-                        if drag(ui, reg, "export.video.max", &mut mbps, 0.1..=1000.0, 0.1, " Mbps", 1) {
-                            s.max_bitrate_kbps = Some((mbps * 1000.0).round() as u32);
-                        }
-                    });
-                }
-            }
-            row(ui, t, "Key Frame Distance", |ui| {
-                let mut on = s.keyframe_distance.is_some();
-                if check(ui, reg, "export.video.keyframeOn", &mut on, "") {
-                    s.keyframe_distance = on.then_some(48);
-                }
-                if let Some(k) = s.keyframe_distance.as_mut() {
-                    let mut v = *k as f64;
-                    drag(ui, reg, "export.video.keyframe", &mut v, 1.0..=600.0, 1.0, " frames", 0);
-                    *k = v as u32;
-                }
-            });
+            delivery_bitrate_rows(ui, reg, s, t, &[BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass]);
         }
         Format::ProRes => {
             row(ui, t, "Profile", |ui| {

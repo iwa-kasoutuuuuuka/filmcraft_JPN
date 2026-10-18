@@ -63,6 +63,11 @@ pub enum Format {
     #[default]
     #[serde(rename = "h264", alias = "H264")]
     H264,
+    /// MPEG-4 (or QuickTime), HEVC (H.265) Main video + AAC audio. Encoded by an OS hardware
+    /// encoder: FilmCraft has no HEVC encoder of its own yet, so the format is [`available`] only
+    /// where the system has one (Windows: Media Foundation).
+    #[serde(rename = "hevc", alias = "Hevc")]
+    Hevc,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
     #[serde(rename = "prores", alias = "ProRes")]
     ProRes,
@@ -100,6 +105,7 @@ impl Format {
     pub fn from_name(s: &str) -> Option<Format> {
         Some(match s.to_ascii_lowercase().replace([' ', '-', '_', '.'], "").as_str() {
             "h264" | "mp4" | "avc" | "m4v" => Format::H264,
+            "hevc" | "h265" => Format::Hevc,
             "prores" | "mov" | "appleprores" => Format::ProRes,
             "dnxhr" | "dnxhd" | "dnx" | "avid" | "aviddnxhr" | "aviddnxhd" | "vc3" => Format::DnxHr,
             "mxf" | "mxfop1a" | "op1a" => Format::MxfOp1a,
@@ -118,6 +124,7 @@ impl Format {
     pub fn id(self) -> &'static str {
         match self {
             Format::H264 => "h264",
+            Format::Hevc => "hevc",
             Format::ProRes => "prores",
             Format::DnxHr => "dnxhr",
             Format::Mjpeg => "mjpeg",
@@ -133,7 +140,7 @@ impl Format {
     }
     pub fn extension(self) -> &'static str {
         match self {
-            Format::H264 => "mp4",
+            Format::H264 | Format::Hevc => "mp4",
             Format::ProRes | Format::DnxHr | Format::Mjpeg => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
@@ -147,6 +154,7 @@ impl Format {
     pub fn label(self) -> &'static str {
         match self {
             Format::H264 => "H.264",
+            Format::Hevc => "HEVC (H.265)",
             Format::ProRes => "Apple ProRes",
             Format::DnxHr => "Avid DNxHR",
             Format::Mjpeg => "QuickTime (Motion JPEG)",
@@ -164,8 +172,13 @@ impl Format {
     pub fn is_mxf(self) -> bool {
         matches!(self, Format::MxfOp1a | Format::MxfOpAtom)
     }
-    pub const ALL: [Format; 12] = [
+    /// A bitrate-driven delivery codec in MP4 (or QuickTime) with AAC audio: H.264 or HEVC.
+    pub fn is_delivery(self) -> bool {
+        matches!(self, Format::H264 | Format::Hevc)
+    }
+    pub const ALL: [Format; 13] = [
         Format::H264,
+        Format::Hevc,
         Format::ProRes,
         Format::DnxHr,
         Format::Mjpeg,
@@ -577,10 +590,26 @@ pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
 }
 
-/// Whether a format can currently be exported. Every [`Format`] has a built-in encoder; this stays
-/// as the hook for formats whose encoders are registered at runtime.
+/// Whether a format can currently be exported. Every [`Format`] has a built-in encoder except HEVC,
+/// which needs a registered (hardware) encoder: asked once (per set of registered encoders and
+/// state of the hardware encoding switch) by creating one.
 pub fn available(format: Format) -> bool {
-    Format::ALL.contains(&format)
+    if format != Format::Hevc {
+        return Format::ALL.contains(&format);
+    }
+    static PROBED: Mutex<Option<((usize, bool), bool)>> = Mutex::new(None);
+    let factories: Vec<EncoderFactory> = video_factories().read().unwrap_or_else(|e| e.into_inner()).clone();
+    let key = (factories.len(), hw::hardware_encoding());
+    let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, v)) = *probed
+        && k == key
+    {
+        return v;
+    }
+    let s = ExportSettings { format: Format::Hevc, ..Default::default() };
+    let v = factories.iter().any(|f| matches!(f(Format::Hevc, 1280, 720, FrameRate::FPS_30, &s), Some(Ok(_))));
+    *probed = Some((key, v));
+    v
 }
 
 struct MjpegEncoder {
@@ -1214,7 +1243,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             }
             (total, count)
         }
-        Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
+        Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
             return Err(ExportError::Unsupported(format!("{} is a stepped export", settings.format.label())));
         }
     };

@@ -62,6 +62,12 @@ inside the frame-parallel render instead of serially in the encoder, where it ha
 | H.264, our encoder | 4.8 s | **4.6, 4.5 s** |
 | ProRes 422 HQ | 4.8 s | 4.8, 4.7 s (the encoder itself is the limit) |
 
+HEVC (H.265) export followed on the same hardware path (Export ▸ Format ▸ HEVC; NVIDIA HEVC
+Encoder MFT here): 1.9 s for the same clip at the same bitrate (21.4 MB). The `hvcC` is built
+from the encoder's own VPS / SPS / PPS (profile, tier and level read from its SPS); the stream
+decodes with our HEVC decoder and with ffmpeg. FilmCraft has no HEVC encoder of its own, so the
+format is offered only where the system has a hardware one (`filmcraft_export::available`).
+
 ## Results (keys and HDR Lumetri on the GPU, before → after)
 
 `bench --section playback --only <scenario>` (release, GPU path, 8 s plays), before = `eb49b29`

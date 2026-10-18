@@ -1,25 +1,26 @@
-//! Media Foundation (Windows) hardware H.264 encoding: the GPU's media engine (NVENC, Quick Sync,
-//! AMF) through its encoder transform.
+//! Media Foundation (Windows) hardware H.264 and HEVC encoding: the GPU's media engine (NVENC,
+//! Quick Sync, AMF) through its encoder transform.
 //!
 //! One of the FFI modules of this crate (docs/adr/0001-platform-ffi.md). Rules: every `unsafe`
 //! block has a `// SAFETY:` comment; every failure is a `Result`. Settings the hardware path does
 //! not take are declined up front (the factory in `lib.rs`), and an export whose hardware encoder
 //! fails on its first frames carries on with our encoder (`filmcraft_export::hw`).
 //!
-//! An encoder is the system's hardware H.264 encoder transform (`MFTEnumEx` with
+//! An encoder is the system's hardware H.264 / HEVC encoder transform (`MFTEnumEx` with
 //! `MFT_ENUM_FLAG_HARDWARE`), an asynchronous transform driven by its events: it asks for input
 //! (`METransformNeedInput`) and announces output (`METransformHaveOutput`). Pictures go in as NV12
 //! in system memory (BT.709 limited range, as our encoder converts them); the transform gets the
 //! process's Direct3D 11 device manager when it is Direct3D aware. B-frames are off, so the
 //! output is in presentation order and needs no composition offsets. The Annex B output is turned
-//! into length-prefixed samples, with the parameter sets moved into the `avcC`.
+//! into length-prefixed samples, with the parameter sets moved into the `avcC` / `hvcC` (whose
+//! profile, tier and level come from the encoder's own SPS).
 
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::time::{Duration, Instant};
 
 use filmcraft_export::{BitrateMode, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, H264Profile, Result, VideoEncoder};
-use filmcraft_isobmff::{AvcConfig, SampleEntry};
+use filmcraft_isobmff::{AvcConfig, HevcConfig, HevcNalArray, SampleEntry};
 use filmcraft_time::FrameRate;
 use windows::Win32::Media::MediaFoundation::{
     CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
@@ -31,7 +32,7 @@ use windows::Win32::Media::MediaFoundation::{
     MFNominalRange_16_235, MFSampleExtension_CleanPoint, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
     MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoFormat_H264,
-    MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709, MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
+    MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709, MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
     eAVEncCommonRateControlMode_CBR, eAVEncCommonRateControlMode_PeakConstrainedVBR,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -52,12 +53,26 @@ const POLL: Duration = Duration::from_micros(100);
 /// Largest encoded picture accepted from the transform.
 const MAX_PACKET: usize = 64 << 20;
 
-fn enc_err(s: String) -> ExportError {
-    ExportError::Encode(format!("hardware H.264 encoder: {s}"))
+/// The codecs the hardware path encodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Codec {
+    H264,
+    /// HEVC Main (8-bit 4:2:0).
+    Hevc,
 }
 
-/// A hardware H.264 encoder for one export.
+impl Codec {
+    fn name(self) -> &'static str {
+        match self {
+            Codec::H264 => "H.264",
+            Codec::Hevc => "HEVC",
+        }
+    }
+}
+
+/// A hardware H.264 or HEVC encoder for one export.
 pub struct MfEncoder {
+    codec: Codec,
     transform: IMFTransform,
     events: IMFMediaEventGenerator,
     name: String,
@@ -72,6 +87,8 @@ pub struct MfEncoder {
     credits: u32,
     /// Encoded pictures not handed out yet (in output order).
     ready: VecDeque<EncodedPacket>,
+    /// Parameter sets from the stream (HEVC: the VPS too).
+    vps: Option<Vec<u8>>,
     sps: Option<Vec<u8>>,
     pps: Option<Vec<u8>>,
     /// Sample time of the last output (presentation order is checked: no B-frames).
@@ -86,7 +103,7 @@ unsafe impl Send for MfEncoder {}
 impl MfEncoder {
     /// A hardware encoder for `w`×`h` at `rate` with the export's bitrate, keyframe distance and
     /// profile, or why there is none.
-    pub fn new(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> std::result::Result<MfEncoder, String> {
+    pub fn new(codec: Codec, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> std::result::Result<MfEncoder, String> {
         if w == 0 || h == 0 || !w.is_multiple_of(2) || !h.is_multiple_of(2) || w > MAX_SIDE || h > MAX_SIDE {
             return Err(format!("picture size {w}x{h}"));
         }
@@ -94,8 +111,8 @@ impl MfEncoder {
             return Err("frame rate".into());
         }
         runtime()?;
-        let mut why = String::from("no hardware H.264 encoder on this system");
-        for activate in encoder_transforms()? {
+        let mut why = format!("no hardware {} encoder on this system", codec.name());
+        for activate in encoder_transforms(codec)? {
             // SAFETY: a valid activation object from `MFTEnumEx`.
             let transform: IMFTransform = match unsafe { activate.ActivateObject() } {
                 Ok(t) => t,
@@ -104,8 +121,8 @@ impl MfEncoder {
                     continue;
                 }
             };
-            let name = transform_name(&activate);
-            match Self::configure(transform, name, w, h, rate, s) {
+            let name = transform_name(&activate, codec);
+            match Self::configure(codec, transform, name, w, h, rate, s) {
                 Ok(enc) => return Ok(enc),
                 Err(e) => why = e,
             }
@@ -113,7 +130,15 @@ impl MfEncoder {
         Err(why)
     }
 
-    fn configure(transform: IMFTransform, name: String, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> std::result::Result<MfEncoder, String> {
+    fn configure(
+        codec: Codec,
+        transform: IMFTransform,
+        name: String,
+        w: u32,
+        h: u32,
+        rate: FrameRate,
+        s: &ExportSettings,
+    ) -> std::result::Result<MfEncoder, String> {
         // SAFETY: a valid transform.
         let attributes = unsafe { transform.GetAttributes() }.map_err(|e| err("IMFTransform::GetAttributes", e))?;
         // SAFETY: a valid attribute store and pointers to constant GUIDs.
@@ -149,10 +174,12 @@ impl MfEncoder {
             set_codec_value(&api, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
         }
 
-        let profile = match s.h264_profile {
-            H264Profile::Baseline => 66u32,
-            H264Profile::Main => 77,
-            H264Profile::High => 100,
+        // eAVEncH264VProfile_* (profile_idc), eAVEncH265VProfile_Main_420_8
+        let (subtype, profile) = match (codec, s.h264_profile) {
+            (Codec::Hevc, _) => (MFVideoFormat_HEVC, 1u32),
+            (Codec::H264, H264Profile::Baseline) => (MFVideoFormat_H264, 66),
+            (Codec::H264, H264Profile::Main) => (MFVideoFormat_H264, 77),
+            (Codec::H264, H264Profile::High) => (MFVideoFormat_H264, 100),
         };
         let size = (u64::from(w) << 32) | u64::from(h);
         let fps = ((rate.num as u64) << 32) | rate.den as u64;
@@ -162,14 +189,14 @@ impl MfEncoder {
         // media type copies the values).
         unsafe {
             output.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(|e| err("SetGUID", e))?;
-            output.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264).map_err(|e| err("SetGUID", e))?;
+            output.SetGUID(&MF_MT_SUBTYPE, &subtype).map_err(|e| err("SetGUID", e))?;
             output.SetUINT32(&MF_MT_AVG_BITRATE, kbps.saturating_mul(1000)).map_err(|e| err("SetUINT32", e))?;
             output.SetUINT64(&MF_MT_FRAME_SIZE, size).map_err(|e| err("SetUINT64", e))?;
             output.SetUINT64(&MF_MT_FRAME_RATE, fps).map_err(|e| err("SetUINT64", e))?;
             output.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1).map_err(|e| err("SetUINT64", e))?;
             output.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32).map_err(|e| err("SetUINT32", e))?;
             output.SetUINT32(&MF_MT_MPEG2_PROFILE, profile).map_err(|e| err("SetUINT32", e))?;
-            if let Some(level) = s.h264_level {
+            if let (Codec::H264, Some(level)) = (codec, s.h264_level) {
                 output.SetUINT32(&MF_MT_MPEG2_LEVEL, u32::from(level)).map_err(|e| err("SetUINT32", e))?;
             }
             set_bt709(&output);
@@ -199,6 +226,7 @@ impl MfEncoder {
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0).map_err(|e| err("MFT_MESSAGE_NOTIFY_START_OF_STREAM", e))?;
         }
         Ok(MfEncoder {
+            codec,
             transform,
             events,
             name,
@@ -210,6 +238,7 @@ impl MfEncoder {
             out_size,
             credits: 0,
             ready: VecDeque::new(),
+            vps: None,
             sps: None,
             pps: None,
             last_time: None,
@@ -372,13 +401,16 @@ impl MfEncoder {
         let mut idr = false;
         for nal in annex_b_units(&data) {
             let Some(&head) = nal.first() else { continue };
-            match head & 0x1f {
-                7 => self.sps = Some(nal.to_vec()),
-                8 => self.pps = Some(nal.to_vec()),
-                // access unit delimiters and filler data stay out of MP4 samples
-                9 | 12 => {}
-                t => {
-                    idr |= t == 5;
+            match (self.codec, head & 0x1f, (head >> 1) & 0x3f) {
+                (Codec::H264, 7, _) | (Codec::Hevc, _, 33) => self.sps = Some(nal.to_vec()),
+                (Codec::H264, 8, _) | (Codec::Hevc, _, 34) => self.pps = Some(nal.to_vec()),
+                (Codec::Hevc, _, 32) => self.vps = Some(nal.to_vec()),
+                // access unit delimiters, end of sequence / bitstream and filler data stay out of
+                // MP4 samples
+                (Codec::H264, 9 | 12, _) | (Codec::Hevc, _, 35..=38) => {}
+                (codec, t264, t265) => {
+                    // H.264 IDR; HEVC IRAP pictures (BLA, IDR, CRA)
+                    idr |= if codec == Codec::H264 { t264 == 5 } else { (16..=23).contains(&t265) };
                     out.extend_from_slice(&(nal.len() as u32).to_be_bytes());
                     out.extend_from_slice(nal);
                 }
@@ -455,8 +487,12 @@ impl MfEncoder {
 
 impl VideoEncoder for MfEncoder {
     fn sample_entry(&self) -> SampleEntry {
-        let cfg = AvcConfig::new(self.sps.iter().cloned().collect(), self.pps.iter().cloned().collect(), 4);
-        let mut e = SampleEntry::avc(cfg, self.w as u16, self.h as u16);
+        let mut e = match self.codec {
+            Codec::H264 => {
+                SampleEntry::avc(AvcConfig::new(self.sps.iter().cloned().collect(), self.pps.iter().cloned().collect(), 4), self.w as u16, self.h as u16)
+            }
+            Codec::Hevc => SampleEntry::hevc(hvcc(self.vps.as_deref(), self.sps.as_deref(), self.pps.as_deref()), self.w as u16, self.h as u16),
+        };
         self.signal.apply_to(&mut e, false);
         e
     }
@@ -464,10 +500,10 @@ impl VideoEncoder for MfEncoder {
         self.rate.num as u32
     }
     fn encode(&mut self, frame: &EncoderFrame) -> Result<Vec<EncodedPacket>> {
-        self.encode_inner(frame).map_err(enc_err)
+        self.encode_inner(frame).map_err(|e| ExportError::Encode(format!("hardware {} encoder: {e}", self.codec.name())))
     }
     fn flush(&mut self) -> Result<Vec<EncodedPacket>> {
-        self.flush_inner().map_err(enc_err)
+        self.flush_inner().map_err(|e| ExportError::Encode(format!("hardware {} encoder: {e}", self.codec.name())))
     }
     fn is_hardware(&self) -> bool {
         true
@@ -534,21 +570,75 @@ fn annex_b_units(data: &[u8]) -> Vec<&[u8]> {
     out
 }
 
+/// The `hvcC` of an HEVC Main stream from its parameter sets: profile, tier, level and the
+/// constraint flags as the encoder's SPS signals them (`profile_tier_level` sits at a fixed place
+/// at the start of the SPS); 8-bit 4:2:0 as configured.
+fn hvcc(vps: Option<&[u8]>, sps: Option<&[u8]>, pps: Option<&[u8]>) -> HevcConfig {
+    let rbsp = sps.map(unescape).unwrap_or_default();
+    let b = |i: usize| rbsp.get(i).copied().unwrap_or(0);
+    // NAL header (2 bytes), then vps id (4) | max_sub_layers_minus1 (3) | temporal_id_nesting (1),
+    // then general profile_space (2) | tier (1) | profile_idc (5), 32 compatibility flags, 48
+    // constraint flags and level_idc
+    let sub = b(2);
+    let ptl = b(3);
+    let compat = u32::from_be_bytes([b(4), b(5), b(6), b(7)]);
+    let constraint = (8..14).fold(0u64, |acc, i| (acc << 8) | u64::from(b(i)));
+    let array = |nal_type: u8, nal: Option<&[u8]>| HevcNalArray { completeness: true, nal_type, nalus: nal.map(|n| vec![n.to_vec()]).unwrap_or_default() };
+    HevcConfig {
+        general_profile_space: ptl >> 6,
+        general_tier_flag: ptl & 0x20 != 0,
+        general_profile_idc: ptl & 0x1f,
+        general_profile_compatibility_flags: compat,
+        general_constraint_indicator_flags: constraint,
+        general_level_idc: b(14),
+        min_spatial_segmentation_idc: 0,
+        parallelism_type: 0,
+        chroma_format_idc: 1,
+        bit_depth_luma: 8,
+        bit_depth_chroma: 8,
+        avg_frame_rate: 0,
+        constant_frame_rate: 0,
+        num_temporal_layers: ((sub >> 1) & 7) + 1,
+        temporal_id_nested: sub & 1 != 0,
+        length_size: 4,
+        arrays: [array(32, vps), array(33, sps), array(34, pps)].into_iter().filter(|a| !a.nalus.is_empty()).collect(),
+    }
+}
+
+/// A NAL unit without its emulation prevention bytes (`00 00 03` -> `00 00`).
+fn unescape(nal: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(nal.len());
+    let mut zeros = 0;
+    for &v in nal {
+        if zeros >= 2 && v == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if v == 0 { zeros + 1 } else { 0 };
+        out.push(v);
+    }
+    out
+}
+
 /// The transform's friendly name, for diagnostics.
-fn transform_name(activate: &IMFActivate) -> String {
+fn transform_name(activate: &IMFActivate, codec: Codec) -> String {
     use windows::Win32::Media::MediaFoundation::MFT_FRIENDLY_NAME_Attribute;
     let mut buf = [0u16; 128];
     let mut len = 0u32;
     // SAFETY: a valid activation object, a constant GUID, and a buffer with its length.
     match unsafe { activate.GetString(&MFT_FRIENDLY_NAME_Attribute, &mut buf, Some(&mut len)) } {
         Ok(()) => String::from_utf16_lossy(buf.get(..len as usize).unwrap_or(&[])),
-        Err(_) => "hardware H.264 encoder".into(),
+        Err(_) => format!("hardware {} encoder", codec.name()),
     }
 }
 
-/// The system's hardware H.264 encoder transforms, best first.
-fn encoder_transforms() -> std::result::Result<Vec<IMFActivate>, String> {
-    let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
+/// The system's hardware encoder transforms for a codec, best first.
+fn encoder_transforms(codec: Codec) -> std::result::Result<Vec<IMFActivate>, String> {
+    let subtype = match codec {
+        Codec::H264 => MFVideoFormat_H264,
+        Codec::Hevc => MFVideoFormat_HEVC,
+    };
+    let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype };
     let mut list: *mut Option<IMFActivate> = std::ptr::null_mut();
     let mut count = 0u32;
     // SAFETY: `output` outlives the call; `list` and `count` are valid out pointers. On success
@@ -576,6 +666,22 @@ fn encoder_transforms() -> std::result::Result<Vec<IMFActivate>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hvcc_reads_profile_tier_level_from_the_sps() {
+        // an SPS NAL (type 33): one sub-layer, nesting; Main, tier 0, compatibility 0x60000000,
+        // constraint flags 0x900000000000 with an emulation prevention byte, level 4.0 (120)
+        let sps = [0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x78, 0xa0];
+        let c = hvcc(Some(&[0x40, 0x01, 0x0c]), Some(&sps), Some(&[0x44, 0x01, 0xc1]));
+        assert_eq!((c.general_profile_idc, c.general_tier_flag, c.general_level_idc), (1, false, 120));
+        assert_eq!(c.general_profile_compatibility_flags, 0x6000_0000);
+        assert_eq!(c.general_constraint_indicator_flags, 0x9000_0000_0000);
+        assert_eq!((c.num_temporal_layers, c.temporal_id_nested), (1, true));
+        assert_eq!(c.arrays.iter().map(|a| a.nal_type).collect::<Vec<_>>(), vec![32, 33, 34]);
+        // nothing known yet: a config without arrays, never a panic
+        assert!(hvcc(None, None, None).arrays.is_empty());
+        assert_eq!(unescape(&[0, 0, 3, 1, 0, 0, 3]), vec![0, 0, 1, 0, 0]);
+    }
 
     #[test]
     fn annex_b_units_split_three_and_four_byte_start_codes() {
