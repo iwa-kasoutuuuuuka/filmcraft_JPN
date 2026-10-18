@@ -39,7 +39,7 @@ before choosing work.
 | **Performance and hardware** | ~62% | **~35–40%** | Premiere runs effects, decoding and encoding on the GPU and the hardware media engines. Here, hardware decode works on macOS (VideoToolbox, #33) and Windows (Media Foundation on Direct3D 11: H.264 bit-exact with our decoder on one NVIDIA machine, 20–27× less CPU per frame; HEVC untested), with decoded pictures still copied through system memory. The GPU does compositing, blend modes (#32), masks and 38 effect ids: the 31 common effects (GPU2: colour adjustments, crop/flip/transform, blurs, sharpen), the whole of Lumetri (wheels, curves, LUTs, HSL Secondary, Sharpen), Ultra / Color / Luma Key, Video Limiter, Mosaic and Vignette. HDR and wide-gamut sequences composite on the GPU too (BT.709 / sRGB media decoded there; HDR, log and other-gamut media converted on the CPU per layer). The remaining effects (glows, distortions, generators…), export and encoding are CPU. Linux has no hardware path. 8K and AV1 aren't real-time. The effect list shows Premiere's "GPU accelerated" badge, but only those 38 effect ids run on the GPU here. |
 | **Stability** | not tracked | **improving, unproven** | The never-crash pass (no panics in product code, last-resort guards) landed on 2026-10-04. There's no field record from real users' projects yet. |
 | **Plugins and pro ecosystem** | not tracked | **~0–10%** | No audio plugin hosting (VST3 / Audio Units) and no third-party video effects (OpenFX). For many professional editors this alone rules FilmCraft out. Team Projects and Productions are out of scope by design. |
-| **AI features** | partial | **~25–35%** | Speech to text exists but is off in default builds (the `whisper` feature). Enhance Speech is a DSP chain, not a model. Auto Reframe is approximate. No Generative Extend, and no media-intelligence search or auto colour. |
+| **AI features** | partial | **~25–35%** | Speech to text (local Whisper, pure Rust) is on in the app and CLI builds; the model (≈290 MB for `whisper-base`) downloads on first use. Enhance Speech is a DSP chain, not a model. Auto Reframe is approximate. No Generative Extend, and no media-intelligence search or auto colour. |
 | **Platforms** | not tracked | **macOS solid; Windows and Linux thin** | Development and testing happen on macOS. Windows and Linux are built for releases but barely exercised at runtime. The web build is a compile target; the browser app shell isn't finished. |
 | **UI fidelity** | ~85% | **~80%** | Agents compare with Premiere reference screenshots; this hasn't been checked independently. |
 
@@ -71,7 +71,7 @@ In priority order. Agents should prefer this work over adding more checklist ite
 6. **Delivery codecs.** HEVC: hardware on Windows landed (Main SDR, Main 10 HLG / PQ HDR from P010); next macOS (VideoToolbox) and a software HEVC encoder. AV1: hardware encoders, and `rav1e` (BSD-2) in software.
 7. **Plugin hosting** (VST3 / Audio Units, then OpenFX). Needs FFI, so it falls under the isolated
    `unsafe` crate rule (AGENTS.md §0.3). **Owner decision needed** before starting.
-8. **AI features** with openly licensed local models: transcription on by default, text-based
+8. **AI features** with openly licensed local models: transcription (on by default since the app and CLI build it), text-based
    editing, speech enhancement, reframing.
 9. **The web app shell**: file access, WebCodecs, audio.
 

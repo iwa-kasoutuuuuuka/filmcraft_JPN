@@ -398,3 +398,19 @@ fn builtin_presets_are_valid_and_unique() {
     let back: ExportPreset = serde_json::from_value(json).unwrap();
     assert_eq!(back.settings.adaptive_bitrate, Some(0.2));
 }
+
+/// Picking a format starts from its delivery defaults: H.264 as the default preset (adaptive 0.2
+/// bits per pixel), HEVC at half that, others their own (no adaptive bitrate).
+#[test]
+fn format_defaults_follow_the_codec() {
+    use crate::presets::format_defaults;
+    let h264 = format_defaults(Format::H264);
+    let hevc = format_defaults(Format::Hevc);
+    assert_eq!((h264.format, h264.adaptive_bitrate), (Format::H264, Some(0.2)));
+    assert_eq!((hevc.format, hevc.adaptive_bitrate), (Format::Hevc, Some(0.1)));
+    let rate = filmcraft_time::FrameRate::FPS_23_976;
+    let (a, b) = (h264.resolve(1920, 1080, rate, 48_000), hevc.resolve(1920, 1080, rate, 48_000));
+    assert!(b.target_kbps * 2 <= a.target_kbps + 2, "HEVC at about half H.264's bitrate: {} vs {}", b.target_kbps, a.target_kbps);
+    let prores = format_defaults(Format::ProRes);
+    assert_eq!((prores.format, prores.adaptive_bitrate), (Format::ProRes, None));
+}

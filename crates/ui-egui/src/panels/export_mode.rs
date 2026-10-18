@@ -580,12 +580,11 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     // a format switch starts from that format's defaults (keeping size / rate / range)
                     let keep = ex.settings.clone();
                     ex.settings = ExportSettings {
-                        format: f,
                         frame_size: keep.frame_size,
                         frame_rate: keep.frame_rate,
                         effects: keep.effects,
                         metadata: keep.metadata,
-                        ..Default::default()
+                        ..filmcraft_engine::export::presets::format_defaults(f)
                     };
                 }
             }
@@ -831,7 +830,7 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
     });
     row(ui, t, "Sample Rate", |ui| {
         let rates: [Option<u32>; 5] = [None, Some(32_000), Some(44_100), Some(48_000), Some(96_000)];
-        let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| format!("Match Source ({seq_sr} Hz)"));
+        let lab = |r: &Option<u32>| r.map(|r| format!("{r} Hz")).unwrap_or_else(|| format!("{} ({seq_sr} Hz)", crate::i18n::tr_export("Match Source")));
         let labels: Vec<(String, bool)> = rates.iter().map(|r| (lab(r), true)).collect();
         if let Some(i) = combo(ui, reg, "export.audio.sampleRate", &lab(&s.audio.sample_rate), &labels, 180.0) {
             s.audio.sample_rate = rates[i];

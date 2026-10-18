@@ -46,6 +46,17 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
     }
 }
 
+/// The settings a format starts from when it is picked in Export mode: H.264 as the default preset
+/// (Match Source, 0.2 bits per pixel), HEVC likewise at half that (it reaches the same quality at
+/// about half H.264's bitrate), the other formats their own defaults.
+pub fn format_defaults(format: Format) -> ExportSettings {
+    match format {
+        Format::H264 => adaptive(0.2),
+        Format::Hevc => ExportSettings { format: Format::Hevc, ..adaptive(0.1) },
+        f => ExportSettings { format: f, ..Default::default() },
+    }
+}
+
 fn adaptive(bpp: f32) -> ExportSettings {
     ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) }
 }
