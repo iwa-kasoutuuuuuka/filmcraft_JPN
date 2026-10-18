@@ -32,7 +32,8 @@ use windows::Win32::Media::MediaFoundation::{
     MFNominalRange_16_235, MFSampleExtension_CleanPoint, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
     MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_OF_STREAM, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
     MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoFormat_H264,
-    MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709, MFVideoTransFunc_709, MFVideoTransferMatrix_BT709,
+    MFVideoFormat_HEVC, MFVideoFormat_NV12, MFVideoFormat_P010, MFVideoInterlace_Progressive, MFVideoPrimaries_BT709, MFVideoPrimaries_BT2020,
+    MFVideoTransFunc_709, MFVideoTransFunc_2084, MFVideoTransFunc_HLG, MFVideoTransferMatrix_BT709, MFVideoTransferMatrix_BT2020_10,
     eAVEncCommonRateControlMode_CBR, eAVEncCommonRateControlMode_PeakConstrainedVBR,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
@@ -80,6 +81,8 @@ pub struct MfEncoder {
     h: u32,
     rate: FrameRate,
     signal: ColorSignal,
+    /// HDR (HEVC Main 10): P010 input from the encoded R'G'B' floats.
+    hdr: bool,
     /// The transform allocates its output samples (else: `out_size` bytes per sample, ours).
     provides_samples: bool,
     out_size: u32,
@@ -174,9 +177,14 @@ impl MfEncoder {
             set_codec_value(&api, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
         }
 
-        // eAVEncH264VProfile_* (profile_idc), eAVEncH265VProfile_Main_420_8
+        // HDR exports: HEVC Main 10 from P010 (H.264 HDR stays with our encoder)
+        let hdr = s.signal.is_hdr();
+        if hdr && codec != Codec::Hevc {
+            return Err(format!("{name}: HDR {} is not taken by the hardware path", codec.name()));
+        }
+        // eAVEncH264VProfile_* (profile_idc), eAVEncH265VProfile_Main_420_8 / _Main_420_10
         let (subtype, profile) = match (codec, s.h264_profile) {
-            (Codec::Hevc, _) => (MFVideoFormat_HEVC, 1u32),
+            (Codec::Hevc, _) => (MFVideoFormat_HEVC, if hdr { 2u32 } else { 1 }),
             (Codec::H264, H264Profile::Baseline) => (MFVideoFormat_H264, 66),
             (Codec::H264, H264Profile::Main) => (MFVideoFormat_H264, 77),
             (Codec::H264, H264Profile::High) => (MFVideoFormat_H264, 100),
@@ -199,7 +207,7 @@ impl MfEncoder {
             if let (Codec::H264, Some(level)) = (codec, s.h264_level) {
                 output.SetUINT32(&MF_MT_MPEG2_LEVEL, u32::from(level)).map_err(|e| err("SetUINT32", e))?;
             }
-            set_bt709(&output);
+            set_signal(&output, s.signal);
             transform.SetOutputType(0, &output, 0).map_err(|e| err(&format!("{name}: IMFTransform::SetOutputType"), e))?;
         }
         // SAFETY: interface out.
@@ -207,13 +215,13 @@ impl MfEncoder {
         // SAFETY: as above.
         unsafe {
             input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(|e| err("SetGUID", e))?;
-            input.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12).map_err(|e| err("SetGUID", e))?;
+            input.SetGUID(&MF_MT_SUBTYPE, if hdr { &MFVideoFormat_P010 } else { &MFVideoFormat_NV12 }).map_err(|e| err("SetGUID", e))?;
             input.SetUINT64(&MF_MT_FRAME_SIZE, size).map_err(|e| err("SetUINT64", e))?;
             input.SetUINT64(&MF_MT_FRAME_RATE, fps).map_err(|e| err("SetUINT64", e))?;
             input.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, (1u64 << 32) | 1).map_err(|e| err("SetUINT64", e))?;
             input.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32).map_err(|e| err("SetUINT32", e))?;
-            input.SetUINT32(&MF_MT_DEFAULT_STRIDE, w).map_err(|e| err("SetUINT32", e))?;
-            set_bt709(&input);
+            input.SetUINT32(&MF_MT_DEFAULT_STRIDE, if hdr { w * 2 } else { w }).map_err(|e| err("SetUINT32", e))?;
+            set_signal(&input, s.signal);
             transform.SetInputType(0, &input, 0).map_err(|e| err(&format!("{name}: IMFTransform::SetInputType"), e))?;
         }
         // SAFETY: a valid transform; stream 0 is the encoder's only output.
@@ -234,6 +242,7 @@ impl MfEncoder {
             h,
             rate,
             signal: s.signal,
+            hdr,
             provides_samples,
             out_size,
             credits: 0,
@@ -259,10 +268,13 @@ impl MfEncoder {
     /// An NV12 sample of the picture (BT.709 limited range, as our H.264 encoder converts).
     fn input_sample(&self, f: &EncoderFrame) -> std::result::Result<IMFSample, String> {
         let (w, h) = (self.w as usize, self.h as usize);
-        if f.width != self.w || f.height != self.h || f.rgba.len() < w * h * 4 {
+        let fits = if self.hdr { f.hdr.is_some_and(|p| p.len() >= w * h * 3) } else { f.rgba.len() >= w * h * 4 };
+        if f.width != self.w || f.height != self.h || !fits {
             return Err("picture size changed".into());
         }
-        let len = w * h + w * (h / 2);
+        // NV12 (8-bit) or P010 (16-bit samples)
+        let bytes = if self.hdr { 2 } else { 1 };
+        let len = (w * h + w * (h / 2)) * bytes;
         let len32 = u32::try_from(len).map_err(|_| "picture too large")?;
         // SAFETY: plain value in, interface out.
         let buffer = unsafe { MFCreateMemoryBuffer(len32) }.map_err(|e| err("MFCreateMemoryBuffer", e))?;
@@ -275,13 +287,16 @@ impl MfEncoder {
             // SAFETY: the locked buffer holds at least `capacity >= len` writable bytes at `dst`,
             // and a fresh buffer cannot overlap the picture.
             let out = unsafe { std::slice::from_raw_parts_mut(dst, len) };
-            match f.prepared.filter(|p| p.len() == len) {
-                // converted while rendering (`input_converter`)
-                Some(p) => out.copy_from_slice(p),
-                None => {
-                    let (luma, chroma) = out.split_at_mut(w * h);
-                    filmcraft_export::rgba_to_nv12(f.rgba, w, h, luma, chroma);
+            let (luma, chroma) = out.split_at_mut(w * h * bytes);
+            match (self.hdr, f.hdr, f.prepared.filter(|p| p.len() == len)) {
+                (true, Some(rgb), _) => {
+                    let (kr, kb) = self.signal.kr_kb();
+                    filmcraft_export::rgbf_to_p010(rgb, w, h, kr, kb, luma, chroma);
                 }
+                (true, None, _) => return Err("an HDR export without HDR pictures".into()),
+                // converted while rendering (`input_converter`)
+                (false, _, Some(p)) => out.copy_from_slice(p),
+                (false, _, None) => filmcraft_export::rgba_to_nv12(f.rgba, w, h, luma, chroma),
             }
         }
         // SAFETY: the buffer was locked above.
@@ -491,7 +506,11 @@ impl VideoEncoder for MfEncoder {
             Codec::H264 => {
                 SampleEntry::avc(AvcConfig::new(self.sps.iter().cloned().collect(), self.pps.iter().cloned().collect(), 4), self.w as u16, self.h as u16)
             }
-            Codec::Hevc => SampleEntry::hevc(hvcc(self.vps.as_deref(), self.sps.as_deref(), self.pps.as_deref()), self.w as u16, self.h as u16),
+            Codec::Hevc => SampleEntry::hevc(
+                hvcc(self.vps.as_deref(), self.sps.as_deref(), self.pps.as_deref(), if self.hdr { 10 } else { 8 }),
+                self.w as u16,
+                self.h as u16,
+            ),
         };
         self.signal.apply_to(&mut e, false);
         e
@@ -532,14 +551,20 @@ fn set_codec_value(api: &ICodecAPI, key: &windows::core::GUID, value: u32) {
     }
 }
 
-/// BT.709 limited-range signalling on a media type (what the encoder writes into the VUI).
-fn set_bt709(ty: &IMFMediaType) {
+/// Limited-range colour signalling on a media type (what the encoder writes into the VUI): BT.709,
+/// or BT.2020 with PQ / HLG for HDR exports.
+fn set_signal(ty: &IMFMediaType, signal: ColorSignal) {
+    let (primaries, transfer, matrix) = match signal.transfer {
+        16 => (MFVideoPrimaries_BT2020.0, MFVideoTransFunc_2084.0, MFVideoTransferMatrix_BT2020_10.0),
+        18 => (MFVideoPrimaries_BT2020.0, MFVideoTransFunc_HLG.0, MFVideoTransferMatrix_BT2020_10.0),
+        _ => (MFVideoPrimaries_BT709.0, MFVideoTransFunc_709.0, MFVideoTransferMatrix_BT709.0),
+    };
     // SAFETY: a valid media type and pointers to constant GUIDs; failures leave the encoder's
     // defaults, and the MP4 sample entry signals the colour anyway.
     unsafe {
-        let _ = ty.SetUINT32(&MF_MT_VIDEO_PRIMARIES, MFVideoPrimaries_BT709.0 as u32);
-        let _ = ty.SetUINT32(&MF_MT_TRANSFER_FUNCTION, MFVideoTransFunc_709.0 as u32);
-        let _ = ty.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32);
+        let _ = ty.SetUINT32(&MF_MT_VIDEO_PRIMARIES, primaries as u32);
+        let _ = ty.SetUINT32(&MF_MT_TRANSFER_FUNCTION, transfer as u32);
+        let _ = ty.SetUINT32(&MF_MT_YUV_MATRIX, matrix as u32);
         let _ = ty.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32);
     }
 }
@@ -570,10 +595,10 @@ fn annex_b_units(data: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-/// The `hvcC` of an HEVC Main stream from its parameter sets: profile, tier, level and the
-/// constraint flags as the encoder's SPS signals them (`profile_tier_level` sits at a fixed place
-/// at the start of the SPS); 8-bit 4:2:0 as configured.
-fn hvcc(vps: Option<&[u8]>, sps: Option<&[u8]>, pps: Option<&[u8]>) -> HevcConfig {
+/// The `hvcC` of an HEVC Main / Main 10 stream from its parameter sets: profile, tier, level and
+/// the constraint flags as the encoder's SPS signals them (`profile_tier_level` sits at a fixed
+/// place at the start of the SPS); 4:2:0 at `bits` as configured.
+fn hvcc(vps: Option<&[u8]>, sps: Option<&[u8]>, pps: Option<&[u8]>, bits: u8) -> HevcConfig {
     let rbsp = sps.map(unescape).unwrap_or_default();
     let b = |i: usize| rbsp.get(i).copied().unwrap_or(0);
     // NAL header (2 bytes), then vps id (4) | max_sub_layers_minus1 (3) | temporal_id_nesting (1),
@@ -594,8 +619,8 @@ fn hvcc(vps: Option<&[u8]>, sps: Option<&[u8]>, pps: Option<&[u8]>) -> HevcConfi
         min_spatial_segmentation_idc: 0,
         parallelism_type: 0,
         chroma_format_idc: 1,
-        bit_depth_luma: 8,
-        bit_depth_chroma: 8,
+        bit_depth_luma: bits,
+        bit_depth_chroma: bits,
         avg_frame_rate: 0,
         constant_frame_rate: 0,
         num_temporal_layers: ((sub >> 1) & 7) + 1,
@@ -672,14 +697,15 @@ mod tests {
         // an SPS NAL (type 33): one sub-layer, nesting; Main, tier 0, compatibility 0x60000000,
         // constraint flags 0x900000000000 with an emulation prevention byte, level 4.0 (120)
         let sps = [0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x78, 0xa0];
-        let c = hvcc(Some(&[0x40, 0x01, 0x0c]), Some(&sps), Some(&[0x44, 0x01, 0xc1]));
+        let c = hvcc(Some(&[0x40, 0x01, 0x0c]), Some(&sps), Some(&[0x44, 0x01, 0xc1]), 8);
         assert_eq!((c.general_profile_idc, c.general_tier_flag, c.general_level_idc), (1, false, 120));
         assert_eq!(c.general_profile_compatibility_flags, 0x6000_0000);
         assert_eq!(c.general_constraint_indicator_flags, 0x9000_0000_0000);
         assert_eq!((c.num_temporal_layers, c.temporal_id_nested), (1, true));
         assert_eq!(c.arrays.iter().map(|a| a.nal_type).collect::<Vec<_>>(), vec![32, 33, 34]);
         // nothing known yet: a config without arrays, never a panic
-        assert!(hvcc(None, None, None).arrays.is_empty());
+        assert!(hvcc(None, None, None, 10).arrays.is_empty());
+        assert_eq!(hvcc(None, None, None, 10).bit_depth_luma, 10);
         assert_eq!(unescape(&[0, 0, 3, 1, 0, 0, 3]), vec![0, 0, 1, 0, 0]);
     }
 

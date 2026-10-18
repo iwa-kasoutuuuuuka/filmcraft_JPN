@@ -67,6 +67,9 @@ Encoder MFT here): 1.9 s for the same clip at the same bitrate (21.4 MB). The `h
 from the encoder's own VPS / SPS / PPS (profile, tier and level read from its SPS); the stream
 decodes with our HEVC decoder and with ffmpeg. FilmCraft has no HEVC encoder of its own, so the
 format is offered only where the system has a hardware one (`filmcraft_export::available`).
+HDR sequences export HEVC Main 10: the encoded R'G'B' (HLG or PQ, BT.2020) goes in as P010
+(`rgbf_to_p010`), signalled in the stream's VUI and in the MP4 (`colr`, `mdcv` / `clli` for PQ);
+the picture matches our H.264 HDR export of the sequence at 52–54 dB.
 
 ## Results (keys and HDR Lumetri on the GPU, before → after)
 

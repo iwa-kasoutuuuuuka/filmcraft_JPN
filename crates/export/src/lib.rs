@@ -1014,6 +1014,55 @@ pub fn rgba_to_nv12(rgba: &[u8], w: usize, h: usize, y: &mut [u8], uv: &mut [u8]
     });
 }
 
+/// A P010 picture (10-bit 4:2:0, little-endian 16-bit samples with the value in the top ten
+/// bits; hardware HDR encoders) from encoded R'G'B' floats with matrix (Kr, Kb), limited range:
+/// `y` holds `w × h` samples (2 bytes each), `uv` the interleaved Cb/Cr rows (⌈w/2⌉ pairs,
+/// ⌈h/2⌉ rows). The arithmetic of [`rgbf_to_yuv420_8`] at 10 bits.
+#[allow(clippy::too_many_arguments)]
+pub fn rgbf_to_p010(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &mut [u8], uv: &mut [u8]) {
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    if w == 0 || h == 0 || rgb.len() < w * h * 3 || y.len() < w * h * 2 || uv.len() < cw * 4 * ch {
+        return;
+    }
+    let kg = 1.0 - kr - kb;
+    let (sb, sr) = (2.0 * (1.0 - kb), 2.0 * (1.0 - kr));
+    let put = |o: &mut [u8], v: f32| {
+        let code = (v.round().clamp(4.0, 1019.0) as u16) << 6;
+        o.copy_from_slice(&code.to_le_bytes());
+    };
+    let y = &mut y[..w * h * 2];
+    let uv = &mut uv[..cw * 4 * ch];
+    y.par_chunks_mut(w * 4).zip(uv.par_chunks_mut(cw * 4)).enumerate().for_each(|(cy, (yr, uvr))| {
+        let rows = yr.len() / (w * 2);
+        for cx in 0..cw {
+            let (mut us, mut vs, mut cnt) = (0f32, 0f32, 0f32);
+            for dy in 0..rows {
+                let row = cy * 2 + dy;
+                for x in [cx * 2, cx * 2 + 1] {
+                    if x >= w {
+                        continue;
+                    }
+                    let i = (row * w + x) * 3;
+                    let Some(p) = rgb.get(i..i + 3) else { continue };
+                    let (r, g, b) = (p[0], p[1], p[2]);
+                    let yy = kr * r + kg * g + kb * b;
+                    if let Some(o) = yr.get_mut((dy * w + x) * 2..(dy * w + x) * 2 + 2) {
+                        put(o, 64.0 + 876.0 * yy);
+                    }
+                    us += (b - yy) / sb;
+                    vs += (r - yy) / sr;
+                    cnt += 1.0;
+                }
+            }
+            if let Some(o) = uvr.get_mut(cx * 4..cx * 4 + 4) {
+                let (u, v) = o.split_at_mut(2);
+                put(u, 512.0 + 896.0 * us / cnt);
+                put(v, 512.0 + 896.0 * vs / cnt);
+            }
+        }
+    });
+}
+
 /// Limited-range 8-bit 4:2:0 from encoded R'G'B' floats with matrix (Kr, Kb).
 #[allow(clippy::too_many_arguments)]
 pub fn rgbf_to_yuv420_8(rgb: &[f32], w: usize, h: usize, kr: f32, kb: f32, y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>) {

@@ -183,3 +183,103 @@ fn export_valid(format: filmcraft_export::Format, codec: Codec, ffprobe_name: &s
     }
     let _ = std::fs::remove_file(&path);
 }
+
+/// An HDR sequence (HLG, PQ) exported as HEVC: Main 10 from P010 on the hardware encoder, BT.2020
+/// with the sequence's transfer in the stream and the container, the same picture as our H.264
+/// HDR export of the sequence, and a valid file for ffprobe / ffmpeg.
+#[test]
+fn hardware_hevc_hdr_export_is_main10() {
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    use filmcraft_media::MediaSource;
+    use filmcraft_media::generators::GeneratorSource;
+    use filmcraft_project::{ItemKind, Label, MediaClip, MediaRef, Project, SequenceSettings, TrackKind};
+    use filmcraft_time::{Tick, TimeRange};
+    use std::sync::Arc;
+
+    let probe_settings = ExportSettings { signal: filmcraft_export::ColorSignal::HLG, ..Default::default() };
+    if MfEncoder::new(Codec::Hevc, 640, 360, FrameRate::FPS_24, &probe_settings).is_err() {
+        eprintln!("no Media Foundation hardware HEVC Main 10 encoder here: skipped");
+        return;
+    }
+    let (Some(ffprobe), Some(ffmpeg)) = (filmcraft_testkit::ffprobe_or_skip("HDR HEVC export"), filmcraft_testkit::ffmpeg()) else { return };
+    filmcraft_platform::register();
+    let dir = std::env::temp_dir().join(format!("fc-mfencode-hdr-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tmp");
+    for (working, transfer) in [(WorkingSpace::Rec2100Hlg, "arib-std-b67"), (WorkingSpace::Rec2100Pq, "smpte2084")] {
+        let mut p = Project::new("x");
+        let g = GeneratorSource::demo(filmcraft_media::DemoScene::CityNight);
+        let info = g.info().clone();
+        let item = p.add_item(
+            &info.name.clone(),
+            Label::Iris,
+            ItemKind::Media(MediaClip {
+                media: MediaRef::Generator(g.generator.clone()),
+                info,
+                interpret: Default::default(),
+                mark_in: None,
+                mark_out: None,
+                markers: vec![],
+                offline: false,
+                proxy: None,
+                identity: None,
+            }),
+            None,
+        );
+        let color = ColorPipeline { working, ..ColorPipeline::REC709 };
+        let seq = p.new_sequence(
+            "s",
+            SequenceSettings { width: 640, height: 360, frame_rate: FrameRate::FPS_24, color, working_space: working.label().into(), ..Default::default() },
+            1,
+            1,
+            None,
+        );
+        let r = FrameRate::FPS_24;
+        let mut v = p.make_track_item(item, TrackKind::Video, Tick::ZERO, TimeRange::new(Tick::ZERO, r.tick_of(24)), r).expect("item");
+        v.scale_to_frame = true;
+        p.sequence_mut(seq).expect("seq").video_tracks[0].items.push(v);
+        let mut sources = filmcraft_render::SourceMap::default();
+        sources.0.insert(item, Arc::new(g));
+        let p = Arc::new(p);
+        let export = |format, name: &str, hardware: bool| {
+            let path = dir.join(name).to_string_lossy().to_string();
+            let s = ExportSettings { format, path: path.clone(), hardware_encoding: hardware, bitrate_kbps: 40_000, ..Default::default() };
+            filmcraft_export::export(&p, seq, &s, &sources, &filmcraft_export::Progress::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            path
+        };
+        let hevc = export(filmcraft_export::Format::Hevc, &format!("{transfer}.mp4"), true);
+        let h264 = export(filmcraft_export::Format::H264, &format!("{transfer}-ours.mp4"), false);
+        let out = std::process::Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,profile,pix_fmt,color_transfer,color_primaries",
+                "-of",
+                "csv=p=0",
+                &hevc,
+            ])
+            .output()
+            .expect("ffprobe");
+        // (PQ's side data adds an empty csv field)
+        let text = String::from_utf8_lossy(&out.stdout).trim().trim_end_matches(',').to_string();
+        assert_eq!(text, format!("hevc,Main 10,yuv420p10le,{transfer},bt2020"), "{working:?}");
+        let o = std::process::Command::new(&ffmpeg).args(["-v", "error", "-i", &hevc, "-f", "null", "-"]).output().expect("ffmpeg");
+        assert!(o.status.success() && o.stderr.is_empty(), "{working:?}: {}", String::from_utf8_lossy(&o.stderr));
+        // the same picture as our H.264 HDR export (both the sequence's HDR signal)
+        let grey = |file: &str| {
+            let o = std::process::Command::new(&ffmpeg)
+                .args(["-v", "error", "-i", file, "-frames:v", "1", "-vf", "scale=160:90", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+                .output()
+                .expect("ffmpeg");
+            o.stdout
+        };
+        let (a, b) = (grey(&hevc), grey(&h264));
+        assert_eq!(a.len(), 160 * 90);
+        let q = psnr(&a, &b);
+        eprintln!("{working:?}: HEVC Main 10 vs our H.264 HDR export: {q:.1} dB");
+        assert!(q > 30.0, "{working:?}: {q:.1} dB");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

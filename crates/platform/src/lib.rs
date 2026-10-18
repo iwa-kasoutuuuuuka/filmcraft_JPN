@@ -24,8 +24,9 @@
 //! On Windows, [`register`] also puts Media Foundation hardware encoders (the GPU's media engine)
 //! in front of ours for MP4 / MOV exports (`filmcraft_export::register_encoder`; Export ▸
 //! Performance, `filmcraft_export::hw`): H.264, and HEVC, which has no encoder of our own. They
-//! decline HDR, two-pass, MXF and non-square-pixel exports, and an H.264 export whose hardware
-//! encoder fails on its first frames finishes with our encoder.
+//! decline two-pass, MXF and non-square-pixel exports and HDR H.264 (HDR HEVC is Main 10 from
+//! P010), and an H.264 export whose hardware encoder fails on its first frames finishes with our
+//! encoder.
 //!
 //! This is the one crate allowed to use `unsafe` (OS FFI), and only in its FFI modules
 //! (docs/adr/0001-platform-ffi.md).
@@ -151,7 +152,8 @@ pub fn mediafoundation_encoder_factory(
     };
     if !filmcraft_export::hw::hardware_encoding()
         || s.format.is_mxf()
-        || s.signal.is_hdr()
+        // HDR: HEVC Main 10 only (HDR H.264 stays with our encoder)
+        || (s.signal.is_hdr() && codec != mfencode::Codec::Hevc)
         || !matches!(s.h264_pass, filmcraft_export::H264Pass::Single)
         || s.pixel_aspect.is_some_and(|(n, d)| n != d)
     {

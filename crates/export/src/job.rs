@@ -129,7 +129,7 @@ impl Exporter {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         // HDR sequences export HDR (H.264 / ProRes / DNxHR) unless SDR is asked for
         let pipe = q.settings.color;
-        let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.video_format(), Format::H264 | Format::ProRes | Format::DnxHr);
+        let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.video_format(), Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr);
         let mut settings = settings.clone();
         settings.signal = match (hdr_out, pipe.working) {
             (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
@@ -432,9 +432,11 @@ impl Exporter {
     fn commit(&mut self, b: Batch, packets: Result<Vec<EncodedPacket>>, progress: &Progress) -> Result<()> {
         let packets = match packets {
             Err(e) if self.venc.is_hardware() && b.f == self.f0 && self.mux.is_none() && self.mxf.is_none() => {
+                // (no encoder of our own for the format, as HEVC: the hardware error stands)
+                let Ok(ours) = make_software_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate) else { return Err(e) };
                 log::warn!("hardware encoder failed ({e}); exporting with FilmCraft's encoder");
                 crate::hw::note_hw_encode_fallback();
-                self.venc = make_software_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate)?;
+                self.venc = ours;
                 encode_frames(self.venc.as_mut(), &self.pipe, self.f0, &b)?
             }
             r => r?,

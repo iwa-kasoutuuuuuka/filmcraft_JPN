@@ -341,3 +341,32 @@ fn rgba_to_nv12_matches_the_planar_conversion() {
         rgba_to_nv12(&rgba[..4], w, h, &mut ny, &mut nuv);
     }
 }
+
+/// P010 for the hardware HDR encoders: the 8-bit conversion's arithmetic at 10 bits (values in the
+/// top ten bits of little-endian 16-bit samples), limited range and clamped.
+#[test]
+fn rgbf_to_p010_is_the_10_bit_conversion() {
+    let (w, h) = (6usize, 4usize);
+    let rgb: Vec<f32> = (0..w * h * 3).map(|i| [0.0, 0.25, 0.5, 1.0, 1.3, -0.2][i % 6]).collect();
+    let (kr, kb) = (0.2627, 0.0593);
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let (mut y, mut uv) = (vec![0u8; w * h * 2], vec![0u8; cw * ch * 4]);
+    rgbf_to_p010(&rgb, w, h, kr, kb, &mut y, &mut uv);
+    let (mut y8, mut u8_, mut v8) = (Vec::new(), Vec::new(), Vec::new());
+    rgbf_to_yuv420_8(&rgb, w, h, kr, kb, &mut y8, &mut u8_, &mut v8);
+    let sample = |b: &[u8], i: usize| u16::from_le_bytes([b[i * 2], b[i * 2 + 1]]);
+    for i in 0..w * h {
+        let s = sample(&y, i);
+        assert_eq!(s & 0x3f, 0, "the low six bits are zero");
+        let ten = s >> 6;
+        assert!((4..=1019).contains(&ten));
+        // the same luma as the 8-bit conversion, at four times the resolution
+        assert!((ten as f32 / 4.0 - y8[i] as f32).abs() <= 1.0, "{i}: {ten} vs {}", y8[i]);
+    }
+    for k in 0..cw * ch {
+        let (u, v) = (sample(&uv, k * 2) >> 6, sample(&uv, k * 2 + 1) >> 6);
+        assert!((u as f32 / 4.0 - u8_[k] as f32).abs() <= 1.0 && (v as f32 / 4.0 - v8[k] as f32).abs() <= 1.0, "{k}");
+    }
+    // short buffers are left alone
+    rgbf_to_p010(&rgb[..3], w, h, kr, kb, &mut y, &mut uv);
+}
