@@ -58,7 +58,11 @@ In priority order. Agents should prefer this work over adding more checklist ite
    `plan/premiere/`. It should report presence and fidelity separately (exact, approximate, stub).
 3. **Real-world media corpus.** Phone, camera and screen recordings, variable frame rate, damaged
    files, long GOPs, odd containers. Each gets an import → edit → export round-trip test with an
-   ffprobe / ffmpeg oracle.
+   ffprobe / ffmpeg oracle. Started (`engine/tests/real_media_roundtrip.rs`: portrait VFR phone
+   clip with A/V sync, HEVC HLG QuickTime, VP9 screen recording, long-GOP cut, cut-short
+   download); it found HDR / BT.2020 media without a `colr` box read as BT.709 (the SPS's colour
+   primaries were dropped) and sequences from HDR clips made SDR. Next: real camera files (the
+   synthetic ones only imitate them), MXF / AVCHD camera cards, audio-only and odd sample rates.
 4. **Workflow acceptance tests.** Scripted MCP sessions that do real jobs end to end: assemble and
    trim a scene, colour it, mix and loudness-normalise it, caption it, deliver it, round-trip
    through XML / AAF.

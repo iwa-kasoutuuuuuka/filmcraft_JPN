@@ -129,11 +129,14 @@ pub(crate) fn tight_plane<T: Copy>(src: Vec<T>, stride: usize, w: usize, h: usiz
 }
 
 /// Colour of an H.264 / HEVC picture from its VUI code points (ITU-T H.273), as the decoders
-/// report it: BT.709 by default with the matrix guessed from the size, the signalled matrix and
-/// transfer when known, and full range when flagged. Shared by the software and hardware
-/// decoders so the two are interchangeable.
-pub fn vui_color(width: u32, height: u32, matrix: u8, transfer: u8, full_range: bool) -> filmcraft_color::ColorInfo {
+/// report it: BT.709 by default with the matrix guessed from the size, the signalled primaries,
+/// matrix and transfer when known, and full range when flagged. Shared by the software and
+/// hardware decoders so the two are interchangeable.
+pub fn vui_color(width: u32, height: u32, primaries: u8, matrix: u8, transfer: u8, full_range: bool) -> filmcraft_color::ColorInfo {
     let mut color = filmcraft_color::ColorInfo { matrix: filmcraft_frame::default_matrix(width, height), ..filmcraft_color::ColorInfo::REC709 };
+    if let Some(p) = filmcraft_color::Primaries::from_code(primaries) {
+        color.primaries = p;
+    }
     if let Some(m) = filmcraft_color::Matrix::from_code(matrix) {
         color.matrix = m;
     }
@@ -220,7 +223,7 @@ impl H264Decoder {
         let y = tight_plane(p.y, p.y_stride, w, h);
         let u = tight_plane(p.u, p.uv_stride, cw, ch);
         let v = tight_plane(p.v, p.uv_stride, cw, ch);
-        let color = vui_color(p.width, p.height, p.color.matrix, p.color.transfer, p.color.full_range);
+        let color = vui_color(p.width, p.height, p.color.primaries, p.color.matrix, p.color.transfer, p.color.full_range);
         let par = sar_par(p.sar);
         let frame = VideoFrame {
             width: p.width,
@@ -324,7 +327,7 @@ impl HevcDecoder {
                 alpha: None,
             },
         };
-        let color = vui_color(p.width, p.height, p.color.matrix, p.color.transfer, p.color.full_range);
+        let color = vui_color(p.width, p.height, p.color.primaries, p.color.matrix, p.color.transfer, p.color.full_range);
         let par = sar_par(p.sar);
         let frame = VideoFrame { width: p.width, height: p.height, data, color, par, pts: filmcraft_time::Tick::ZERO };
         DecodedFrame { pts: p.pts, frame, draft: p.draft }
@@ -947,5 +950,24 @@ mod disposable_tests {
         assert!(!hevc_disposable(&sample(&[&nal(0, 1)]), 4, Some(1)));
         // unknown layering: never
         assert!(!hevc_disposable(&sample(&[&nal(0, 1)]), 4, None));
+    }
+}
+
+#[cfg(test)]
+mod vui_tests {
+    use super::vui_color;
+    use filmcraft_color::{Matrix, Primaries, Range, Transfer};
+
+    /// The VUI's colour primaries count: a BT.2020 HLG picture (phones) is not BT.709 (they were
+    /// dropped once, so BT.2020 media skipped its gamut conversion).
+    #[test]
+    fn vui_colour_keeps_the_primaries() {
+        let c = vui_color(1920, 1080, 9, 9, 18, false);
+        assert_eq!((c.primaries, c.matrix, c.transfer, c.range), (Primaries::Bt2020, Matrix::Bt2020Ncl, Transfer::Hlg, Range::Limited));
+        let p3 = vui_color(1920, 1080, 12, 1, 16, true);
+        assert_eq!((p3.primaries, p3.transfer, p3.range), (Primaries::P3D65, Transfer::Pq, Range::Full));
+        // unspecified (2) or unknown codes keep BT.709
+        assert_eq!(vui_color(1920, 1080, 2, 2, 2, false).primaries, Primaries::Bt709);
+        assert_eq!(vui_color(1920, 1080, 200, 1, 1, false).primaries, Primaries::Bt709);
     }
 }
