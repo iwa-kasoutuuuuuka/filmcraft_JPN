@@ -633,7 +633,7 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,lumetri-grade,lumetri-hsl,lumetri-hdr,keying,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,lumetri-grade,lumetri-hsl,lumetri-hdr,hlg-grade,keying,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
@@ -649,6 +649,7 @@ fn parse_args() -> Args {
             "lumetri-grade",
             "lumetri-hsl",
             "lumetri-hdr",
+            "hlg-grade",
             "keying",
             "h264-2160",
             "hevc-2160",
@@ -671,15 +672,19 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
             let a = import(&mut s, &fixture("a1080.mp4")?);
             build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], 20.0)
         }
-        "lumetri-grade" | "lumetri-hsl" | "lumetri-hdr" => {
+        "lumetri-grade" | "lumetri-hsl" | "lumetri-hdr" | "hlg-grade" => {
             // a typical grade: color wheels, a luma S-curve, Hue vs Sat, split tone and a Look
-            // (lumetri-hdr: the same grade in a Rec. 2100 PQ sequence)
-            let a = import(&mut s, &fixture("a1080.mp4")?);
+            // (lumetri-hdr: the same grade in a Rec. 2100 PQ sequence; hlg-grade: on HEVC Main 10
+            // HLG media, as phones record HDR, in a Rec. 2100 HLG sequence)
+            let a = import(&mut s, &fixture(if name == "hlg-grade" { "hlg1080.mov" } else { "a1080.mp4" })?);
             let seq = build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &["lumetri"], 20.0);
             s.edit("grade", |p, _| {
                 let q = p.sequence_mut(seq).expect("seq");
                 if name == "lumetri-hdr" {
                     q.settings.color.working = filmcraft_color::WorkingSpace::Rec2100Pq;
+                }
+                if name == "hlg-grade" {
+                    q.settings.color.working = filmcraft_color::WorkingSpace::Rec2100Hlg;
                 }
                 for it in &mut q.video_tracks[0].items {
                     let Some(e) = it.effect_mut("lumetri") else { continue };

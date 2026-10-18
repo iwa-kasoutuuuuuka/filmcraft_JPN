@@ -94,6 +94,16 @@ other than Normal in such sequences keep the CPU compositor. GPU and CPU agree w
 | scenario | before (2 runs) | after (2 runs) | UI p95 ms |
 |---|---|---|---|
 | `lumetri-hdr` | 99/93, 103/89 | **192/0, 192/0** | 2.9, 3.0 |
+
+HDR media followed: PQ and HLG YUV media in an HDR sequence is decoded on the GPU too (the PQ
+curve in working units, the HLG inverse OETF and BT.2100 OOTF, then the gamut matrix), with the
+CPU reference decoding through the same input transform (`plan::decode_working`). On the way the
+GPU's limited-range normalisation of deeper-than-8-bit YUV was found to be ≈0.4 % off the CPU's
+(`code × 2^bits / 255` instead of `16 · 2^(bits−8)`), invisible in SDR but large on the PQ curve.
+
+| scenario | before (2 runs) | after (2 runs) | UI p95 ms |
+|---|---|---|---|
+| `hlg-grade`: the Lumetri grade on 1080p30 HEVC Main 10 HLG media in an HLG sequence | 125/67, 126/66 | **192/0, 192/0** | 27.1, 28.4 → **5.4, 4.7** |
 ## Results (Windows: Media Foundation read-back, before → after)
 
 `cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw on|off` (release, GPU

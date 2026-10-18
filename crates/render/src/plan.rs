@@ -56,8 +56,9 @@ pub struct LayerFx {
     pub masks: Vec<Vec<FlatMask>>,
     /// The masks of the clip's Opacity effect: they scale the result of the ops.
     pub opacity_masks: Vec<FlatMask>,
-    /// The frame's [`input_matrix`] into the working gamut (applied when it is decoded).
-    pub input_matrix: Option<[[f32; 3]; 3]>,
+    /// The colour pipeline the frame is decoded into ([`decode_working`]: its curve, the HLG OOTF
+    /// and [`input_matrix`] for an HDR / wide-gamut pipeline).
+    pub color: ColorPipeline,
 }
 
 /// Polygon points of all the masks of a layer the GPU evaluates per pixel; a layer with more is
@@ -275,23 +276,41 @@ pub fn input_matrix(pipe: &ColorPipeline, frame: &VideoFrame) -> Option<[[f32; 3
     (src != wg).then(|| filmcraft_color::spaces::to_f32(&filmcraft_color::spaces::gamut_matrix(src, wg)))
 }
 
-/// Whether the GPU decodes a frame into the working space itself: the default (transfer-only)
-/// decode of BT.709 / sRGB / linear media, plus [`input_matrix`] into a wide working gamut (YUV
-/// and RGBA8 frames). Everything else (log, HDR, other gamuts, Interpret Footage overrides) is
-/// converted on the CPU.
+/// Whether the GPU decodes a frame into the working space itself. Plain pipeline: the default
+/// (transfer-only) decode of BT.709 / sRGB / linear media. HDR / wide-gamut pipeline: those, and
+/// PQ / HLG YUV media, whose input transform is exact on the GPU (curve, HLG OOTF, gamut matrix:
+/// [`filmcraft_color::InputTransform::gpu_exact`]). Everything else (log, other gamuts, tone
+/// mapping on input, Interpret Footage overrides) is converted on the CPU.
 fn gpu_decodes(pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> bool {
     if pipe.is_plain() {
         return !crate::colorman::needs_management(pipe, cs, frame);
     }
-    let default_decode = cs == ColorSpace::from_info(&frame.color) && matches!(cs, ColorSpace::Rec709 | ColorSpace::Srgb | ColorSpace::Linear709);
-    default_decode && !matches!(frame.data, PixelData::RgbaF32(_))
+    let yuv = matches!(frame.data, PixelData::Yuv8 { .. } | PixelData::Yuv16 { .. });
+    let space = match cs {
+        ColorSpace::Rec709 | ColorSpace::Srgb | ColorSpace::Linear709 => !matches!(frame.data, PixelData::RgbaF32(_)),
+        ColorSpace::Rec2100Pq | ColorSpace::Rec2100Hlg => yuv,
+        _ => false,
+    };
+    space && cs == ColorSpace::from_info(&frame.color) && crate::colorman::input_transform(cs, frame.color.range, pipe, None).gpu_exact()
 }
 
-fn apply_matrix(img: &mut crate::Image, m: &[[f32; 3]; 3]) {
-    for p in img.px.as_chunks_mut::<4>().0 {
-        let c = filmcraft_color::spaces::apply3(m, [p[0], p[1], p[2]]);
-        p[..3].copy_from_slice(&c);
+/// A frame decoded (box-decimated by `n`) into the working space of `pipe`, as the GPU decodes
+/// it: the CPU reference of the compositor. A plain pipeline uses the frame's own transfer; an
+/// HDR / wide-gamut one its colour space's input transform (as `colorman::decode` without an
+/// Interpret Footage override). Float frames are in the working space already.
+pub fn decode_working(pipe: &ColorPipeline, frame: &VideoFrame, n: usize) -> crate::Image {
+    if pipe.is_plain() || matches!(frame.data, PixelData::RgbaF32(_)) {
+        let (w, h, px) = frame.to_linear_f32_decimated(n);
+        return crate::Image { w, h, px };
     }
+    let range = if matches!(frame.data, PixelData::Rgba8(_)) { filmcraft_color::Range::Full } else { frame.color.range };
+    let t = crate::colorman::input_transform(ColorSpace::from_info(&frame.color), range, pipe, None);
+    let (w, h, px) = frame.to_linear_f32_decimated_with(n, Some(&t.table));
+    let mut img = crate::Image { w, h, px };
+    if t.has_pixel_stage() {
+        img.map_rgb(|c, _, _| t.apply(c));
+    }
+    img
 }
 
 /// Push the layer(s) of `item`. `blend` overrides the item's own blend mode: inside a transition
@@ -370,7 +389,7 @@ fn push_item(
         {
             // (in sequence pixels, as the CPU applies them; `gpu_adjustment_ok` checked their number)
             let masks = enabled().map(|e| crate::mask::prepare(&e.masks, mt, opts.scale)).collect();
-            let fx = LayerFx { size: (w as u32, h as u32), decimation: 1, ops, masks, opacity_masks: Vec::new(), input_matrix: None };
+            let fx = LayerFx { size: (w as u32, h as u32), decimation: 1, ops, masks, opacity_masks: Vec::new(), color: ColorPipeline::REC709 };
             out.push(PlanLayer::adjustment(Affine::IDENTITY, op * extra_opacity, bl, Arc::new(fx)));
         }
         return;
@@ -409,7 +428,7 @@ fn push_item(
             let fx = ops.map(|ops| LayerFx {
                 size: (lw as u32, lh as u32),
                 decimation: n as u32,
-                input_matrix: input_matrix(&seq.settings.color, &frame),
+                color: seq.settings.color,
                 ops,
                 masks: chain.iter().map(|e| crate::mask::prepare(&e.masks, mt, px_scale)).collect(),
                 opacity_masks: opacity_masks.map(|e| crate::mask::prepare(&e.masks, mt, px_scale)).unwrap_or_default(),
@@ -451,11 +470,7 @@ fn near_identity(m: &Affine) -> bool {
 /// A layer's working image with its effects applied, on the CPU (the reference for the GPU
 /// effect stage).
 pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
-    let (w, h, px) = frame.to_linear_f32_decimated(fx.decimation.max(1) as usize);
-    let mut img = crate::Image { w, h, px };
-    if let Some(m) = &fx.input_matrix {
-        apply_matrix(&mut img, m);
-    }
+    let mut img = decode_working(&fx.color, frame, fx.decimation.max(1) as usize);
     fx.apply(&mut img);
     img
 }
@@ -476,13 +491,7 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
                 } else {
                     match &l.fx {
                         Some(fx) => effect_image(&l.frame, fx),
-                        None => {
-                            let mut img = crate::Image { w: l.frame.width as usize, h: l.frame.height as usize, px: l.frame.to_linear_f32() };
-                            if let Some(m) = input_matrix(color, &l.frame) {
-                                apply_matrix(&mut img, &m);
-                            }
-                            img
-                        }
+                        None => decode_working(color, &l.frame, 1),
                     }
                 };
                 let placed = if l.matrix == Affine::scale(*width as f64, *height as f64) && src.w == 1 && src.h == 1 {
@@ -496,6 +505,46 @@ pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
             }
             crate::colorman::to_display(&mut canvas, color);
             canvas
+        }
+    }
+}
+
+#[cfg(test)]
+mod gpu_decode_tests {
+    use super::*;
+    use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer, WorkingSpace};
+    use filmcraft_frame::Chroma;
+
+    fn hdr_frame(transfer: Transfer) -> VideoFrame {
+        let p = |n: usize| Arc::new(vec![512u16; n]);
+        VideoFrame {
+            width: 4,
+            height: 2,
+            data: PixelData::Yuv16 { planes: [p(8), p(2), p(2)], chroma: Chroma::C420, bits: 10, alpha: None },
+            color: ColorInfo { matrix: Matrix::Bt2020Ncl, transfer, primaries: Primaries::Bt2020, range: Range::Limited },
+            par: (1, 1),
+            pts: Default::default(),
+        }
+    }
+
+    /// PQ / HLG media is decoded on the GPU where its input transform is exact there (an HDR
+    /// working space); where it needs tone mapping (SDR working spaces) or carries an Interpret
+    /// Footage override it stays on the CPU.
+    #[test]
+    fn hdr_media_is_gpu_decoded_only_where_exact() {
+        let pq = ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 };
+        let hlg = ColorPipeline { working: WorkingSpace::Rec2100Hlg, ..ColorPipeline::REC709 };
+        let wide = ColorPipeline { wide_gamut: true, ..ColorPipeline::REC709 };
+        for t in [Transfer::Pq, Transfer::Hlg] {
+            let f = hdr_frame(t);
+            let cs = ColorSpace::from_info(&f.color);
+            assert!(gpu_decodes(&pq, cs, &f) && gpu_decodes(&hlg, cs, &f), "{t:?} in HDR working spaces");
+            assert!(!gpu_decodes(&ColorPipeline::REC709, cs, &f), "{t:?} into SDR: tone mapped on the CPU");
+            assert!(!gpu_decodes(&wide, cs, &f), "{t:?} into wide-gamut SDR: tone mapped on the CPU");
+            // an override (Interpret Footage) differs from the frame's own description
+            assert!(!gpu_decodes(&pq, ColorSpace::Rec709, &f), "{t:?} interpreted as Rec. 709");
+            // BT.2020 into the BT.2020 working gamut: no matrix
+            assert!(input_matrix(&pq, &f).is_none());
         }
     }
 }

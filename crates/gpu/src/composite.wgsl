@@ -14,7 +14,7 @@ struct U {
     p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode (index into filmcraft_render::Blend::ALL), unused ×3
+    p3: vec4<f32>,   // blend mode (index into filmcraft_render::Blend::ALL), BT.2020 luma weights (HLG OOTF)
     cm0: vec4<f32>,  // gamut matrix into the working gamut, row 0 (w: on) — YUV / RGBA8 sources
     cm1: vec4<f32>,  // row 1
     cm2: vec4<f32>,  // row 2
@@ -76,10 +76,13 @@ fn srgb_to_linear(v: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, v <= vec3(0.04045));
 }
 
+// ST 2084 in working units (1.0 = 203 cd/m², `decode_channel`).
 fn pq_eotf(e: vec3<f32>) -> vec3<f32> {
-    let m1 = 0.1593017578125; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.8515625; let c3 = 18.6875;
-    let p = pow(max(e, vec3(0.0)), vec3(1.0 / m2));
-    return pow(max(p - c1, vec3(0.0)) / (c2 - c3 * p), vec3(1.0 / m1)) * 100.0;
+    let m1 = 0.15930176; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.851563; let c3 = 18.6875;
+    // the signal clamps to 0..1 as the CPU's decode table does (out-of-gamut YCbCr gives R'G'B'
+    // past 1, beyond which the formula breaks down)
+    let p = pow(clamp(e, vec3(1e-12), vec3(1.0)), vec3(1.0 / m2));
+    return pow(max(p - c1, vec3(0.0)) / (c2 - c3 * p), vec3(1.0 / m1)) * (10000.0 / 203.0);
 }
 
 fn hlg_inv(e: vec3<f32>) -> vec3<f32> {
@@ -89,11 +92,23 @@ fn hlg_inv(e: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, e <= vec3(0.5));
 }
 
+// HLG: scene light (inverse OETF), then the BT.2100 OOTF of a 1000 cd/m² display (γ 1.2) in
+// working units (`InputTransform::apply`).
+fn hlg_display(v: vec3<f32>) -> vec3<f32> {
+    let e = hlg_inv(clamp(v, vec3(0.0), vec3(1.0)));
+    let ys = max(dot(u.p3.yzw, e), 0.0);
+    var g = 0.0;
+    if ys > 0.0 {
+        g = (1000.0 / 203.0) * pow(ys, 0.2);
+    }
+    return e * g;
+}
+
 fn to_linear(v: vec3<f32>) -> vec3<f32> {
     let t = u32(u.p0.w);
     if t == 1u { return v; }
     if t == 2u { return pq_eotf(v); }
-    if t == 3u { return hlg_inv(v); }
+    if t == 3u { return hlg_display(v); }
     return srgb_to_linear(clamp(v, vec3(0.0), vec3(1.0)));
 }
 

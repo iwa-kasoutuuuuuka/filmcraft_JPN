@@ -590,12 +590,17 @@ impl GpuCompositor {
     /// A layer draw's uniforms; `cm`: the decoded colour's gamut matrix into the working gamut.
     fn uniforms(src: &SrcInfo, m: &filmcraft_geom::Affine, opacity: f32, blend: Blend, out: (u32, u32), cm: Option<[[f32; 3]; 3]>) -> [f32; LAYER_FLOATS] {
         let k = cm.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        // the HLG OOTF's luma weights (HLG sources)
+        let l2020 = filmcraft_render::gpufx::luma2020();
         let on = if cm.is_some() { 1.0 } else { 0.0 };
         let (kr, kb) = src.color.matrix.kr_kb();
-        let bits_scale = src.code_scale / 255.0; // code units relative to 8-bit
+        // code levels 2^bits (8-bit planes load as code / 255, deeper ones as code / 2^bits) and
+        // the normalisation of `normalize_y` / `normalize_c`
+        let levels = if src.code_scale <= 255.5 { 256.0 } else { src.code_scale };
+        let bits_scale = levels / 256.0; // code units relative to 8-bit
         let (yo, ys, co, cs) = match (src.color.range, src.kind) {
             (Range::Limited, 2) => (16.0 * bits_scale, 219.0 * bits_scale, 128.0 * bits_scale, 224.0 * bits_scale),
-            (Range::Full, 2) => (0.0, src.code_scale - 1.0, src.code_scale / 2.0, src.code_scale - 1.0),
+            (Range::Full, 2) => (0.0, levels - 1.0, levels / 2.0, levels - 1.0),
             _ => (0.0, 1.0, 0.0, 1.0),
         };
         let transfer = match src.color.transfer {
@@ -636,9 +641,9 @@ impl GpuCompositor {
             src.code_scale,
             footprint.max(1.0),
             blend.index() as f32,
-            0.0,
-            0.0,
-            0.0,
+            l2020[0],
+            l2020[1],
+            l2020[2],
             k[0][0],
             k[0][1],
             k[0][2],
@@ -782,7 +787,7 @@ impl GpuCompositor {
                         1.0,
                         Blend::Normal,
                         (lfx.size.0.max(1), lfx.size.1.max(1)),
-                        lfx.input_matrix,
+                        filmcraft_render::plan::input_matrix(&lfx.color, &l.frame),
                     );
                     let sbuf = self.uniform_buffer(&su);
                     let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -960,7 +965,14 @@ impl GpuCompositor {
         let views = self.uploads.get(&key)?.views.clone();
         let n = fx.decimation.max(1) as f64;
         let (w, h) = (fx.size.0.max(1), fx.size.1.max(1));
-        let su = Self::uniforms(&src, &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n), 1.0, Blend::Normal, (w, h), fx.input_matrix);
+        let su = Self::uniforms(
+            &src,
+            &filmcraft_geom::Affine::scale(1.0 / n, 1.0 / n),
+            1.0,
+            Blend::Normal,
+            (w, h),
+            filmcraft_render::plan::input_matrix(&fx.color, frame),
+        );
         let sbuf = self.uniform_buffer(&su);
         let sbg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fx-source"),

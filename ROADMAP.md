@@ -50,7 +50,7 @@ In priority order. Agents should prefer this work over adding more checklist ite
 1. **Hardware acceleration** (#30), the most visible gap to users:
    - hardware decode on Linux (VA-API); on Windows (Media Foundation, landed) HEVC tests and more GPU vendors;
    - zero-copy decoded frames into wgpu;
-   - HDR and wide-gamut sequences on the GPU: landed for BT.709 / sRGB media (gamut matrix after the decode, effects in the working space, tone mapping and gamut mapping in the final pass); next: HDR / log / other-gamut media decoded on the GPU too (PQ / HLG / log curves, tone mapping on input), and blend modes and captions in those sequences;
+   - HDR and wide-gamut sequences on the GPU: landed for BT.709 / sRGB media (gamut matrix after the decode, effects in the working space, tone mapping and gamut mapping in the final pass); PQ / HLG media in HDR sequences decoded on the GPU too; next: log and other-gamut media, tone mapping on input (HDR media in SDR sequences), and blend modes and captions in HDR sequences;
    - the remaining effects on the GPU (38 effect ids are done: the 31 common ones, all of Lumetri, Ultra / Color / Luma Key, Video Limiter, Mosaic without Softness, Vignette; effect masks and a clip's Opacity masks run on the GPU as well);
    - hardware encode: H.264 and HEVC on Windows (Media Foundation: NVENC / Quick Sync / AMF) landed, with render and encode overlapped: 1080p H.264 exports 4.8 → 2.0 s; next VideoToolbox on macOS, 10-bit / HDR HEVC, then GPU export rendering.
 2. **A measured parity number.** Add `cargo xtask parity`, run in CI. It should cover menus,

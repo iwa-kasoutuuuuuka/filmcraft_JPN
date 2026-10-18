@@ -865,7 +865,7 @@ fn hdr_and_wide_gamut_plans_match_cpu() {
         let cxw = FxCtx { working: color.working, ..cx(Tick::ZERO, 0.5) };
         let ops: Vec<FxOp> = FxOp::eval(&grade, &cxw, 320, 180).into_iter().collect();
         assert!(ops.iter().all(FxOp::gpu_ok));
-        let fx = LayerFx { size: (320, 180), decimation: 2, ops, input_matrix: filmcraft_render::plan::input_matrix(&color, &frame), ..Default::default() };
+        let fx = LayerFx { size: (320, 180), decimation: 2, ops, color, ..Default::default() };
         let plan = FramePlan::Layers {
             width: w,
             height: h,
@@ -888,5 +888,62 @@ fn hdr_and_wide_gamut_plans_match_cpu() {
         let (p99, mean, max) = stats8(&cpu, &gpu, &keep);
         eprintln!("{name}: interior 8-bit p99 {p99} mean {mean:.3} max {max}");
         assert!(p99 <= 2 && mean < 0.5, "{name}: p99 {p99}, mean {mean}, max {max}");
+    }
+}
+
+/// HDR media decoded on the GPU: 10-bit BT.2020 PQ and HLG pictures (smooth ramps reaching
+/// 1000+ cd/m²) in PQ and HLG sequences, drawn directly and through the effect stage (Lumetri),
+/// against the plan run on the CPU (`decode_working`: the media's input transform).
+#[test]
+fn hdr_media_decodes_on_the_gpu() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    use filmcraft_color::{ColorInfo, ColorPipeline, Matrix, Primaries, Range, Transfer, WorkingSpace};
+    use filmcraft_frame::{Chroma, PixelData};
+    let (w, h) = (320u32, 180u32);
+    let frame = |transfer: Transfer| {
+        let (wu, hu) = (w as usize, h as usize);
+        // a horizontal luma ramp over the whole code range and gently varying chroma
+        let y: Vec<u16> = (0..wu * hu).map(|i| (64 + (i % wu) * 876 / (wu - 1)) as u16).collect();
+        let (cw, ch) = (wu / 2, hu / 2);
+        let cb: Vec<u16> = (0..cw * ch).map(|i| (512 + ((i / cw) as i32 - 45) * 3) as u16).collect();
+        let cr: Vec<u16> = (0..cw * ch).map(|i| (512 + ((i % cw) as i32 - 80) * 2) as u16).collect();
+        Arc::new(VideoFrame {
+            width: w,
+            height: h,
+            data: PixelData::Yuv16 { planes: [Arc::new(y), Arc::new(cb), Arc::new(cr)], chroma: Chroma::C420, bits: 10, alpha: None },
+            color: ColorInfo { matrix: Matrix::Bt2020Ncl, transfer, primaries: Primaries::Bt2020, range: Range::Limited },
+            par: (1, 1),
+            pts: Default::default(),
+        })
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    for working in [WorkingSpace::Rec2100Pq, WorkingSpace::Rec2100Hlg] {
+        let color = ColorPipeline { working, ..ColorPipeline::REC709 };
+        for transfer in [Transfer::Pq, Transfer::Hlg] {
+            let f = frame(transfer);
+            let grade = effect("lumetri", &[("exposure", fl(-0.5)), ("contrast", fl(20.0)), ("hdr_specular", fl(-30.0))]);
+            let cxw = FxCtx { working, ..cx(Tick::ZERO, 1.0) };
+            let ops: Vec<FxOp> = FxOp::eval(&grade, &cxw, w as usize, h as usize).into_iter().collect();
+            let fx = LayerFx { size: (w, h), decimation: 1, ops, color, ..Default::default() };
+            for with_fx in [false, true] {
+                let mut layer = PlanLayer::new(f.clone(), Affine::IDENTITY, 1.0, Blend::Normal);
+                if with_fx {
+                    layer.fx = Some(Arc::new(fx.clone()));
+                }
+                let plan = FramePlan::Layers { width: w as usize, height: h as usize, color, layers: vec![layer] };
+                let cpu = execute_cpu(&plan).over_black_rgba8();
+                c.composite(&plan);
+                let (_, _, gpu) = c.read_output().expect("readback");
+                let keep = vec![true; cpu.len() / 4];
+                let (p99, mean, max) = stats8(&cpu, &gpu, &keep);
+                eprintln!("{working:?} {transfer:?} fx {with_fx}: 8-bit p99 {p99} mean {mean:.3} max {max}");
+                // (chroma: the GPU interpolates 4:2:0 bilinearly, the CPU replicates; steep PQ
+                // highlights amplify that, as in the SDR tests' bound)
+                assert!(p99 <= 6 && mean < 1.5, "{working:?} {transfer:?} fx {with_fx}: p99 {p99}, mean {mean}, max {max}");
+            }
+        }
     }
 }

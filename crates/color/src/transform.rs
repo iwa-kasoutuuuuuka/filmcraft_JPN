@@ -227,6 +227,16 @@ impl InputTransform {
         InputTransform { source: src, table: DecodeTable::for_curve(curve, range), matrix: to_f32(&m), identity_matrix, hlg, tone, compress, desaturate }
     }
 
+    /// Whether a GPU decode can compute this conversion exactly: a BT.709 / sRGB / linear / PQ /
+    /// HLG curve, then only the HLG OOTF (fixed 1000 cd/m² peak, γ 1.2, BT.2020 luma) and the
+    /// gamut matrix — no tone mapping, gamut compression or desaturation.
+    pub fn gpu_exact(&self) -> bool {
+        matches!(self.source.curve(), Curve::Sdr | Curve::Srgb | Curve::Linear | Curve::Pq | Curve::Hlg)
+            && self.tone.is_none()
+            && !self.compress
+            && self.desaturate.is_none()
+    }
+
     /// Whether anything happens after the per-channel table.
     pub fn has_pixel_stage(&self) -> bool {
         !self.identity_matrix || self.hlg.is_some() || self.tone.is_some() || self.compress || self.desaturate.is_some()
