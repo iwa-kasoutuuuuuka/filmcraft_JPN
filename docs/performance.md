@@ -71,6 +71,22 @@ HDR sequences export HEVC Main 10: the encoded R'G'B' (HLG or PQ, BT.2020) goes 
 (`rgbf_to_p010`), signalled in the stream's VUI and in the MP4 (`colr`, `mdcv` / `clli` for PQ);
 the picture matches our H.264 HDR export of the sequence at 52–54 dB.
 
+## Results (exports rendered on the GPU, CPU → GPU)
+
+`bench --section export [--cpu]` (release; 8 s of 1080p23.976, hardware H.264 / HEVC encoding on
+both sides), runs alternated. Exports render on the GPU compositor
+(`filmcraft_export::FrameRenderer`, registered by the app on its wgpu device and by the bench on
+its own) when the output is SDR at the sequence's own geometry without overlays (`gpuRendering`,
+on by default); everything else renders on the CPU as before. GPU-rendered exports match
+CPU-rendered ones above 40 dB per frame (`ui-egui/tests/gpu_export.rs`).
+
+| export | CPU render (2 runs) | **GPU render** (2 runs) |
+|---|---|---|
+| H.264 | 1.8, 1.9 s | **1.0, 1.1 s** |
+| H.264 with Lumetri + Sharpen + Levels + Tint | 6.9, 6.9 s | **1.0, 1.1 s** |
+| HEVC | 1.6, 1.6 s | **1.0, 1.0 s** |
+| ProRes 422 HQ | 4.6, 4.5 s | 3.8, 3.7 s (the encoder is the limit) |
+
 ## Results (keys and HDR Lumetri on the GPU, before → after)
 
 `bench --section playback --only <scenario>` (release, GPU path, 8 s plays), before = `eb49b29`

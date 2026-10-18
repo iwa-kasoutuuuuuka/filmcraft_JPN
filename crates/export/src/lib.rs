@@ -255,6 +255,10 @@ pub struct ExportSettings {
     /// the system has one: [`hw`]) or Software Encoding (always our encoder). Hardware is used for
     /// single-pass SDR MP4 / MOV exports with square pixels; anything else uses ours.
     pub hardware_encoding: bool,
+    /// Render the frames on the GPU where the host registered a renderer ([`register_renderer`])
+    /// and the export allows it (SDR output at the sequence's own geometry, without image / name /
+    /// timecode overlays); otherwise, and when off, on the CPU (the reference).
+    pub gpu_rendering: bool,
     pub bitrate_mode: BitrateMode,
     /// VBR maximum bitrate (None = 1.5 × target).
     pub max_bitrate_kbps: Option<u32>,
@@ -448,6 +452,7 @@ impl Default for ExportSettings {
             metadata: ExportMetadata::default(),
             h264_pass: H264Pass::Single,
             hardware_encoding: true,
+            gpu_rendering: true,
             signal: ColorSignal::default(),
             sink: None,
         }
@@ -581,6 +586,37 @@ fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
     F.get_or_init(|| RwLock::new(vec![aac_factory]))
+}
+
+/// A frame renderer the host registers ([`register_renderer`]: the desktop app's GPU compositor)
+/// for exports to use instead of rendering on the CPU.
+pub trait FrameRenderer: Send + Sync {
+    /// Frame `t` of `seq` at the sequence size × `opts.scale`, converted for an SDR output and
+    /// composited over black, as sRGB RGBA8 (width, height, pixels); None: the CPU renders it.
+    fn render_rgba8(
+        &self,
+        project: &Project,
+        seq: ItemId,
+        t: Tick,
+        opts: filmcraft_render::RenderOptions,
+        sources: &dyn SourceProvider,
+    ) -> Option<(u32, u32, Vec<u8>)>;
+}
+
+fn renderers() -> &'static RwLock<Option<Arc<dyn FrameRenderer>>> {
+    static R: OnceLock<RwLock<Option<Arc<dyn FrameRenderer>>>> = OnceLock::new();
+    R.get_or_init(|| RwLock::new(None))
+}
+
+/// Register the renderer exports use where they can ([`ExportSettings::gpu_rendering`]; the last
+/// one registered wins, None removes it).
+pub fn register_renderer(r: Option<Arc<dyn FrameRenderer>>) {
+    *renderers().write().unwrap_or_else(|e| e.into_inner()) = r;
+}
+
+/// The registered renderer, if any.
+pub fn renderer() -> Option<Arc<dyn FrameRenderer>> {
+    renderers().read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 pub fn register_encoder(f: EncoderFactory) {

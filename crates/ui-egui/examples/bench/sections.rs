@@ -421,6 +421,20 @@ pub fn timeline(o: &Opts) -> Vec<Value> {
 // ------------------------------------------------------------------------------------ export
 
 /// Export throughput of a 1080p H.264 sequence (clip with AAC audio) to H.264 + AAC and ProRes.
+/// Register a GPU export renderer on a device of its own (as the app does on its own device);
+/// the device is returned to keep it alive. None without a GPU.
+fn gpu_export_renderer() -> Option<eframe::wgpu::Device> {
+    let instance = eframe::wgpu::Instance::default();
+    let adapter = pollster::block_on(instance.request_adapter(&eframe::wgpu::RequestAdapterOptions::default())).ok()?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&eframe::wgpu::DeviceDescriptor::default())).ok()?;
+    let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = broken.clone();
+    device.on_uncaptured_error(std::sync::Arc::new(move |_e: eframe::wgpu::Error| flag.store(true, std::sync::atomic::Ordering::Relaxed)));
+    let r = filmcraft_ui_egui::gpu_export::GpuExportRenderer::new(&device, &queue, broken)?;
+    filmcraft_engine::export::register_renderer(Some(std::sync::Arc::new(r)));
+    Some(device)
+}
+
 pub fn export(o: &Opts) -> Vec<Value> {
     let Some(path) = fixture("a1080.mp4") else {
         eprintln!("export: skipped (fixture unavailable)");
@@ -430,11 +444,18 @@ pub fn export(o: &Opts) -> Vec<Value> {
     let dir = std::env::temp_dir().join(format!("filmcraft-bench-export-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
     let mut rows = Vec::new();
+    // as the app: exports render on the GPU compositor (its own device here), unless --cpu
+    let _device = if o.gpu { gpu_export_renderer() } else { None };
     // HEVC only where a hardware encoder makes it available
     let hevc = filmcraft_engine::export::available(filmcraft_engine::export::Format::Hevc);
-    for (format, label, ext) in [("h264", "H.264 + AAC (MP4)", "mp4"), ("hevc", "HEVC + AAC (MP4)", "mp4"), ("prores", "ProRes 422 (MOV)", "mov")]
-        .into_iter()
-        .filter(|f| o.wants(f.0) && (f.0 != "hevc" || hevc))
+    for (case, format, label, ext) in [
+        ("h264", "h264", "H.264 + AAC (MP4)", "mp4"),
+        ("h264-graded", "h264", "H.264 + AAC (MP4), Lumetri + Sharpen + Levels + Tint", "mp4"),
+        ("hevc", "hevc", "HEVC + AAC (MP4)", "mp4"),
+        ("prores", "prores", "ProRes 422 (MOV)", "mov"),
+    ]
+    .into_iter()
+    .filter(|f| o.wants(f.0) && (f.1 != "hevc" || hevc))
     {
         let mut runs = Vec::new();
         let mut cpu = Vec::new();
@@ -443,7 +464,8 @@ pub fn export(o: &Opts) -> Vec<Value> {
         for _ in 0..o.repeat {
             let mut s = Session::default();
             let a = playback::import(&mut s, &path);
-            let seq = playback::build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], secs);
+            let fx: &[&str] = if case == "h264-graded" { &["lumetri", "sharpen", "levels", "tint"] } else { &[] };
+            let seq = playback::build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], fx, secs);
             // build_sequence adds video only: add the clip's audio on A1 for the AAC encode
             s.edit("audio", |p, _| {
                 let rate = FrameRate::FPS_23_976;
@@ -475,7 +497,7 @@ pub fn export(o: &Opts) -> Vec<Value> {
             continue;
         }
         let best = runs.iter().cloned().fold(f64::MAX, f64::min);
-        eprintln!("export {format}: {frames} frames in {best:.1} s");
+        eprintln!("export {case}: {frames} frames in {best:.1} s");
         rows.push(json!({
             "format": label, "frames": frames, "seconds": best, "fps": frames as f64 / best,
             "realtime": frames as f64 / best / FrameRate::FPS_23_976.as_f64(), "cpu_ms_per_frame": median(&cpu),

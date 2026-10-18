@@ -66,6 +66,8 @@ pub(crate) struct Pipeline {
     overlay: Option<Image>,
     start_tc: i64,
     drop_frame: bool,
+    /// The host's renderer, where this export can use it ([`crate::FrameRenderer`]).
+    gpu: Option<Arc<dyn crate::FrameRenderer>>,
 }
 
 impl Pipeline {
@@ -82,7 +84,14 @@ impl Pipeline {
         } else {
             None
         };
+        // the GPU renders what the CPU's `render_sequence` would hand over unchanged: an SDR
+        // picture at the output size, without overlays drawn on it afterwards
+        let direct =
+            geom.content.is_none() && geom.offset == (0, 0) && filmcraft_render::output_size(q, geom.render_scale) == (r.width as usize, r.height as usize);
+        let plain = !hdr_out && overlay.is_none() && !effects.name_overlay.enabled && !effects.timecode_overlay.enabled;
+        let gpu = (settings.gpu_rendering && direct && plain).then(crate::renderer).flatten();
         Ok(Pipeline {
+            gpu,
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
@@ -104,6 +113,17 @@ impl Pipeline {
     /// R'G'B' floats (3 per pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
+        if let Some(r) = &self.gpu
+            && let Some((w, h, mut rgba)) = r.render_rgba8(&self.project, self.seq, t, self.opts, sources)
+            && (w, h) == (self.w, self.h)
+            && rgba.len() == w as usize * h as usize * 4
+        {
+            let lim = &self.effects.video_limiter;
+            if lim.enabled {
+                limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
+            }
+            return (rgba, Vec::new());
+        }
         let img = filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources);
         let mut img = self.place(img);
         self.overlays(&mut img, t);

@@ -12,6 +12,7 @@ pub mod control;
 pub mod crash;
 pub mod dock;
 pub mod frames;
+pub mod gpu_export;
 pub mod header;
 pub mod i18n;
 pub mod icons;
@@ -263,6 +264,11 @@ impl FilmcraftApp {
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
+                // exports render on the same device, with a compositor of their own
+                let export = gpu_export::GpuExportRenderer::new(&rs.device, &rs.queue, broken.clone());
+                filmcraft_engine::export::register_renderer(
+                    export.map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn filmcraft_engine::export::FrameRenderer>),
+                );
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }
             _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
