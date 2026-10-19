@@ -155,6 +155,9 @@ pub struct FilmcraftApp {
     deferred: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// When control-channel input was last delivered: the window counts as focused shortly after
+    /// (see `raw_input_hook`).
+    control_input: Option<web_time::Instant>,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
@@ -350,6 +353,7 @@ impl FilmcraftApp {
             deferred: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
+            control_input: None,
             loudness: None,
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
@@ -1233,6 +1237,13 @@ impl eframe::App for FilmcraftApp {
                     .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
             };
             raw_input.events.extend(self.synthetic.drain(..n));
+            self.control_input = Some(web_time::Instant::now());
+        }
+        // Agents drive the app while another window has the OS focus; egui ignores keys and text
+        // for an unfocused window (a text field clicked through the control channel never got
+        // `ui.type`). Control input counts as focusing the window, for a moment.
+        if self.control_input.is_some_and(|t| t.elapsed().as_secs_f32() < 1.0) {
+            raw_input.focused = true;
         }
     }
 

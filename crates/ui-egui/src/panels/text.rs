@@ -148,7 +148,8 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             crate::i18n::t("Add caption at playhead", "再生ヘッドの位置にキャプションを追加"),
             track.caption_at(ph).is_none(),
             "captions.add",
-            json!({"track": track.id.0}),
+            // the placeholder text in the UI's language (the engine's default is English)
+            json!({"track": track.id.0, "text": crate::i18n::t("New caption", "新規キャプション")}),
         ),
         (
             Icon::Razor,
