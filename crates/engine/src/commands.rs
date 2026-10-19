@@ -363,12 +363,24 @@ fn import_source(
     Ok(id)
 }
 
-fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value) -> Result<Value> {
+/// Width, height (the active sequence's unless given) and duration (seconds, `default_secs`
+/// unless given) of a new synthetic item, clamped to sane values.
+fn synthetic_geometry(s: &Session, p: &Value, default_secs: f64) -> (u32, u32, f64) {
     let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-    let w = u64_p(p, "width").map(|v| v as u32).unwrap_or(st.width);
-    let h = u64_p(p, "height").map(|v| v as u32).unwrap_or(st.height);
-    let secs = f64_p(p, "seconds").unwrap_or(5.0);
-    let name = str_p(p, "name").unwrap_or(name).to_string();
+    let w = u64_p(p, "width").map_or(st.width, |v| v.clamp(16, 16_384) as u32);
+    let h = u64_p(p, "height").map_or(st.height, |v| v.clamp(16, 16_384) as u32);
+    let secs = f64_p(p, "seconds").filter(|v| v.is_finite()).unwrap_or(default_secs).clamp(0.05, 86_400.0);
+    (w, h, secs)
+}
+
+fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value) -> Result<Value> {
+    new_generator_for(s, g, name, label, p, 5.0)
+}
+
+fn new_generator_for(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value, default_secs: f64) -> Result<Value> {
+    let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
+    let (w, h, secs) = synthetic_geometry(s, p, default_secs);
+    let name = str_p(p, "name").filter(|n| !n.trim().is_empty()).unwrap_or(name).to_string();
     let src = GeneratorSource::new(g, w, h, st.frame_rate, Tick::from_seconds_f64(secs));
     let pool = s.media.clone();
     let id = s.edit(&format!("New {name}"), |pr, st| {
@@ -623,53 +635,72 @@ fn build() -> Vec<CommandSpec> {
             let id = s.edit("New Bin", |pr, _| Ok(pr.add_bin(&n, parent)))?;
             Ok(json!({"bin": id.0}))
         }),
-        cmd!("file.newAdjustmentLayer", "Adjustment Layer…", ["File", "New"], None, r#"{"seconds":f64=5}"#, always, |s, p| {
-            let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-            let secs = f64_p(p, "seconds").unwrap_or(5.0);
-            let id = s.edit("New Adjustment Layer", |pr, st2| {
-                let id = pr.add_item(
-                    "Adjustment Layer",
-                    Label::Lavender,
-                    ItemKind::AdjustmentLayer { width: st.width, height: st.height, rate: st.frame_rate, duration: Tick::from_seconds_f64(secs) },
-                    None,
-                );
-                st2.project_selection = vec![id];
-                Ok(id)
-            })?;
-            Ok(json!({"item": id.0}))
+        cmd!(
+            "file.newAdjustmentLayer",
+            "Adjustment Layer…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"#,
+            always,
+            |s, p| {
+                let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
+                let (width, height, secs) = synthetic_geometry(s, p, 5.0);
+                let name = str_p(p, "name").filter(|n| !n.trim().is_empty()).unwrap_or("Adjustment Layer").to_string();
+                let id = s.edit("New Adjustment Layer", |pr, st2| {
+                    let id = pr.add_item(
+                        &name,
+                        Label::Lavender,
+                        ItemKind::AdjustmentLayer { width, height, rate: st.frame_rate, duration: Tick::from_seconds_f64(secs) },
+                        None,
+                    );
+                    st2.project_selection = vec![id];
+                    Ok(id)
+                })?;
+                Ok(json!({"item": id.0}))
+            }
+        ),
+        cmd!(
+            "file.newBarsAndTone",
+            "Bars and Tone…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=10,"width":u32?,"height":u32?,"name":str?}"#,
+            always,
+            |s, p| new_generator_for(s, Generator::BarsAndTone, "Bars and Tone", Label::Lavender, p, 10.0)
+        ),
+        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"#, always, |s, p| {
+            new_generator(s, Generator::BlackVideo, "Black Video", Label::Lavender, p)
         }),
-        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10}"#, always, |s, p| new_generator(
-            s,
-            Generator::BarsAndTone,
-            "Bars and Tone",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64}"#, always, |s, p| new_generator(
-            s,
-            Generator::BlackVideo,
-            "Black Video",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb","seconds":f64}"##, always, |s, p| {
-            let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
-            new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
-        }),
-        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, "{}", always, |s, p| new_generator(
-            s,
-            Generator::CountingLeader,
-            "Universal Counting Leader",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, "{}", always, |s, p| new_generator(
-            s,
-            Generator::TransparentVideo,
-            "Transparent Video",
-            Label::Lavender,
-            p
-        )),
+        cmd!(
+            "file.newColorMatte",
+            "Color Matte…",
+            ["File", "New"],
+            None,
+            r##"{"color":"#rrggbb","seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"##,
+            always,
+            |s, p| {
+                let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
+                new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
+            }
+        ),
+        cmd!(
+            "file.newCountingLeader",
+            "Universal Counting Leader…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"#,
+            always,
+            |s, p| new_generator(s, Generator::CountingLeader, "Universal Counting Leader", Label::Lavender, p)
+        ),
+        cmd!(
+            "file.newTransparentVideo",
+            "Transparent Video…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"#,
+            always,
+            |s, p| new_generator(s, Generator::TransparentVideo, "Transparent Video", Label::Lavender, p)
+        ),
         cmd!(
             "file.importDemoFootage",
             "Demo Footage",

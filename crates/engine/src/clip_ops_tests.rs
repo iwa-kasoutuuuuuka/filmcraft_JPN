@@ -738,3 +738,37 @@ fn placing_on_a_missing_track_adds_it_or_refuses() {
         assert_eq!(s.active_sequence().unwrap().video_tracks[0].items, before.video_tracks[0].items, "track {bad}: V1 untouched");
     }
 }
+
+/// New synthetic items take a name, frame size and duration; Bars and Tone defaults to the 10 s
+/// its parameters document (it used to get 5 s); hostile sizes and durations are clamped (a zero
+/// or huge width used to reach the generator as is).
+#[test]
+fn synthetic_items_take_name_size_and_duration() {
+    // (name, width, height, seconds) of a new generator item
+    fn make(s: &mut Session, cmd: &str, p: serde_json::Value) -> (String, u32, u32, f64) {
+        let id = ItemId(s.execute(cmd, p).unwrap()["item"].as_u64().unwrap());
+        let name = s.project.item(id).unwrap().name.clone();
+        let src = s.media.cached(id).unwrap();
+        let info = src.info();
+        let v = info.video.as_ref().unwrap();
+        (name, v.width, v.height, info.duration.seconds())
+    }
+    let mut s = demo();
+    let (_, _, _, secs) = make(&mut s, "file.newBarsAndTone", json!({}));
+    assert!((secs - 10.0).abs() < 0.1, "Bars and Tone: 10 s by default, got {secs}");
+    for cmd in ["file.newBlackVideo", "file.newTransparentVideo", "file.newCountingLeader", "file.newColorMatte"] {
+        let (name, w, h, secs) = make(&mut s, cmd, json!({"name": "Slate", "width": 640, "height": 360, "seconds": 2.0}));
+        assert_eq!((name.as_str(), w, h), ("Slate", 640, 360), "{cmd}");
+        assert!((secs - 2.0).abs() < 0.1, "{cmd}: {secs}");
+    }
+    let id =
+        ItemId(s.execute("file.newAdjustmentLayer", json!({"name": "Grade", "width": 1280, "height": 720, "seconds": 3.0})).unwrap()["item"].as_u64().unwrap());
+    let adj = s.project.item(id).unwrap();
+    assert_eq!(adj.name, "Grade");
+    let ItemKind::AdjustmentLayer { width, height, duration, .. } = adj.kind else { panic!("adjustment layer") };
+    assert_eq!((width, height, duration), (1280, 720, Tick::from_seconds_f64(3.0)));
+    // hostile values: clamped, blank names ignored
+    let (name, w, h, secs) = make(&mut s, "file.newBlackVideo", json!({"name": "  ", "width": 0, "height": 999_999_999_999u64, "seconds": -5.0}));
+    assert_eq!((name.as_str(), w, h), ("Black Video", 16, 16_384));
+    assert!(secs > 0.0);
+}

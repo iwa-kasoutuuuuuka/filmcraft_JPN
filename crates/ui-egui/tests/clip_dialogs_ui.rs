@@ -258,3 +258,32 @@ fn color_matte_dialog_picks_the_colour() {
     let f = src.video_frame(filmcraft_media::FrameRequest::full(rate.tick_of(1))).unwrap().to_rgba8();
     assert_eq!(&f[..3], &[255, 128, 0], "the picked colour");
 }
+
+/// The other New Item commands open a dialog too (name, frame size, duration), as in Premiere;
+/// they used to create the item with defaults straight away.
+#[test]
+fn synthetic_item_dialogs_set_name_size_and_duration() {
+    let mut d = Driver::new();
+    for (cmd, pre) in [
+        ("file.newAdjustmentLayer", "adjustmentLayer"),
+        ("file.newBarsAndTone", "barsAndTone"),
+        ("file.newBlackVideo", "blackVideo"),
+        ("file.newCountingLeader", "countingLeader"),
+        ("file.newTransparentVideo", "transparentVideo"),
+    ] {
+        d.menu(cmd);
+        for f in ["name", "width", "height", "seconds", "ok"] {
+            assert!(d.has(&format!("{pre}.{f}")), "{pre}.{f}");
+        }
+        let name = format!("My {pre}");
+        d.ok("ui.set", json!({"clipDialog": {"name": name, "width": 640, "height": 360, "seconds": 2.0}}));
+        d.click(&format!("{pre}.ok"));
+        assert!(d.app().ui.clip_dialog.is_none(), "{cmd}: OK closes the dialog");
+        let it = d.app().session.project.items.values().find(|i| i.name == name).cloned().unwrap_or_else(|| panic!("{cmd} made {name}"));
+        let size = match &it.kind {
+            ItemKind::AdjustmentLayer { width, height, .. } => (*width, *height),
+            _ => d.app().session.media.cached(it.id).and_then(|s| s.info().video.as_ref().map(|v| (v.width, v.height))).unwrap_or_default(),
+        };
+        assert_eq!(size, (640, 360), "{cmd}");
+    }
+}
