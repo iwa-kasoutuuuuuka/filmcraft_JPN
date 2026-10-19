@@ -65,6 +65,30 @@ pub fn with_cancel<R>(flag: &Arc<AtomicBool>, f: impl FnOnce() -> R) -> R {
     r
 }
 
+/// This thread's request hints ([`with_cancel`], [`with_catch_up`], [`with_draft`]), captured to
+/// carry a request's work over to another thread.
+#[derive(Clone, Debug, Default)]
+pub struct Context {
+    flag: Option<Arc<AtomicBool>>,
+    catch_up: Option<Tick>,
+    draft: bool,
+}
+
+impl Context {
+    /// The hints of the work running on this thread.
+    pub fn capture() -> Self {
+        Context { flag: CURRENT.with(|c| c.borrow().clone()), catch_up: catch_up(), draft: draft() }
+    }
+
+    /// Run `f` with these hints (restoring the thread's own after).
+    pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        let prev = CURRENT.with(|c| c.replace(self.flag.clone()));
+        let r = with_catch_up(self.catch_up, || with_draft(self.draft, f));
+        CURRENT.with(|c| *c.borrow_mut() = prev);
+        r
+    }
+}
+
 /// Whether the work running on this thread has been cancelled.
 pub fn cancelled() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(Ordering::Relaxed)))

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use filmcraft_color::ColorInfo;
 use filmcraft_frame::VideoFrame;
@@ -107,7 +107,7 @@ impl std::ops::Sub for GopStats {
 }
 
 /// A container's video sample table, in decode (file) order.
-pub trait VideoSamples {
+pub trait VideoSamples: Sync {
     fn count(&self) -> usize;
     /// Presentation timestamp of sample `i` (track units).
     fn pts(&self, i: usize) -> i64;
@@ -147,6 +147,25 @@ impl State {
     fn at_or_before(&self, pts: i64, draft_ok: bool) -> Option<Arc<VideoFrame>> {
         self.cached(pts, draft_ok).or_else(|| self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(_, f)| f)).cloned()
     }
+}
+
+/// The pool that runs decoding work done while holding a cache's lock.
+///
+/// Decoders and frame conversions run on rayon. A rayon worker waiting inside such work steals
+/// queued jobs; on rayon's global pool those include other frame requests (an export renders a
+/// batch of frames there), which block on the lock of a cache whose holder waits for this very
+/// worker: a deadlock. So a cache's lock is only held by threads that block without stealing
+/// (never a rayon worker), and the work under the lock runs here, where the only queued jobs
+/// are other such work, which takes no lock.
+fn decode_pool() -> Option<&'static rayon::ThreadPool> {
+    static P: OnceLock<Option<rayon::ThreadPool>> = OnceLock::new();
+    P.get_or_init(|| {
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
+        rayon::ThreadPoolBuilder::new().thread_name(|i| format!("gop-decode-{i}")).build().ok()
+    })
+    .as_ref()
 }
 
 thread_local! {
@@ -297,8 +316,32 @@ impl GopCache {
             return self.private_frame(s, i, want_pts, n);
         }
         let draft = filmcraft_media::cancel::draft();
+        if let Some(f) = self.state.lock().unwrap_or_else(|e| e.into_inner()).cached(want_pts, draft) {
+            HITS.fetch_add(1, Ordering::Relaxed);
+            return Ok(f.clone());
+        }
+        // A rayon worker must not hold the lock ([`decode_pool`]): decode on a thread of its own.
+        if rayon::current_thread_index().is_some() {
+            let ctx = filmcraft_media::cancel::Context::capture();
+            return std::thread::scope(|scope| {
+                let spawned =
+                    std::thread::Builder::new().name("gop-request".into()).spawn_scoped(scope, || ctx.run(|| self.locked_frame(s, i, want_pts, late_before)));
+                match spawned {
+                    Ok(h) => h.join().unwrap_or_else(|_| Err(CodecError::Decode("internal error while decoding".into()))),
+                    // no thread to be had: decode privately, holding nothing
+                    Err(_) => self.private_frame(s, i, want_pts, n),
+                }
+            });
+        }
+        self.locked_frame(s, i, want_pts, late_before)
+    }
+
+    /// [`Self::frame_late`] for sample `i` on a thread that is no rayon worker: lock the cache and
+    /// decode on [`decode_pool`].
+    fn locked_frame(&self, s: &dyn VideoSamples, i: usize, want_pts: i64, late_before: Option<i64>) -> crate::Result<Arc<VideoFrame>> {
+        let draft = filmcraft_media::cancel::draft();
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let _decoding = DecodingGuard::enter(me);
+        let _decoding = DecodingGuard::enter(self as *const Self as usize);
         if let Some(f) = st.cached(want_pts, draft) {
             HITS.fetch_add(1, Ordering::Relaxed);
             return Ok(f.clone());
@@ -318,6 +361,26 @@ impl GopCache {
         if st.intra {
             return self.intra_frame(st, s, i, want_pts);
         }
+        let ctx = filmcraft_media::cancel::Context::capture();
+        let state = &mut *st;
+        let work = move || ctx.run(move || self.decode_locked(state, s, i, want_pts, late_before, draft));
+        match decode_pool() {
+            Some(pool) => pool.install(work),
+            None => work(),
+        }
+    }
+
+    /// The decoding part of [`Self::locked_frame`] (holding the lock, on [`decode_pool`]).
+    fn decode_locked(
+        &self,
+        st: &mut State,
+        s: &dyn VideoSamples,
+        i: usize,
+        want_pts: i64,
+        late_before: Option<i64>,
+        draft: bool,
+    ) -> crate::Result<Arc<VideoFrame>> {
+        let n = s.count();
         let mut key = s.sync_before(i);
         // Continue the running decoder when it has passed the wanted sample's sync sample and
         // either has not reached the sample yet or has been fed it without outputting it yet
@@ -376,14 +439,14 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(&mut st, out);
+            self.store_output(st, out);
             if st.cached(want_pts, draft).is_some() {
                 break;
             }
         }
         if st.cached(want_pts, draft).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(&mut st, out);
+            self.store_output(st, out);
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
@@ -501,6 +564,8 @@ mod tests {
         intra: bool,
         resets: Arc<AtomicUsize>,
         decodes: Arc<AtomicUsize>,
+        /// Decode on rayon's global pool (as decoders and frame conversions do).
+        rayon: bool,
     }
 
     /// Outputs each picture `delay` samples late, like a frame-threaded decoder.
@@ -512,6 +577,7 @@ mod tests {
         draft: bool,
         resets: Arc<AtomicUsize>,
         decodes: Arc<AtomicUsize>,
+        rayon: bool,
     }
 
     /// A picture whose pixel encodes its index (and, in blue, whether it is a draft picture).
@@ -523,6 +589,12 @@ mod tests {
     impl VideoDecoder for Dec {
         fn decode(&mut self, sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
             self.decodes.fetch_add(1, Ordering::Relaxed);
+            if self.rayon {
+                use rayon::prelude::*;
+                // nested joins: a waiting worker steals whatever is queued
+                let sum: u64 = (0..64u64).into_par_iter().map(|a| (0..64u64).into_par_iter().map(|b| (a * b) % 7).sum::<u64>()).sum();
+                std::hint::black_box(sum);
+            }
             // like H.264 draft mode: only non-reference (odd) pictures are approximate
             self.held.push_back((pts, self.draft && sample[0] % 2 == 1));
             let mut out = Vec::new();
@@ -578,12 +650,13 @@ mod tests {
                 draft: false,
                 resets: self.resets.clone(),
                 decodes: self.decodes.clone(),
+                rayon: self.rayon,
             }))
         }
     }
 
     fn samples(n: usize, gop: usize, delay: usize, intra: bool) -> Samples {
-        Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default() }
+        Samples { n, gop, delay, intra, resets: Default::default(), decodes: Default::default(), rayon: false }
     }
 
     fn index_of(f: &VideoFrame) -> usize {
@@ -620,6 +693,28 @@ mod tests {
         assert_eq!(index_of(&c.frame(&s, 150_000).expect("frame")), 150);
         assert_eq!(s.resets.load(Ordering::Relaxed), 2);
         assert!(s.decodes.load(Ordering::Relaxed) <= 41 + 1);
+    }
+
+    /// Frames of the same sources requested from rayon's pool (as an export renders a batch) while
+    /// the decoders themselves run on rayon: a worker waiting inside a decode steals another
+    /// frame request, which must not wait for the cache another thread holds while that thread
+    /// waits for this one (this used to deadlock).
+    #[test]
+    fn rayon_frame_requests_with_rayon_decoders_do_not_deadlock() {
+        use rayon::prelude::*;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let sources: Vec<(Samples, GopCache)> = (0..3).map(|_| (Samples { rayon: true, ..samples(240, 30, 2, false) }, GopCache::new(None))).collect();
+            for round in 0..8usize {
+                (0..240usize).into_par_iter().for_each(|f| {
+                    let (s, c) = &sources[(f + round) % sources.len()];
+                    let i = (f * 37 + round * 11) % 240;
+                    assert_eq!(index_of(&c.frame(s, i as i64 * 1000).expect("frame")), i);
+                });
+            }
+            let _ = tx.send(());
+        });
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(60)).is_ok(), "frame requests deadlocked");
     }
 
     #[test]
