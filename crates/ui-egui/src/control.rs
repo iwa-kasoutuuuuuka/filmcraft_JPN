@@ -399,6 +399,10 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(Value::Null)
         }
         "app.quit" => {
+            // `force`: quit without asking about unsaved changes (they stay in the recovery journal)
+            if p.get("force").and_then(Value::as_bool) == Some(true) {
+                app.quit_confirmed = true;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             ok(Value::Null)
         }

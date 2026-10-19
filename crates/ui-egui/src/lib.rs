@@ -158,6 +158,9 @@ pub struct FilmcraftApp {
     /// When control-channel input was last delivered: the window counts as focused shortly after
     /// (see `raw_input_hook`).
     control_input: Option<web_time::Instant>,
+    /// The user answered the unsaved-changes prompt (or there was nothing to save): the next
+    /// close request closes the window.
+    pub(crate) quit_confirmed: bool,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
@@ -354,6 +357,7 @@ impl FilmcraftApp {
             last_ui_time: 0.0,
             synthetic: Vec::new(),
             control_input: None,
+            quit_confirmed: false,
             loudness: None,
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
@@ -1295,6 +1299,12 @@ impl eframe::App for FilmcraftApp {
         if !self.fonts_ready {
             ui.ctx().request_repaint();
             return;
+        }
+        // Closing the window with unsaved changes asks first (Save / Don't Save / Cancel).
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_confirmed && self.session.is_dirty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            crate::panels::clip_dialogs::open_quit_prompt(self);
         }
         // No frame worker threads on the web: render queued frames here, within a time budget
         // that leaves room for the UI pass (a no-op where workers run).

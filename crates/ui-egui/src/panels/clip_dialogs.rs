@@ -22,7 +22,12 @@
 //! - Frame Hold Options `frameHold.*`: `enabled`, `holdOn.<in|out|playhead|sourceTimecode|sequenceTime>`,
 //!   `timecode`, `holdFilters`;
 //! - Field Options `fieldOptions.*`: `reverseFieldDominance`, `processing.<none|alwaysDeinterlace|flickerRemoval>`;
-//! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`.
+//! - Close Project `closeProject.save`, `closeProject.dontSave`, `closeProject.cancel`; the same
+//!   prompt on closing the window with unsaved changes: `quitProject.*`;
+//! - New Color Matte / Adjustment Layer / Bars and Tone / Black Video / Universal Counting Leader /
+//!   Transparent Video (`colorMatte.*` with `color`, `colorHex`; `adjustmentLayer.*`,
+//!   `barsAndTone.*`, `blackVideo.*`, `countingLeader.*`, `transparentVideo.*`): `name`, `width`,
+//!   `height`, `seconds`.
 
 use egui::{Align2, RichText};
 use filmcraft_project::{AudioChannelMap, AudioChannels, ItemKind, TrackKind};
@@ -56,6 +61,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.frameHoldOptions" => ("Frame Hold Options", "frameHold"),
         "clip.fieldOptions" => ("Field Options", "fieldOptions"),
         "file.closeProject" => ("Save Project", "closeProject"),
+        "app.quit" => ("Save Project", "quitProject"),
         _ => return None,
     })
 }
@@ -276,6 +282,15 @@ fn frames(ui: &mut egui::Ui, elems: &mut Elems, pre: &str, p: &mut Value, key: &
     });
 }
 
+/// Ask whether to save unsaved changes before the window closes (`quitProject.save`,
+/// `quitProject.dontSave`, `quitProject.cancel`).
+pub fn open_quit_prompt(app: &mut FilmcraftApp) {
+    if app.ui.clip_dialog.as_ref().is_some_and(|d| d.command == "app.quit") {
+        return;
+    }
+    app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: Value::Null, error: String::new() });
+}
+
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.clip_dialog.clone() else { return };
@@ -286,7 +301,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
-    let can_save = app.session.path.is_some();
+    // quitting may Save As (a project never saved asks where); closing keeps its old rule
+    let can_save = app.session.path.is_some() || d.command == "app.quit";
     egui::Window::new(crate::i18n::tr_ui(title))
         .id(egui::Id::new(("clip-dialog", title)))
         .collapsible(false)
@@ -506,7 +522,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         }
                     }
                 }
-                "file.closeProject" => {
+                "file.closeProject" | "app.quit" => {
                     ui.label(crate::tf!("Save changes to “{project_name}” before closing?", "閉じる前に「{project_name}」への変更を保存しますか?"));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -567,6 +583,25 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 Err(e) => d.error = e.to_string(),
             }
+        }
+        Some("dontSave") | Some("save") if d.command == "app.quit" => {
+            app.ui.clip_dialog = None;
+            if action == Some("save") {
+                // Save (Save As for a project never saved); cancelling the file dialog keeps the app open
+                if let Err(e) = crate::menus::invoke(app, ctx, "file.save", json!({})) {
+                    app.ui.status = e;
+                }
+                if app.session.is_dirty() {
+                    return;
+                }
+            } else if let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
+                // Don't Save: discard the changes (and their recovery journal) before quitting
+                app.ui.status = e.to_string();
+                return;
+            }
+            app.quit_confirmed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
         }
         Some("dontSave") | Some("save") => {
             if action == Some("save")

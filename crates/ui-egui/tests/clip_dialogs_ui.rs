@@ -287,3 +287,31 @@ fn synthetic_item_dialogs_set_name_size_and_duration() {
         assert_eq!(size, (640, 360), "{cmd}");
     }
 }
+
+/// Closing the window with unsaved changes asks first (it used to close at once, and the next
+/// launch offered the changes as if FilmCraft had crashed): Cancel keeps the app and the changes;
+/// Don't Save discards them (and their recovery journal) and lets the window close.
+#[test]
+fn closing_the_window_with_unsaved_changes_asks_first() {
+    let mut d = Driver::new();
+    let close = |d: &mut Driver| {
+        d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        d.frames(3);
+    };
+    d.exec("file.newBin", json!({"name": "Unsaved"}));
+    assert!(d.app().session.is_dirty());
+    close(&mut d);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.command.clone()).as_deref(), Some("app.quit"), "the prompt opened");
+    for id in ["quitProject.save", "quitProject.dontSave", "quitProject.cancel"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("quitProject.cancel");
+    assert!(d.app().ui.clip_dialog.is_none() && d.app().session.is_dirty(), "Cancel keeps the changes");
+    close(&mut d);
+    d.click("quitProject.dontSave");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(!d.app().session.is_dirty(), "Don't Save discards the changes");
+    // nothing unsaved now: closing does not ask again
+    close(&mut d);
+    assert!(d.app().ui.clip_dialog.is_none());
+}
