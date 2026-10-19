@@ -20,6 +20,8 @@ struct Driver {
     tx: Sender<ControlRequest>,
     /// Simulate a window without the OS focus (an agent driving the app in the background).
     unfocused: bool,
+    /// Simulate a minimized window.
+    minimized: bool,
 }
 
 impl Driver {
@@ -29,7 +31,7 @@ impl Driver {
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
-        let mut d = Driver { harness, tx, unfocused: false };
+        let mut d = Driver { harness, tx, unfocused: false, minimized: false };
         d.frames(4);
         d
     }
@@ -41,23 +43,29 @@ impl Driver {
             if self.unfocused {
                 raw.focused = false;
             }
+            raw.viewports.entry(egui::ViewportId::ROOT).or_default().minimized = Some(self.minimized);
             eframe::App::raw_input_hook(self.harness.state_mut(), &ctx, &mut raw);
             *self.harness.input_mut() = raw;
             self.harness.step();
         }
     }
 
-    fn ok(&mut self, method: &str, params: Value) -> Value {
+    fn call(&mut self, method: &str, params: Value) -> Value {
         let (req, reply) = ControlRequest::new(method, params.clone());
         self.tx.send(req).unwrap();
         for _ in 0..600 {
             self.frames(1);
             if let Ok(v) = reply.try_recv() {
-                assert_eq!(v["ok"], json!(true), "{method} {params}: {v}");
-                return v["result"].clone();
+                return v;
             }
         }
         panic!("no reply to {method}");
+    }
+
+    fn ok(&mut self, method: &str, params: Value) -> Value {
+        let v = self.call(method, params.clone());
+        assert_eq!(v["ok"], json!(true), "{method} {params}: {v}");
+        v["result"].clone()
     }
 
     /// Registered automation rectangles (x, y, w, h).
@@ -182,4 +190,51 @@ fn added_caption_placeholder_follows_the_ui_language() {
     let text = list["tracks"][0]["captions"][0]["text"].as_str().unwrap_or_default().to_string();
     let want = if filmcraft_ui_egui::i18n::is_japanese() { "新規キャプション" } else { "New caption" };
     assert_eq!(text, want, "{list}");
+}
+
+/// An edit point grabbed and pulled quickly ripple-trims it: the drag is hit-tested where the
+/// button went down, not where egui's drag threshold was crossed (that used to land on the
+/// clip's body, so a quick ripple trim moved the clip instead).
+#[test]
+fn quick_drag_from_an_edit_point_trims() {
+    let mut d = Driver::demo();
+    // the music bed on A2 spans the edit: with sync lock on, a ripple there is refused (Premiere too)
+    d.ok("engine.execute", json!({"command": "timeline.setTrack", "params": {"track": "A2", "syncLock": false}}));
+    let v1 = |d: &mut Driver| d.ok("engine.execute", json!({"command": "sequence.inspect", "params": {}}))["video"][0]["items"].clone();
+    let before = v1(&mut d);
+    let (clip, next) = (before[3]["clip"].as_u64().unwrap(), before[4]["clip"].as_u64().unwrap());
+    let v = d.ok("ui.elements", json!({"prefix": format!("timeline.clip.{clip}")}));
+    let r = v.as_array().unwrap().iter().find(|e| e["id"] == format!("timeline.clip.{clip}")).unwrap()["rect"].clone();
+    let (right, cy) = (r[0].as_f64().unwrap() + r[2].as_f64().unwrap(), r[1].as_f64().unwrap() + r[3].as_f64().unwrap() / 2.0);
+    d.ok("ui.set", json!({"tool": "Ripple"}));
+    d.frames(2);
+    // 2 pt inside the out point, 40 pt to the left in a few big steps
+    d.ok("ui.drag", json!({"from": {"x": right - 2.0, "y": cy}, "to": {"x": right - 42.0, "y": cy}, "steps": 3}));
+    d.frames(3);
+    let after = v1(&mut d);
+    let find = |items: &Value, id: u64| items.as_array().unwrap().iter().find(|i| i["clip"] == id).cloned().unwrap();
+    let (a, b) = (find(&after, clip), find(&after, next));
+    assert_eq!(a["start"], before[3]["start"], "the clip did not move: {a}");
+    assert!(a["duration"].as_u64() < before[3]["duration"].as_u64(), "its out point was trimmed: {a}");
+    assert_eq!(b["start"].as_u64(), Some(a["start"].as_u64().unwrap() + a["duration"].as_u64().unwrap()), "ripple: the next clip follows without a gap");
+}
+
+/// A minimized window drops synthetic input and presents no frames: UI requests say so at once
+/// (they used to be dropped silently or time out), while engine commands keep working.
+#[test]
+fn minimized_window_reports_ui_requests_instead_of_dropping_them() {
+    let mut d = Driver::demo();
+    d.minimized = true;
+    d.frames(2);
+    for (method, params) in [("ui.key", json!({"key": "C"})), ("ui.click", json!({"x": 100.0, "y": 100.0})), ("ui.elements", json!({}))] {
+        let v = d.call(method, params);
+        assert_eq!(v["ok"], json!(false), "{method}: {v}");
+        assert!(v["error"].as_str().unwrap_or_default().contains("minimized"), "{method}: {v}");
+    }
+    d.ok("engine.execute", json!({"command": "sequence.inspect", "params": {}}));
+    d.ok("ui.set", json!({"tool": "Razor"}));
+    d.minimized = false;
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "V"}));
+    assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["tool"], "Selection");
 }
