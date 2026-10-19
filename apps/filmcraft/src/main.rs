@@ -89,6 +89,8 @@ fn main() -> eframe::Result {
     register_hardware_decoders();
     // Settings ▸ Appearance ▸ Language "Auto" follows the operating system's language
     filmcraft_ui_egui::i18n::set_system_language(filmcraft_platform::locale::system_language());
+    // perf.stats `process.cpuS` and the playback profiler on systems without Unix CPU clocks
+    filmcraft_ui_egui::frames::register_cpu_clocks(filmcraft_platform::cputime::process_cpu_time, filmcraft_platform::cputime::thread_cpu_time);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")

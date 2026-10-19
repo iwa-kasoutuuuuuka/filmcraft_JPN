@@ -167,6 +167,17 @@ pub struct JobRecord {
     pub cancelled: bool,
 }
 
+/// A CPU clock the host provides where this crate has none of its own (Windows:
+/// `filmcraft_platform::cputime`, registered by the desktop app).
+pub type CpuClock = fn() -> Option<Duration>;
+
+static CPU_CLOCKS: std::sync::OnceLock<(CpuClock, CpuClock)> = std::sync::OnceLock::new();
+
+/// Register the host's process and thread CPU clocks (first registration wins; Unix uses its own).
+pub fn register_cpu_clocks(process: CpuClock, thread: CpuClock) {
+    let _ = CPU_CLOCKS.set((process, thread));
+}
+
 /// CPU time consumed by the calling thread (None where the platform has no thread clock).
 pub fn thread_cpu_time() -> Option<Duration> {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
@@ -176,7 +187,7 @@ pub fn thread_cpu_time() -> Option<Duration> {
     }
     #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
     {
-        None
+        CPU_CLOCKS.get().and_then(|(_, thread)| thread())
     }
 }
 
@@ -189,7 +200,7 @@ pub fn process_cpu_time() -> Option<Duration> {
     }
     #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
     {
-        None
+        CPU_CLOCKS.get().and_then(|(process, _)| process())
     }
 }
 

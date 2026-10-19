@@ -28,11 +28,15 @@
 //! P010), and an H.264 export whose hardware encoder fails on its first frames finishes with our
 //! encoder.
 //!
+//! Small OS queries live here too: the display language ([`locale`]) and process / thread CPU
+//! time for the performance counters ([`cputime`]).
+//!
 //! This is the one crate allowed to use `unsafe` (OS FFI), and only in its FFI modules
 //! (docs/adr/0001-platform-ffi.md).
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod cputime;
 pub mod hybrid;
 pub mod locale;
 #[cfg(windows)]

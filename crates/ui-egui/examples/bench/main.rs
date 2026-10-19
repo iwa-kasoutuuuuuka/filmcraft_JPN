@@ -66,6 +66,7 @@ fn main() {
     };
     // as the desktop app: OS hardware decoders in front of ours, unless Hardware decoding is Off
     filmcraft_platform::register();
+    filmcraft_ui_egui::frames::register_cpu_clocks(filmcraft_platform::cputime::process_cpu_time, filmcraft_platform::cputime::thread_cpu_time);
     filmcraft_codecs::hw::set_hardware_mode(match opts.hw.as_str() {
         "off" => filmcraft_codecs::hw::HwMode::Off,
         "on" => filmcraft_codecs::hw::HwMode::On,
