@@ -1708,19 +1708,40 @@ fn build() -> Vec<CommandSpec> {
             }
             Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
         }),
-        cmd!("timeline.move", "Move Clips", [], None, r#"{"moves":[{"clip":id,"track":id|"V2","time":ticks}],"insert":bool}"#, has_seq, |s, p| {
-            let moves: Vec<(ClipId, TrackId, Tick)> = p
-                .get("moves")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|m| Some((clip_p(m, "clip")?, track_p(s, m, "track")?, Tick(m.get("time")?.as_i64()?)))).collect())
-                .unwrap_or_default();
-            if moves.is_empty() {
-                return Err(bad("timeline.move", "need `moves`"));
+        cmd!(
+            "timeline.move",
+            "Move Clips",
+            [],
+            None,
+            r#"{"moves":[{"clip":id,"track":id|"V2"?,"time":ticks|"seconds"|"frame"|"timecode"}],"insert":bool}"#,
+            has_seq,
+            |s, p| {
+                let list = p
+                    .get("moves")
+                    .and_then(Value::as_array)
+                    .filter(|a| !a.is_empty())
+                    .ok_or_else(|| bad("timeline.move", "need `moves`: [{clip, time|seconds|frame|timecode, track?}]"))?;
+                let mut moves: Vec<(ClipId, TrackId, Tick)> = Vec::with_capacity(list.len());
+                for (i, m) in list.iter().enumerate() {
+                    let clip = clip_p(m, "clip").ok_or_else(|| bad("timeline.move", format!("moves[{i}]: need `clip`")))?;
+                    // the clip's own track unless another is named
+                    let track = match m.get("track") {
+                        Some(_) => track_p(s, m, "track").ok_or_else(|| bad("timeline.move", format!("moves[{i}]: unknown `track`")))?,
+                        None => s
+                            .active_sequence()
+                            .and_then(|q| q.find_item(clip))
+                            .map(|(t, _)| t)
+                            .ok_or_else(|| bad("timeline.move", format!("moves[{i}]: no clip {}", clip.0)))?,
+                    };
+                    let time =
+                        time_p(s, m, "").ok_or_else(|| bad("timeline.move", format!("moves[{i}]: need `time` (ticks), `seconds`, `frame` or `timecode`")))?;
+                    moves.push((clip, track, time));
+                }
+                let ins = bool_p(p, "insert").unwrap_or(false);
+                s.edit_sequence(if ins { "Move (Insert)" } else { "Move" }, |q, ctx, _| Ok(edit::move_items(q, &moves, ins, ctx)?))?;
+                Ok(Value::Null)
             }
-            let ins = bool_p(p, "insert").unwrap_or(false);
-            s.edit_sequence(if ins { "Move (Insert)" } else { "Move" }, |q, ctx, _| Ok(edit::move_items(q, &moves, ins, ctx)?))?;
-            Ok(Value::Null)
-        }),
+        ),
         cmd!(
             "timeline.trim",
             "Trim Edit",

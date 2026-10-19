@@ -464,3 +464,30 @@ fn damaged_project_settings_are_sanitized_on_open() {
     st.check().unwrap();
     assert_eq!((st.width, st.sample_rate), (1, 192_000));
 }
+
+/// `timeline.move` keeps a clip on its own track unless another is named, takes `seconds` /
+/// `frame` / `timecode` like other commands, and says which entry is wrong (a move without
+/// `track` used to be dropped silently and the command answered "need `moves`").
+#[test]
+fn timeline_move_defaults_the_track_and_names_bad_entries() {
+    let mut s = demo();
+    let seq = s.active_sequence().unwrap();
+    let rate = seq.settings.frame_rate;
+    let (v1, last) = {
+        let t = &seq.video_tracks[0];
+        (t.id, t.items.last().unwrap().clone())
+    };
+    let to = last.end() + rate.tick_of(48);
+    s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "frame": rate.frame_at(to)}]})).unwrap();
+    let (tid, it) = s.active_sequence().unwrap().find_item(last.id).map(|(t, i)| (t, i.clone())).unwrap();
+    assert_eq!((tid, it.start), (v1, to), "stays on V1, moved to the frame");
+    s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "seconds": to.seconds() + 1.0}]})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(last.id).unwrap().1.start > to);
+    let e = s.execute("timeline.move", json!({"moves": [{"clip": last.id.0}]})).unwrap_err().to_string();
+    assert!(e.contains("moves[0]") && e.contains("seconds"), "{e}");
+    let e = s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "time": 0, "track": "V9"}]})).unwrap_err().to_string();
+    assert!(e.contains("moves[0]") && e.contains("track"), "{e}");
+    assert!(s.execute("timeline.move", json!({"moves": []})).is_err());
+    // hostile times are clamped, not overflowed
+    let _ = s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "time": i64::MAX}]}));
+}
