@@ -1,6 +1,6 @@
 //! Headless UI tests of the Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Make
 //! Subclip, Frame Hold Options, Modify ▸ Audio Channels, the Close Project prompt, and nested
-//! menus (Clip ▸ Video Options ▸ Time Interpolation).
+//! menus (Clip ▸ Video Options ▸ Time Interpolation), and New ▸ Color Matte.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -238,4 +238,23 @@ fn subclip_in_the_source_monitor_and_project_menu() {
     } else {
         panic!("subclip row not shown: {:?}", d.ok("ui.elements", json!({"prefix": "project.item."})));
     }
+}
+
+/// File ▸ New ▸ Color Matte… asks for the colour (picker or hex), name, size and duration; it used
+/// to make a grey matte straight away with no way to pick a colour (issue #29).
+#[test]
+fn color_matte_dialog_picks_the_colour() {
+    let mut d = Driver::new();
+    d.menu("file.newColorMatte");
+    for id in ["colorMatte.color", "colorMatte.colorHex", "colorMatte.name", "colorMatte.width", "colorMatte.height", "colorMatte.seconds", "colorMatte.ok"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.ok("ui.set", json!({"clipDialog": {"color": "#ff8000", "name": "Orange", "seconds": 3.0}}));
+    d.click("colorMatte.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "OK closes the dialog");
+    let it = d.app().session.project.items.values().find(|i| i.name == "Orange").cloned().expect("matte made");
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    let src = d.app().session.media.cached(it.id).expect("matte source");
+    let f = src.video_frame(filmcraft_media::FrameRequest::full(rate.tick_of(1))).unwrap().to_rgba8();
+    assert_eq!(&f[..3], &[255, 128, 0], "the picked colour");
 }

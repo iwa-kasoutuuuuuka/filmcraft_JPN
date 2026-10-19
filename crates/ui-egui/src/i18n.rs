@@ -1787,6 +1787,7 @@ fn tr_ui_ja(s: &str) -> &str {
         "Paste Attributes" => "属性をペースト",
         "Remove Attributes" => "属性を削除",
         "New Offline File" => "新規オフラインファイル",
+        "New Color Matte" => "新規カラーマット",
         "Make Subclip" => "サブクリップを作成",
         "Edit Subclip" => "サブクリップを編集",
         "Modify Clip: Audio Channels" => "クリップを変更: オーディオチャンネル",

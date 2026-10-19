@@ -43,6 +43,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "edit.pasteAttributes" => ("Paste Attributes", "pasteAttributes"),
         "edit.removeAttributes" => ("Remove Attributes", "removeAttributes"),
         "file.newOfflineFile" => ("New Offline File", "offlineFile"),
+        "file.newColorMatte" => ("New Color Matte", "colorMatte"),
         "clip.makeSubclip" => ("Make Subclip", "makeSubclip"),
         "clip.editSubclip" => ("Edit Subclip", "editSubclip"),
         "clip.audioChannels" => ("Modify Clip: Audio Channels", "audioChannels"),
@@ -129,6 +130,10 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
                     "fps": st.frame_rate.as_f64(), "timecode": "00:00:00:00", "seconds": 10.0}),
                 Value::Null,
             )
+        }
+        "file.newColorMatte" => {
+            let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
+            (json!({"name": "Color Matte", "color": "#ffffff", "width": st.width, "height": st.height, "seconds": 5.0}), Value::Null)
         }
         "clip.makeSubclip" => {
             let d = filmcraft_engine::clip_ops::subclip_defaults(s, &json!({})).unwrap_or_else(|| json!({}));
@@ -321,6 +326,31 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         number(ui, &mut elems, pre, p, "fps", "Frame Rate:", 1.0..=240.0, " fps");
                     });
                     text(ui, &mut elems, pre, p, "timecode", "Media Start:", 120.0);
+                    number(ui, &mut elems, pre, p, "seconds", "Duration:", 0.05..=86_400.0, " s");
+                }
+                "file.newColorMatte" => {
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::t("Color:", "カラー:"));
+                        let hex = p["color"].as_str().unwrap_or("#ffffff");
+                        let c = filmcraft_color::parse_hex(hex).unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                        let mut rgb = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+                        let mut srgb = [rgb[0], rgb[1], rgb[2]];
+                        let r = egui::color_picker::color_edit_button_srgb(ui, &mut srgb);
+                        push(&mut elems, format!("{pre}.color"), &r, "Color");
+                        if r.changed() {
+                            rgb[..3].copy_from_slice(&srgb);
+                            p["color"] = json!(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+                        }
+                        let mut v = p["color"].as_str().unwrap_or_default().to_string();
+                        let t = ui.add(egui::TextEdit::singleline(&mut v).desired_width(80.0));
+                        push(&mut elems, format!("{pre}.colorHex"), &t, "Color hex");
+                        if t.changed() {
+                            p["color"] = json!(v);
+                        }
+                    });
+                    text(ui, &mut elems, pre, p, "name", "Name:", 220.0);
+                    number(ui, &mut elems, pre, p, "width", "Width:", 16.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "height", "Height:", 16.0..=16384.0, " px");
                     number(ui, &mut elems, pre, p, "seconds", "Duration:", 0.05..=86_400.0, " s");
                 }
                 "clip.makeSubclip" | "clip.editSubclip" => {
