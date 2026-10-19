@@ -315,3 +315,48 @@ fn closing_the_window_with_unsaved_changes_asks_first() {
     close(&mut d);
     assert!(d.app().ui.clip_dialog.is_none());
 }
+
+/// Clip ▸ Speed/Duration… (Ctrl+R) and the Properties panel's speed button open the dialog; it used
+/// to run with no parameters (silently resetting the speed to 100 %), the timeline's context menu
+/// set 50 % straight away, and the Properties button did nothing.
+#[test]
+fn speed_duration_dialog_sets_speed_reverse_and_interpolation() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.exec("clip.speedDuration", json!({"speed": 50.0}));
+    d.frames(2);
+    // the menu command opens the dialog with the clip's current speed instead of resetting it
+    d.menu("clip.speedDuration");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["speed"], json!(50.0));
+    assert!((d.v1(0).speed - 0.5).abs() < 1e-9, "opening the dialog changes nothing");
+    for id in ["speedDuration.speed", "speedDuration.reverse", "speedDuration.ripple", "speedDuration.interpolation.frameBlending", "speedDuration.ok"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.ok("ui.set", json!({"clipDialog": {"speed": 200.0}}));
+    d.click("speedDuration.reverse");
+    d.click("speedDuration.interpolation.frameBlending");
+    d.click("speedDuration.ok");
+    let got = d.v1(0);
+    assert!((got.speed - 2.0).abs() < 1e-9 && got.reverse, "speed {} reverse {}", got.speed, got.reverse);
+    assert_eq!(got.time_interpolation, filmcraft_engine::project::TimeInterpolation::FrameBlending);
+    // Cancel leaves the clip alone
+    d.menu("clip.speedDuration");
+    d.ok("ui.set", json!({"clipDialog": {"speed": 10.0}}));
+    d.click("speedDuration.cancel");
+    assert!((d.v1(0).speed - 2.0).abs() < 1e-9);
+    // the Properties panel's speed button opens the same dialog
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.frames(3);
+    d.click("properties.speed");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.command.clone()).as_deref(), Some("clip.speedDuration"));
+    d.click("speedDuration.cancel");
+    // its Crop keyframe buttons toggle animation (they did nothing)
+    d.click("properties.section.Crop");
+    if !d.has("properties.crop.left.animate") {
+        d.click("properties.section.Crop");
+    }
+    d.click("properties.crop.left.animate");
+    let animated = d.v1(0).effect("crop").and_then(|e| e.param("left")).is_some_and(|p| p.is_animated());
+    assert!(animated, "Crop ▸ Left is animated");
+}

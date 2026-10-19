@@ -775,7 +775,7 @@ fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transiti
 
 /// A Premiere track-header button (patch / target): blue fill when on, full track height.
 fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, show_off: bool, id: egui::Id, t: &Tokens) -> egui::Response {
-    let resp = ui.interact(r.intersect(clip), id, Sense::click());
+    let resp = ui.interact(r.intersect(clip), id, crate::widgets::visible_click(r.intersect(clip)));
     let p = ui.painter().with_clip_rect(clip);
     if on {
         p.rect_filled(r, 2.0, Color32::from_rgb(0x26, 0x5b, 0xc1));
@@ -813,7 +813,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         // 1. source patch (absent when unpatched)
         let patched = if r.kind == TrackKind::Video { tg.video_dest == Some(r.track) } else { tg.audio_dest == Some(r.track) };
         let pr = btn_rect(13.0);
-        app.auto.add(&format!("timeline.track.{label}.sourcePatch"), pr, "Source patch");
+        app.auto.add(&format!("timeline.track.{label}.sourcePatch"), pr.intersect(visible), "Source patch");
         if patch_button(ui, pr, visible, &label, patched, false, egui::Id::new(("patch", r.track.0)), t).clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
@@ -830,7 +830,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             egui::Id::new(("locked", r.track.0)),
             Some(if tr.locked { Color32::from_rgb(0xd1, 0xd1, 0xd1) } else { t.text_dim }),
         );
-        app.auto.add(&format!("timeline.track.{label}.locked"), lock_r, "Toggle Track Lock");
+        app.auto.add(&format!("timeline.track.{label}.locked"), lock_r.intersect(visible), "Toggle Track Lock");
         if lresp.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "locked": !tr.locked})));
         }
@@ -841,7 +841,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         // 3. target
         let targeted = tg.targeted.contains(&r.track);
         let trr = btn_rect(61.0);
-        app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
+        app.auto.add(&format!("timeline.track.{label}.target"), trr.intersect(visible), "Toggle track targeting");
         if patch_button(ui, trr, visible, &label, targeted, true, egui::Id::new(("target", r.track.0)), t).clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
         }
@@ -850,7 +850,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         let sr = small(x, upper_y);
         let sresp =
             crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::new(("syncLock", r.track.0)), Some(t.text_dim));
-        app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
+        app.auto.add(&format!("timeline.track.{label}.syncLock"), sr.intersect(visible), "Toggle Sync Lock");
         if sresp.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
         }
@@ -866,7 +866,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 egui::Id::new(("enabled", r.track.0)),
                 Some(t.text_dim),
             );
-            app.auto.add(&format!("timeline.track.{label}.enabled"), er, "Toggle Track Output");
+            app.auto.add(&format!("timeline.track.{label}.enabled"), er.intersect(visible), "Toggle Track Output");
             if eresp.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "enabled": !tr.enabled})));
             }
@@ -881,7 +881,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 t,
                 egui::Id::new(("mute", r.track.0)),
             );
-            app.auto.add(&format!("timeline.track.{label}.muted"), mr, "Mute Track");
+            app.auto.add(&format!("timeline.track.{label}.muted"), mr.intersect(visible), "Mute Track");
             if mresp.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
             }
@@ -895,7 +895,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 t,
                 egui::Id::new(("solo", r.track.0)),
             );
-            app.auto.add(&format!("timeline.track.{label}.solo"), s2, "Solo Track");
+            app.auto.add(&format!("timeline.track.{label}.solo"), s2.intersect(visible), "Solo Track");
             if so.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "solo": !tr.solo})));
             }
@@ -913,7 +913,8 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         // resize track height by dragging the header's bottom edge
         let edge = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0)).intersect(visible);
         if edge.height() > 0.0 {
-            let eresp = ui.interact(edge, egui::Id::new(("trackh", r.track.0)), Sense::drag());
+            let eresp = ui.interact(edge, egui::Id::new(("trackh", r.track.0)), if edge.is_positive() { Sense::drag() } else { Sense::hover() });
+            app.auto.add(&format!("timeline.track.{label}.resize"), edge.intersect(visible), "Track height");
             if eresp.hovered() || eresp.dragged() {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
             }
@@ -923,11 +924,9 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 *h = (*h + d).clamp(22.0, 220.0);
             }
         }
-        let resp = ui.interact(
-            Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
-            egui::Id::new(("hdr", r.track.0)),
-            Sense::click(),
-        );
+        let hr = Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible);
+        let resp = ui.interact(hr, egui::Id::new(("hdr", r.track.0)), crate::widgets::visible_click(hr));
+        app.auto.add(&format!("timeline.track.{label}.header"), hr.intersect(visible), "Track header (double-click: height)");
         if resp.double_clicked() {
             let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
             *h = if *h < 50.0 { 64.0 } else { 30.0 };
@@ -1767,8 +1766,11 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         for (label, cmd) in items {
             if ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label)).clicked() {
                 if cmd == "clip.speedDuration" {
+                    // the Speed/Duration dialog (it used to set 50 % straight away)
                     app.dialog = None;
-                    let _ = app.session.execute(cmd, json!({"speed": 50.0}));
+                    if let Err(e) = crate::menus::invoke(app, ui.ctx(), cmd, json!({})) {
+                        app.ui.status = e;
+                    }
                 } else if let Err(e) = app.session.execute(cmd, json!({})) {
                     app.ui.status = e.to_string();
                 }

@@ -1,6 +1,7 @@
 //! Driving the app as an agent does. Automation coverage audit: every interactive widget egui reports to AccessKit (buttons, check
 //! boxes, combo boxes, text inputs, sliders, drag values) in each workspace and mode must lie
-//! inside a registered automation element, so agents can reach it by id (CLAUDE.md:
+//! mostly inside a registered automation element about its own size (a panel-sized element around
+//! it does not count), so agents can reach it by id (CLAUDE.md:
 //! "everything is agent-drivable"). Prints what is not covered and fails if anything is. Covers
 //! each workspace and mode in its default state (menus and dialogs are not opened).
 //! Also: control-channel typing reaches text fields while the window lacks the OS focus, and
@@ -96,7 +97,8 @@ impl Driver {
                 role,
                 Role::Button | Role::CheckBox | Role::RadioButton | Role::ComboBox | Role::TextInput | Role::Slider | Role::SpinButton | Role::Link
             );
-            if role == Role::Label || (!standard && !a.data().supports_action(egui::accesskit::Action::Click)) {
+            // (scroll bars: `ui.scroll` reaches them)
+            if role == Role::Label || role == Role::ScrollBar || (!standard && !a.data().supports_action(egui::accesskit::Action::Click)) {
                 continue;
             }
             let Some(b) = a.bounding_box() else { continue };
@@ -107,7 +109,20 @@ impl Driver {
             if cx < 0.0 || cy < 0.0 || cx > 1600.0 || cy > 980.0 {
                 continue;
             }
-            let inside = reg.iter().any(|r| cx >= r[0] - 1.0 && cx <= r[0] + r[2] + 1.0 && cy >= r[1] - 1.0 && cy <= r[1] + r[3] + 1.0);
+            // covered by an element about its own size: a panel- or lane-sized element around a
+            // small control does not make the control reachable by id
+            let area = (b.width() * b.height()) as f32;
+            let inside = reg
+                .iter()
+                .filter(|r| r[2] * r[3] <= (4.0 * area).max(160.0 * 160.0))
+                // most of the control lies inside the element (a control clipped by a scrolled
+                // panel keeps the element of its full size)
+                .any(|r| {
+                    let ox = ((b.x1 as f32).min(r[0] + r[2] + 1.0) - (b.x0 as f32).max(r[0] - 1.0)).max(0.0);
+                    let oy = ((b.y1 as f32).min(r[1] + r[3] + 1.0) - (b.y0 as f32).max(r[1] - 1.0)).max(0.0);
+                    let centre = cx >= r[0] - 1.0 && cx <= r[0] + r[2] + 1.0 && cy >= r[1] - 1.0 && cy <= r[1] + r[3] + 1.0;
+                    centre || ox * oy >= 0.5 * area
+                });
             if !inside {
                 out.push((format!("{role:?} {:.0}x{:.0}", b.width(), b.height()), a.label().unwrap_or_default(), (cx, cy)));
             }

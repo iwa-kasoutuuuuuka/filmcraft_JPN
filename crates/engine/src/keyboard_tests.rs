@@ -357,6 +357,12 @@ fn poster_frame_and_export_frame() {
     let n = s.project.items.len();
     s.execute("file.exportFrame", json!({"path": dir.join("frame2.tiff").to_string_lossy(), "format": "tiff", "import": true})).unwrap();
     assert_eq!(s.project.items.len(), n + 1);
+    // without a path: next to the saved project (an unsaved one used the working directory)
+    s.path = Some(dir.join("show.fcproj").to_string_lossy().to_string());
+    let r = s.execute("file.exportFrame", json!({})).unwrap();
+    let got = std::path::PathBuf::from(r["path"].as_str().unwrap());
+    assert_eq!(got.parent(), Some(dir.as_path()), "{got:?}");
+    assert!(got.is_file() && got.to_string_lossy().ends_with(".Still001.png"), "{got:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

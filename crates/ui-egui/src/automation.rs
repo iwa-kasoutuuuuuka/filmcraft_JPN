@@ -23,6 +23,10 @@ impl Registry {
     /// Register an element. The label is recorded in English whatever the UI language is
     /// (`crate::i18n::english_of`), so agents see the same labels as the ids they go with.
     pub fn add(&mut self, id: &str, rect: Rect, label: &str) {
+        // nothing to reach (scrolled or clipped out of view)
+        if !(rect.width() > 0.0 && rect.height() > 0.0) {
+            return;
+        }
         let label = crate::i18n::english_of(label).into_owned();
         self.elements.push(Element { id: id.to_string(), label, rect: [rect.min.x, rect.min.y, rect.width(), rect.height()] });
     }

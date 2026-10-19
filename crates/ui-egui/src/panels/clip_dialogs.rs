@@ -59,6 +59,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.audioChannels" => ("Modify Clip: Audio Channels", "audioChannels"),
         "clip.modifyTimecode" => ("Modify Clip: Timecode", "timecode"),
         "clip.frameHoldOptions" => ("Frame Hold Options", "frameHold"),
+        "clip.speedDuration" => ("Clip Speed / Duration", "speedDuration"),
         "clip.fieldOptions" => ("Field Options", "fieldOptions"),
         "file.closeProject" => ("Save Project", "closeProject"),
         "app.quit" => ("Save Project", "quitProject"),
@@ -213,6 +214,19 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             (json!({"enabled": enabled, "holdOn": "in", "timecode": tc, "holdFilters": hold_filters}), Value::Null)
         }
         "clip.fieldOptions" => (json!({"reverseFieldDominance": false, "processing": "none"}), Value::Null),
+        "clip.speedDuration" => {
+            // the first selected clip's speed, direction and interpolation; its source length for
+            // the duration the speed gives
+            let it = s.active_sequence().and_then(|q| s.state.selection.iter().find_map(|c| q.find_item(*c).map(|x| x.1.clone())));
+            let speed = it.as_ref().map_or(100.0, |i| (i.speed * 100.0 * 100.0).round() / 100.0);
+            let src = it.as_ref().map_or(0.0, |i| (i.source_out() - i.source_in).seconds());
+            let fps = s.sequence_rate().as_f64();
+            (
+                json!({"speed": speed, "reverse": it.as_ref().is_some_and(|i| i.reverse), "ripple": false,
+                    "interpolation": it.as_ref().map_or("frameSampling", |i| i.time_interpolation.name())}),
+                json!({"sourceSeconds": src, "fps": fps}),
+            )
+        }
         _ => (json!({}), Value::Null),
     }
 }
@@ -510,6 +524,29 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         }
                         check(ui, &mut elems, pre, p, "holdFilters", "Hold Filters", true);
                     });
+                }
+                "clip.speedDuration" => {
+                    number(ui, &mut elems, pre, p, "speed", "Speed:", 1.0..=10_000.0, " %");
+                    // the duration this speed gives (Premiere links the two; set the speed here)
+                    let src = d.info["sourceSeconds"].as_f64().unwrap_or(0.0);
+                    let speed = p["speed"].as_f64().unwrap_or(100.0).max(1.0);
+                    let fps = d.info["fps"].as_f64().unwrap_or(24.0);
+                    let rate = filmcraft_time::FrameRate::from_f64(if fps > 0.0 { fps } else { 24.0 });
+                    let frames = (src * 100.0 / speed * rate.as_f64()).round().clamp(0.0, 1e12) as i64;
+                    ui.horizontal(|ui| {
+                        ui.label(crate::i18n::tr_ui("Duration:"));
+                        ui.label(RichText::new(filmcraft_time::format_timecode_frames(frames, rate, false)).monospace());
+                    });
+                    check(ui, &mut elems, pre, p, "reverse", "Reverse Speed", true);
+                    check(ui, &mut elems, pre, p, "ripple", "Ripple Edit, Shifting Trailing Clips", true);
+                    ui.label(RichText::new(crate::i18n::tr_ui("Time Interpolation")).strong());
+                    for m in filmcraft_project::TimeInterpolation::ALL {
+                        let r = ui.radio(p["interpolation"].as_str() == Some(m.name()), crate::i18n::tr_ui(m.label()));
+                        push(&mut elems, format!("{pre}.interpolation.{}", m.name()), &r, m.label());
+                        if r.clicked() {
+                            p["interpolation"] = json!(m.name());
+                        }
+                    }
                 }
                 "clip.fieldOptions" => {
                     check(ui, &mut elems, pre, p, "reverseFieldDominance", "Reverse Field Dominance", true);

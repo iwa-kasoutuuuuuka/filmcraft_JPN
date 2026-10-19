@@ -511,11 +511,25 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
                     source_nav(app, cmd);
                     Ok(serde_json::Value::Null)
                 }
-                "src.play" => Ok(serde_json::Value::Null),
-                "exportFrame" => {
-                    app.ui.status = crate::i18n::t("Export Frame: use Export mode (M6)", "フレームを書き出し: 書き出しモードを使用してください (M6)").into();
+                // (these did nothing, silently)
+                "src.play" => {
+                    app.ui.status = crate::i18n::t(
+                        "The Source monitor does not play yet: edit the clip into a sequence to play it",
+                        "ソースモニターの再生はまだ使えません。シーケンスに配置して再生してください",
+                    )
+                    .into();
                     Ok(serde_json::Value::Null)
                 }
+                "exportFrame" if src => {
+                    app.ui.status =
+                        crate::i18n::t("Export Frame exports the Program monitor's frame", "フレームの書き出しはプログラムモニターのフレームが対象です").into();
+                    Ok(serde_json::Value::Null)
+                }
+                "exportFrame" => app.session.execute("file.exportFrame", json!({})).map_err(|e| e.to_string()).inspect(|v| {
+                    if let Some(p) = v.get("path").and_then(|p| p.as_str()) {
+                        app.ui.status = crate::tf!("Exported frame: {p}", "フレームを書き出しました: {p}");
+                    }
+                }),
                 c => crate::menus::invoke(app, &ctx, c, json!({})),
             };
             if let Err(e) = r {
@@ -524,10 +538,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
         }
         x += bw;
     }
-    // button editor "+"
-    let r = Rect::from_min_size(pos2(row.max.x - 30.0, row.min.y + 4.0), vec2(22.0, 22.0));
-    let resp = ui.interact(r, egui::Id::new((prefix, "btn-editor")), Sense::click()).on_hover_text(crate::i18n::t("Button Editor", "ボタンエディター"));
-    icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
+    // (the Button Editor "+" is not shown until the editor exists: it was a button that did nothing)
 }
 
 fn source_nav(app: &mut FilmcraftApp, cmd: &str) {

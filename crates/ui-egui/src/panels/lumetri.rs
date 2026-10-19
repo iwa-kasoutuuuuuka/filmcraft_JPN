@@ -38,7 +38,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         bui.add_space(8.0);
         bui.label(egui::RichText::new(crate::tf!("Master · {}", "マスター · {}", it.name)).color(t.text_dim));
         bui.add_space(8.0);
-        if bui.button(crate::i18n::t("Add Lumetri Color to clip", "クリップに Lumetri カラーを追加")).clicked() {
+        let b = bui.button(crate::i18n::t("Add Lumetri Color to clip", "クリップに Lumetri カラーを追加"));
+        app.auto.add("lumetri.addToClip", b.rect, "Add Lumetri Color to clip");
+        if b.clicked() {
             let _ = app.session.execute("effects.apply", json!({"clips": [clip.0], "effect": "lumetri"}));
         }
         return;

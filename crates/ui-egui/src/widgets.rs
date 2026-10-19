@@ -88,7 +88,7 @@ pub fn section_header(ui: &mut Ui, id: egui::Id, title: &str, open: bool, t: &To
 
 /// A small pill toggle button with text (e.g. "M", "S" on track headers).
 pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: Color32, t: &Tokens, id: egui::Id) -> Response {
-    let resp = ui.interact(rect, id, Sense::click());
+    let resp = ui.interact(rect, id, visible_click(rect));
     let bg = if on {
         on_color
     } else if resp.hovered() {
@@ -105,8 +105,14 @@ pub fn letter_toggle(ui: &mut Ui, rect: Rect, letter: &str, on: bool, on_color: 
 }
 
 /// A flat icon toggle inside a rect.
+/// Click sense for a control clipped to `rect`; nothing to click when it is scrolled out of view
+/// (an inverted rect from an empty intersection would still be reported as a control).
+pub fn visible_click(rect: Rect) -> Sense {
+    if rect.is_positive() { Sense::click() } else { Sense::hover() }
+}
+
 pub fn icon_toggle(ui: &mut Ui, rect: Rect, icon: Icon, on: bool, t: &Tokens, id: egui::Id, on_color: Option<Color32>) -> Response {
-    let resp = ui.interact(rect, id, Sense::click());
+    let resp = ui.interact(rect, id, visible_click(rect));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 2.0, t.hover);
     }
