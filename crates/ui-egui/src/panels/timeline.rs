@@ -1471,7 +1471,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
 
     // ---- press
     if resp.drag_started() || (resp.clicked() && app.tl.drag.is_none()) {
-        let Some(p) = resp.interact_pointer_pos() else { return };
+        // a drag starts once the pointer has moved past egui's threshold: hit-test where the
+        // button went down (an edge grabbed and pulled quickly is a trim, not a move)
+        let origin = if resp.drag_started() { ctx.input(|i| i.pointer.press_origin()).filter(|o| area.contains(*o)) } else { None };
+        let Some(p) = origin.or(resp.interact_pointer_pos()) else { return };
         let h = hit(seq, layout, p);
         let t = layout.tick_at(p.x);
         let started = match (tool, h.clone()) {
