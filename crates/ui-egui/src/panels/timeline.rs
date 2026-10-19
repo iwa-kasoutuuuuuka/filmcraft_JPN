@@ -176,7 +176,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- sequence tabs strip (top-left header block)
     // ---- animated zoom / scroll
     let empty = seq.duration().seconds() <= 0.0;
-    let dur_s = seq.duration().seconds().max(1.0);
+    // an empty sequence shows its first minute (fitting "1 s" zoomed in to single frames, so the
+    // first clip dropped "at the start" landed a frame or more in)
+    let dur_s = if empty { EMPTY_FIT_S } else { seq.duration().seconds().max(1.0) };
     {
         let v = &mut app.ui.timeline;
         if let Some(p) = v.fit_empty
@@ -1240,6 +1242,9 @@ fn edge_geometry(seq: &Sequence, layout: &Layout, track: filmcraft_project::Trac
 }
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
+/// Seconds an empty sequence's timeline shows.
+const EMPTY_FIT_S: f64 = 60.0;
+
 fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
     if !app.session.state.snapping {
         return t;
@@ -1255,6 +1260,8 @@ fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclud
         }
     }
     cands.push(app.session.playhead());
+    // the sequence start, as in Premiere
+    cands.push(Tick::ZERO);
     cands.extend(seq.markers.iter().map(|m| m.start));
     cands.extend(seq.mark_in);
     cands.extend(seq.mark_out);

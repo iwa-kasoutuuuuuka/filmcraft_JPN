@@ -238,3 +238,32 @@ fn minimized_window_reports_ui_requests_instead_of_dropping_them() {
     d.ok("ui.key", json!({"key": "V"}));
     assert_eq!(d.ok("ui.inspect", json!({}))["ui"]["tool"], "Selection");
 }
+
+/// A new, empty sequence shows its first minute, and a project item dropped near its start snaps
+/// to the start (the timeline used to fit "1 s", zoomed in to single frames, so the first clip
+/// dropped "at the start" landed a frame or more in, leaving black at the head).
+#[test]
+fn first_clip_dropped_near_the_start_of_an_empty_sequence_starts_at_zero() {
+    let mut d = Driver::demo();
+    // an item at the top of the Project panel (the demo's media sit in bins)
+    let matte = d.ok("engine.execute", json!({"command": "file.newColorMatte", "params": {"color": "#3366ff"}}))["item"].as_u64().unwrap();
+    d.ok("engine.execute", json!({"command": "file.newSequence", "params": {"name": "Empty"}}));
+    d.frames(30);
+    let rect = |d: &mut Driver, id: &str| -> [f64; 4] {
+        let v = d.ok("ui.elements", json!({"prefix": id}));
+        let e = v.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("no {id}")).clone();
+        let r: Vec<f64> = e["rect"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+        [r[0], r[1], r[2], r[3]]
+    };
+    let tracks = rect(&mut d, "timeline.tracks");
+    let pps = d.ok("ui.inspect", json!({}))["ui"]["timeline"]["pps"].as_f64().unwrap();
+    let shown = tracks[2] / pps;
+    assert!((40.0..=90.0).contains(&shown), "an empty sequence shows about a minute, not {shown:.2} s");
+    // drop it 6 pt into V1 (a fraction of a second, within snapping distance)
+    let from = format!("project.item.{matte}");
+    let v1 = rect(&mut d, "timeline.track.V1.target");
+    d.ok("ui.drag", json!({"from": {"id": from}, "to": {"x": tracks[0] + 6.0, "y": v1[1] + v1[3] / 2.0}, "steps": 12}));
+    d.frames(3);
+    let seq = d.ok("engine.execute", json!({"command": "sequence.inspect", "params": {}}));
+    assert_eq!(seq["video"][0]["items"][0]["start"], json!(0), "the clip starts at the sequence start: {}", seq["video"][0]["items"]);
+}
