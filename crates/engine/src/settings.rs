@@ -1140,11 +1140,15 @@ impl crate::autosave::Preferences {
     /// Settings ▸ Playback ▸ Hardware decoding as the process-wide switch the hardware decoder
     /// factories consult (new decoders only).
     pub fn apply_hardware_decoding(&self) {
-        use filmcraft_codecs::hw::{HwMode, set_hardware_mode};
-        set_hardware_mode(match self.playback.hardware_decoding.as_str() {
-            "off" => HwMode::Off,
-            _ => HwMode::Auto,
-        });
+        filmcraft_codecs::hw::set_hardware_mode(self.hardware_mode());
+    }
+
+    /// The hardware decoding mode this setting selects.
+    pub fn hardware_mode(&self) -> filmcraft_codecs::hw::HwMode {
+        match self.playback.hardware_decoding.as_str() {
+            "off" => filmcraft_codecs::hw::HwMode::Off,
+            _ => filmcraft_codecs::hw::HwMode::Auto,
+        }
     }
 
     /// Values of one category as a JSON object.

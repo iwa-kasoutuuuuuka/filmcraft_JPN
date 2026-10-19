@@ -485,11 +485,12 @@ fn auto_transcribe_on_import_and_transcription_defaults() {
 fn hardware_decoding_setting_drives_the_decoder_switch() {
     let mut s = Session::default();
     assert_eq!(s.prefs.playback.hardware_decoding, "auto", "Auto by default");
+    // (the switch itself is process-wide, and every Session other tests create applies its own
+    // preferences to it, so this checks the mode the setting selects, not the global in between)
     set(&mut s, "playback.hardwareDecoding", json!("off"));
-    assert!(!filmcraft_codecs::hw::hardware_decoding(), "Off reaches the decoder registry");
+    assert_eq!(s.prefs.hardware_mode(), filmcraft_codecs::hw::HwMode::Off, "Off reaches the decoder registry");
     assert!(s.execute("prefs.set", json!({"key": "playback.hardwareDecoding", "value": "gpu"})).is_err());
     set(&mut s, "playback.hardwareDecoding", json!("auto"));
-    assert!(filmcraft_codecs::hw::hardware_decoding());
-    assert_eq!(filmcraft_codecs::hw::hardware_mode(), filmcraft_codecs::hw::HwMode::Auto);
+    assert_eq!(s.prefs.hardware_mode(), filmcraft_codecs::hw::HwMode::Auto);
     assert!(settings::field("playback.hardwareDecoding").is_some_and(|f| f.wired && matches!(f.kind, Kind::Choice(_))));
 }
