@@ -3,9 +3,9 @@
 //!
 //! In an HDR sequence (Rec. 2100 PQ / HLG working space) Basic Correction shows HDR White and
 //! HDR Specular and Curves shows HDR Range (cd/m²): the sliders and curves then span 0 … that
-//! many nits (see `filmcraft_color::grade`). Automation ids for those and HSL Secondary ▸ Refine:
-//! `lumetri.param.<id>` (`hdr_white`, `hdr_specular`, `curves_hdr_range`, `hsl_denoise`,
-//! `hsl_blur`); Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
+//! many nits (see `filmcraft_color::grade`). Automation ids: every slider is `lumetri.param.<id>`
+//! (`temperature`, `exposure`, `contrast`, … `hdr_white`, `curves_hdr_range`, `hsl_denoise`, …);
+//! Color Match: `lumetri.match.comparisonView` (toggles the Program monitor's
 //! Comparison View, whose reference frame Apply Match then uses).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
@@ -67,9 +67,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if open_section(ui, app, &e, crate::i18n::t("Basic Correction", "基本補正"), "Basic Correction", "basic_on", "basic", &mut sections) {
             lut_combo(ui, app, &e, "input_lut", crate::i18n::t("Input LUT", "入力 LUT"), true, &mut lut_actions);
             sub(ui, &t, crate::i18n::t("Color", "カラー"));
-            slider(ui, &e, mt, "temperature", crate::i18n::t("Temperature", "色温度"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
-            slider(ui, &e, mt, "tint", crate::i18n::t("Tint", "色合い"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
-            slider(ui, &e, mt, "saturation", crate::i18n::t("Saturation", "彩度"), None, &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "temperature", crate::i18n::t("Temperature", "色温度"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "tint", crate::i18n::t("Tint", "色合い"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "saturation", crate::i18n::t("Saturation", "彩度"), None, &t, &mut actions, clip, idx);
             sub(ui, &t, crate::i18n::t("Light", "ライト"));
             for (id, label) in [
                 ("exposure", crate::i18n::t("Exposure", "露光量")),
@@ -79,15 +79,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("whites", crate::i18n::t("Whites", "白レベル")),
                 ("blacks", crate::i18n::t("Blacks", "黒レベル")),
             ] {
-                slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
+                slider(ui, &mut auto_rows, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
             if hdr {
                 sub(ui, &t, "HDR");
                 for (id, label) in
                     [("hdr_white", crate::i18n::t("HDR White", "HDR 白レベル")), ("hdr_specular", crate::i18n::t("HDR Specular", "HDR 鏡面反射"))]
                 {
-                    let r = slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
-                    auto_rows.push((format!("lumetri.param.{id}"), r, label));
+                    slider(ui, &mut auto_rows, &e, mt, id, label, None, &t, &mut actions, clip, idx);
                 }
             }
         }
@@ -115,7 +114,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     });
             });
             lut_combo(ui, app, &e, "look_lut", crate::i18n::t("Look LUT", "ルック LUT"), false, &mut lut_actions);
-            slider(ui, &e, mt, "look_intensity", crate::i18n::t("Intensity", "適用量"), None, &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "look_intensity", crate::i18n::t("Intensity", "適用量"), None, &t, &mut actions, clip, idx);
             sub(ui, &t, crate::i18n::t("Adjustments", "調整"));
             for (id, label) in [
                 ("faded_film", crate::i18n::t("Faded Film", "フィルム調フェード")),
@@ -123,7 +122,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("vibrance", crate::i18n::t("Vibrance", "自然な彩度")),
                 ("creative_sat", crate::i18n::t("Saturation", "彩度")),
             ] {
-                slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
+                slider(ui, &mut auto_rows, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
         }
         if open_section(ui, app, &e, crate::i18n::t("Curves", "カーブ"), "Curves", "curves_on", "curves", &mut sections) {
@@ -153,8 +152,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             ][ch];
             curve_editor(ui, &e, id, false, col, &t, &mut actions, clip, idx);
             if hdr {
-                let r = slider(ui, &e, mt, "curves_hdr_range", crate::i18n::t("HDR Range", "HDR 範囲"), None, &t, &mut actions, clip, idx);
-                auto_rows.push(("lumetri.param.curves_hdr_range".into(), r, "HDR Range"));
+                slider(ui, &mut auto_rows, &e, mt, "curves_hdr_range", crate::i18n::t("HDR Range", "HDR 範囲"), None, &t, &mut actions, clip, idx);
             }
             sub(ui, &t, crate::i18n::t("Hue Saturation Curves", "色相 / 彩度カーブ"));
             for (id, label) in [
@@ -195,7 +193,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         if open_section(ui, app, &e, crate::i18n::t("HSL Secondary", "HSL セカンダリ"), "HSL Secondary", "hsl_on", "hsl", &mut sections) {
             sub(ui, &t, crate::i18n::t("Key", "キー"));
-            slider(ui, &e, mt, "hsl_hue", crate::i18n::t("Hue", "色相"), Some(Gradient::Hue), &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "hsl_hue", crate::i18n::t("Hue", "色相"), Some(Gradient::Hue), &t, &mut actions, clip, idx);
             for (id, label) in [
                 ("hsl_hue_range", crate::i18n::t("Hue Range", "色相の範囲")),
                 ("hsl_sat_min", crate::i18n::t("Saturation Min", "彩度 (最小)")),
@@ -203,7 +201,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("hsl_luma_max", crate::i18n::t("Luma Max", "輝度 (最大)")),
                 ("hsl_soft", crate::i18n::t("Soften", "ぼかし")),
             ] {
-                slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
+                slider(ui, &mut auto_rows, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
             let mask = match e.param("hsl_show_mask").map(|p| &p.value) {
                 Some(ParamValue::Choice(c)) => *c as usize,
@@ -239,14 +237,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             });
             sub(ui, &t, crate::i18n::t("Refine", "詳細"));
             for (id, label) in [("hsl_denoise", crate::i18n::t("Denoise", "ノイズ軽減")), ("hsl_blur", crate::i18n::t("Blur", "ブラー"))] {
-                let r = slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
-                auto_rows.push((format!("lumetri.param.{id}"), r, label));
+                slider(ui, &mut auto_rows, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
             sub(ui, &t, crate::i18n::t("Correction", "補正"));
-            slider(ui, &e, mt, "hsl_temp", crate::i18n::t("Temperature", "色温度"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
-            slider(ui, &e, mt, "hsl_tint", crate::i18n::t("Tint", "色合い"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
-            slider(ui, &e, mt, "hsl_sat", crate::i18n::t("Saturation", "彩度"), None, &t, &mut actions, clip, idx);
-            slider(ui, &e, mt, "hsl_hue_shift", crate::i18n::t("Hue Shift", "色相シフト"), Some(Gradient::Hue), &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "hsl_temp", crate::i18n::t("Temperature", "色温度"), Some(Gradient::Temp), &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "hsl_tint", crate::i18n::t("Tint", "色合い"), Some(Gradient::Tint), &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "hsl_sat", crate::i18n::t("Saturation", "彩度"), None, &t, &mut actions, clip, idx);
+            slider(ui, &mut auto_rows, &e, mt, "hsl_hue_shift", crate::i18n::t("Hue Shift", "色相シフト"), Some(Gradient::Hue), &t, &mut actions, clip, idx);
         }
         if open_section(ui, app, &e, crate::i18n::t("Vignette", "ビネット"), "Vignette", "vignette_on", "vignette", &mut sections) {
             for (id, label) in [
@@ -255,7 +252,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ("vignette_roundness", crate::i18n::t("Roundness", "真円度")),
                 ("vignette_feather", crate::i18n::t("Feather", "ぼかし")),
             ] {
-                slider(ui, &e, mt, id, label, None, &t, &mut actions, clip, idx);
+                slider(ui, &mut auto_rows, &e, mt, id, label, None, &t, &mut actions, clip, idx);
             }
         }
         ui.add_space(20.0);
@@ -401,10 +398,12 @@ enum Gradient {
     Hue,
 }
 
-/// Spectrum slider: 1 pt track (or gradient), hollow ring knob, scrubby value at the right.
+/// Spectrum slider: 1 pt track (or gradient), hollow ring knob, scrubby value at the right. Its row
+/// is registered for automation as `lumetri.param.<id>` (labelled with the parameter's name).
 #[allow(clippy::too_many_arguments)]
 fn slider(
     ui: &mut egui::Ui,
+    rows: &mut Vec<(String, Rect, &'static str)>,
     e: &EffectInstance,
     mt: Tick,
     id: &str,
@@ -419,6 +418,7 @@ fn slider(
     let filmcraft_project::ParamKind::Float { min, max, soft_min, soft_max, decimals, .. } = pd.kind else { return Rect::NOTHING };
     let v = e.param(id).map(|p| p.f64_at(mt)).unwrap_or(pd.default.as_f64().unwrap_or(0.0));
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
+    rows.push((format!("lumetri.param.{id}"), row, pd.label));
     ui.painter().text(pos2(row.min.x + 4.0, row.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(label), Tokens::ui(12.0), t.text_dim);
     let track = Rect::from_min_max(pos2(row.min.x + 112.0, row.center().y - 1.0), pos2(row.max.x - 58.0, row.center().y + 1.0));
     match grad {

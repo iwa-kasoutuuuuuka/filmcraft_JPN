@@ -1,7 +1,8 @@
 //! The header bar (Premiere 26 layout, 38 pt): Home and Import / Edit / Export on the left, the
 //! document title centred, the workspace name and quick actions on the right. On macOS the menus
 //! live in the native menu bar (set up by the app); elsewhere a compact in-window menu bar follows
-//! the mode tabs.
+//! the mode tabs. The Workspaces popup's entries are `header.workspaces.<name>` (`Editing`,
+//! `Color`, …) and `header.workspaces.reset`.
 
 use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
 
@@ -149,13 +150,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 for w in crate::dock::WORKSPACES {
                     let sel = app.ui.workspace == w;
                     let w_label = crate::i18n::tr_workspace(w);
-                    if ui.selectable_label(sel, w_label).clicked() {
+                    let item = ui.selectable_label(sel, w_label);
+                    app.auto.add(&format!("header.workspaces.{w}"), item.rect, w);
+                    if item.clicked() {
                         app.set_workspace(w);
                         ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
                     }
                 }
                 ui.separator();
-                if ui.button(crate::i18n::t("Reset to Saved Layout", "保存したレイアウトにリセット")).clicked() {
+                let reset = ui.button(crate::i18n::t("Reset to Saved Layout", "保存したレイアウトにリセット"));
+                app.auto.add("header.workspaces.reset", reset.rect, "Reset to Saved Layout");
+                if reset.clicked() {
                     let n = app.ui.workspace.clone();
                     app.set_workspace(&n);
                     ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));

@@ -539,13 +539,15 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     v
 }
 
-/// Draw the in-window menu bar.
+/// Draw the in-window menu bar (each top-level menu's automation id is `menubar.<menu>`, e.g.
+/// `menubar.File`; its entries run through `ui.menu.invoke` by command id).
 /// Returns the right edge of the last menu (the bar itself takes the whole width it is given).
 pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> f32 {
     let items = menu_items(app);
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
     let mut end = ui.max_rect().min.x;
+    let mut tops: Vec<(&str, egui::Rect)> = Vec::new();
     egui::MenuBar::new().ui(ui, |ui| {
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
@@ -558,8 +560,12 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> f32 {
                 menu_level(ui, &mine, 1, &mut clicked);
             });
             end = end.max(r.response.rect.max.x);
+            tops.push((top, r.response.rect));
         }
     });
+    for (top, rect) in tops {
+        app.auto.add(&format!("menubar.{top}"), rect, top);
+    }
     if let Some(id) = clicked {
         let _ = invoke(app, &ctx, &id, json!({}));
     }

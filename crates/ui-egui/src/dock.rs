@@ -465,6 +465,10 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
             if x + w > strip.max.x - 20.0 && i > g.active {
                 let r = Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 6.0), vec2(18.0, 20.0));
                 let resp = ui.interact(r, egui::Id::new(("tab-overflow", g.path.clone())), Sense::click());
+                // (named after the group's active panel: one overflow button per group)
+                if let Some(active) = active_panel {
+                    reg.add(&format!("panel.tabOverflow.{}", active.id()), r, "more tabs");
+                }
                 icons::paint(&painter, r.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, t.tab_text);
                 icons::paint(&painter, r.shrink(4.0).translate(vec2(2.0, 0.0)), Icon::ChevronRight, t.tab_text);
                 if resp.clicked() {
