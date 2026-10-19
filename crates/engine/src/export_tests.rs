@@ -445,3 +445,18 @@ fn default_export_dir_never_needs_a_real_filesystem() {
     let s = Session { path: Some("/projects/show/edit.fcproj".into()), ..Default::default() };
     assert_eq!(crate::export_tools::default_export_dir(&s), std::path::PathBuf::from("/projects/show"));
 }
+
+/// Unsaved projects export to the home directory's video folder: `Movies` on macOS, `Videos` on
+/// Windows (exports used to land in the bare home folder there).
+#[test]
+fn exports_default_to_the_video_folder() {
+    let home = std::env::temp_dir().join(format!("fc-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    assert_eq!(crate::export_tools::video_dir(&home), home, "no video folder: the home folder");
+    std::fs::create_dir_all(home.join("Videos")).unwrap();
+    assert_eq!(crate::export_tools::video_dir(&home), home.join("Videos"));
+    std::fs::create_dir_all(home.join("Movies")).unwrap();
+    assert_eq!(crate::export_tools::video_dir(&home), home.join("Movies"));
+    let _ = std::fs::remove_dir_all(&home);
+}

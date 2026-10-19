@@ -277,8 +277,8 @@ pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value
     }))
 }
 
-/// Where exports go when no path is given: next to the saved project, else ~/Movies, else the
-/// home directory, else the temporary directory.
+/// Where exports go when no path is given: next to the saved project, else the home directory's
+/// video folder ([`video_dir`]), else the temporary directory.
 pub fn default_export_dir(s: &Session) -> PathBuf {
     if let Some(d) = s.path.as_deref().and_then(|p| Path::new(p).parent()).filter(|d| !d.as_os_str().is_empty()) {
         return d.to_path_buf();
@@ -288,10 +288,15 @@ pub fn default_export_dir(s: &Session) -> PathBuf {
         return PathBuf::from("/exports");
     }
     if let Ok(h) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        let movies = Path::new(&h).join("Movies");
-        return if movies.is_dir() { movies } else { PathBuf::from(h) };
+        return video_dir(Path::new(&h));
     }
     crate::temp_dir()
+}
+
+/// The video folder in `home`: `Movies` (macOS), `Videos` (Windows, shown localised, e.g.
+/// 「ビデオ」, but named so on disk; also many Linux desktops), else `home` itself.
+pub fn video_dir(home: &Path) -> PathBuf {
+    ["Movies", "Videos"].into_iter().map(|n| home.join(n)).find(|d| d.is_dir()).unwrap_or_else(|| home.to_path_buf())
 }
 
 fn file_safe(n: &str) -> String {
