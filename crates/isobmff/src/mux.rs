@@ -23,11 +23,13 @@ pub struct WriterOptions {
     pub movie_timescale: u32,
     /// Text metadata written to `moov/udta` (keys like `©nam`, `©ART`, `©cmt`, `©too`).
     pub metadata: Vec<(String, String)>,
+    /// Further `ftyp` compatible brands (e.g. `av01` for AV1 tracks).
+    pub compatible_brands: Vec<[u8; 4]>,
 }
 
 impl WriterOptions {
     pub fn new(brand: Brand) -> Self {
-        WriterOptions { brand, movie_timescale: 1000, metadata: Vec::new() }
+        WriterOptions { brand, movie_timescale: 1000, metadata: Vec::new(), compatible_brands: Vec::new() }
     }
 }
 
@@ -151,7 +153,7 @@ fn rescale(v: u64, from: u32, to: u32) -> u64 {
 
 const MATRIX: [i32; 9] = [0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x4000_0000];
 
-fn write_ftyp(b: &mut BoxBuf, brand: Brand) {
+fn write_ftyp(b: &mut BoxBuf, brand: Brand, extra: &[[u8; 4]]) {
     let m = b.start(b"ftyp");
     match brand {
         Brand::Mp4 => {
@@ -166,6 +168,9 @@ fn write_ftyp(b: &mut BoxBuf, brand: Brand) {
             b.u32(0x200);
             b.bytes(b"qt  ");
         }
+    }
+    for c in extra.iter().take(16) {
+        b.bytes(c);
     }
     b.end(m);
 }
@@ -521,7 +526,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
     pub fn new(mut w: W, opts: WriterOptions) -> Result<Self> {
         let start = w.stream_position()?;
         let mut b = BoxBuf::new();
-        write_ftyp(&mut b, opts.brand);
+        write_ftyp(&mut b, opts.brand, &opts.compatible_brands);
         let pad_pos = start + b.len() as u64;
         b.leaf(if opts.brand == Brand::Mov { b"wide" } else { b"free" }, &[]);
         let mdat_pos = start + b.len() as u64;
@@ -539,6 +544,18 @@ impl<W: Write + Seek> Mp4Writer<W> {
         t.const_size = pcm;
         self.tracks.push(WTrack { id: self.tracks.len() as u32 + 1, handler, pcm_frame_bytes: pcm, t, cfg, tmcd_ref: None, tmcd_source: None });
         Ok(self.tracks.len() - 1)
+    }
+
+    /// Replace the sample entry of a video track before [`finish`](Self::finish) (the `moov` is
+    /// written at the end): encoders whose codec configuration is only known once they emitted
+    /// output (AV1's sequence header) complete it here. The handler (track kind) must not change.
+    pub fn set_sample_entry(&mut self, track: usize, entry: SampleEntry) -> Result<()> {
+        let tr = self.tracks.get_mut(track).ok_or(Error::NoSuchTrack(track))?;
+        if tr.pcm_frame_bytes.is_some() || tr.tmcd_source.is_some() || handler_of(&entry) != tr.handler {
+            return Err(Error::Mux("sample entry can only be replaced by one of the same kind".into()));
+        }
+        tr.cfg.entry = entry;
+        Ok(())
     }
 
     /// Add a QuickTime timecode track referenced by `video_track`. Its single sample (the start
@@ -760,7 +777,7 @@ impl<W: Write> FragmentedWriter<W> {
         let qt = self.opts.brand == Brand::Mov;
         let ts = self.opts.movie_timescale.max(1);
         let mut b = BoxBuf::new();
-        write_ftyp(&mut b, self.opts.brand);
+        write_ftyp(&mut b, self.opts.brand, &self.opts.compatible_brands);
         let m = b.start(b"moov");
         write_mvhd(&mut b, ts, 0, self.tracks.len() as u32 + 1);
         for t in &self.tracks {

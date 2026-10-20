@@ -91,7 +91,7 @@ pub struct Exporter {
 
 /// Whether [`Exporter`] handles a format.
 pub fn stepped(format: Format) -> bool {
-    matches!(format, Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
+    matches!(format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
 }
 
 /// The muxer is created before the first write; reaching a write without it is a logic error.
@@ -153,7 +153,9 @@ impl Exporter {
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
-        let brand = if settings.format.is_delivery() && settings.multiplexer == Multiplexer::Mp4 { Brand::Mp4 } else { Brand::Mov };
+        // AV1 goes in MP4 only
+        let brand =
+            if settings.format == Format::Av1 || (settings.format.is_delivery() && settings.multiplexer == Multiplexer::Mp4) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
             (Some(a), AudioCodec::Aac) => {
@@ -279,6 +281,9 @@ impl Exporter {
         let file = Out::create(&self.settings)?;
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
+        if self.settings.format == Format::Av1 {
+            opts.compatible_brands.push(*b"av01");
+        }
         let mut mux = Mp4Writer::new(file, opts).map_err(|e| ExportError::Io(e.to_string()))?;
         let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
         vcfg.media_start = self.venc.media_start();
@@ -406,7 +411,11 @@ impl Exporter {
         let (bytes, extra_files) = match self.mxf.take() {
             Some(m) => m.finish(&self.settings)?,
             None => {
-                let w = self.mux.take().ok_or_else(mux_missing)?.finish().map_err(|e| ExportError::Io(e.to_string()))?;
+                let mut mux = self.mux.take().ok_or_else(mux_missing)?;
+                // the codec configuration may only be complete now (AV1: the sequence header
+                // arrives with the first packet, after rav1e's look-ahead)
+                mux.set_sample_entry(self.vt, self.venc.sample_entry()).map_err(|e| ExportError::Io(e.to_string()))?;
+                let w = mux.finish().map_err(|e| ExportError::Io(e.to_string()))?;
                 (w.finish(&self.settings)?, Vec::new())
             }
         };
