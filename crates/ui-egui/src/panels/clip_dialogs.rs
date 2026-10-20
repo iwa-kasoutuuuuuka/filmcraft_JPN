@@ -49,6 +49,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "edit.removeAttributes" => ("Remove Attributes", "removeAttributes"),
         "file.newOfflineFile" => ("New Offline File", "offlineFile"),
         "file.newColorMatte" => ("New Color Matte", "colorMatte"),
+        "file.newSequence" => ("New Sequence", "newSequence"),
         "file.newAdjustmentLayer" => ("Adjustment Layer", "adjustmentLayer"),
         "file.newBarsAndTone" => ("New Bars and Tone", "barsAndTone"),
         "file.newBlackVideo" => ("New Black Video", "blackVideo"),
@@ -63,9 +64,24 @@ fn meta(command: &str) -> Option<(&'static str, &'static str)> {
         "clip.fieldOptions" => ("Field Options", "fieldOptions"),
         "file.closeProject" => ("Save Project", "closeProject"),
         "app.quit" => ("Save Project", "quitProject"),
+        "app.replaceProject" => ("Save Project", "replaceProject"),
         _ => return None,
     })
 }
+
+/// New Sequence presets: (label, width, height, fps).
+const SEQUENCE_PRESETS: [(&str, u32, u32, f64); 10] = [
+    ("HD 1080p 23.976", 1920, 1080, 23.976),
+    ("HD 1080p 24", 1920, 1080, 24.0),
+    ("HD 1080p 25", 1920, 1080, 25.0),
+    ("HD 1080p 29.97", 1920, 1080, 29.97),
+    ("HD 1080p 30", 1920, 1080, 30.0),
+    ("HD 1080p 59.94", 1920, 1080, 59.94),
+    ("HD 720p 29.97", 1280, 720, 29.97),
+    ("UHD 2160p 29.97", 3840, 2160, 29.97),
+    ("Vertical 1080×1920 30", 1080, 1920, 30.0),
+    ("Square 1080×1080 30", 1080, 1080, 30.0),
+];
 
 const INTRINSIC_VIDEO: [(&str, &str); 3] = [("motion", "Motion"), ("opacity", "Opacity"), ("timeRemapping", "Time Remapping")];
 const INTRINSIC_AUDIO: [(&str, &str); 3] = [("volume", "Volume"), ("channelVolume", "Channel Volume"), ("panner", "Panner")];
@@ -140,6 +156,13 @@ fn defaults(app: &FilmcraftApp, id: &str) -> (Value, Value) {
             (
                 json!({"fileName": "Offline.mov", "name": "", "tapeName": "", "description": "", "video": true, "audio": true, "width": st.width, "height": st.height,
                     "fps": st.frame_rate.as_f64(), "timecode": "00:00:00:00", "seconds": 10.0}),
+                Value::Null,
+            )
+        }
+        "file.newSequence" => {
+            let n = s.project.sequences().count() + 1;
+            (
+                json!({"name": format!("Sequence {n:02}"), "width": 1920, "height": 1080, "fps": 23.976, "sampleRate": 48000, "video": 3, "audio": 3}),
                 Value::Null,
             )
         }
@@ -305,6 +328,17 @@ pub fn open_quit_prompt(app: &mut FilmcraftApp) {
     app.ui.clip_dialog = Some(ClipDialogDraft { command: "app.quit".into(), params: json!({}), info: Value::Null, error: String::new() });
 }
 
+/// Ask whether to save unsaved changes before `then` (New Project, Open Project, Demo Project)
+/// replaces the project (`replaceProject.save`, `replaceProject.dontSave`, `replaceProject.cancel`).
+pub fn open_save_prompt(app: &mut FilmcraftApp, then: &str, params: Value) {
+    app.ui.clip_dialog = Some(ClipDialogDraft {
+        command: "app.replaceProject".into(),
+        params: json!({"then": then, "params": params}),
+        info: Value::Null,
+        error: String::new(),
+    });
+}
+
 /// Draw the open dialog, if any.
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.clip_dialog.clone() else { return };
@@ -316,7 +350,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut action: Option<&'static str> = None;
     let project_name = app.session.project.name.clone();
     // quitting may Save As (a project never saved asks where); closing keeps its old rule
-    let can_save = app.session.path.is_some() || d.command == "app.quit";
+    let can_save = app.session.path.is_some() || matches!(d.command.as_str(), "app.quit" | "app.replaceProject");
     egui::Window::new(crate::i18n::tr_ui(title))
         .id(egui::Id::new(("clip-dialog", title)))
         .collapsible(false)
@@ -525,6 +559,30 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         check(ui, &mut elems, pre, p, "holdFilters", "Hold Filters", true);
                     });
                 }
+                "file.newSequence" => {
+                    text(ui, &mut elems, pre, p, "name", "Sequence Name:", 220.0);
+                    ui.label(RichText::new(crate::i18n::tr_ui("Presets")).strong());
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, (label, w, h, fps)) in SEQUENCE_PRESETS.iter().enumerate() {
+                            let on = p["width"].as_u64() == Some(u64::from(*w))
+                                && p["height"].as_u64() == Some(u64::from(*h))
+                                && p["fps"].as_f64().is_some_and(|f| (f - fps).abs() < 1e-3);
+                            let r = ui.selectable_label(on, *label);
+                            push(&mut elems, format!("{pre}.preset.{i}"), &r, *label);
+                            if r.clicked() {
+                                p["width"] = json!(w);
+                                p["height"] = json!(h);
+                                p["fps"] = json!(fps);
+                            }
+                        }
+                    });
+                    number(ui, &mut elems, pre, p, "width", "Width:", 16.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "height", "Height:", 16.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "fps", "Frame Rate:", 1.0..=240.0, " fps");
+                    number(ui, &mut elems, pre, p, "sampleRate", "Sample Rate:", 8000.0..=192_000.0, " Hz");
+                    number(ui, &mut elems, pre, p, "video", "Video Tracks:", 0.0..=99.0, "");
+                    number(ui, &mut elems, pre, p, "audio", "Audio Tracks:", 0.0..=99.0, "");
+                }
                 "clip.speedDuration" => {
                     number(ui, &mut elems, pre, p, "speed", "Speed:", 1.0..=10_000.0, " %");
                     // the duration this speed gives (Premiere links the two; set the speed here)
@@ -559,7 +617,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         }
                     }
                 }
-                "file.closeProject" | "app.quit" => {
+                "file.closeProject" | "app.quit" | "app.replaceProject" => {
                     ui.label(crate::tf!("Save changes to “{project_name}” before closing?", "閉じる前に「{project_name}」への変更を保存しますか?"));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -620,6 +678,30 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 }
                 Err(e) => d.error = e.to_string(),
             }
+        }
+        Some("dontSave") | Some("save") if d.command == "app.replaceProject" => {
+            app.ui.clip_dialog = None;
+            if action == Some("save") {
+                if let Err(e) = crate::menus::invoke(app, ctx, "file.save", json!({})) {
+                    app.ui.status = e;
+                }
+                if app.session.is_dirty() {
+                    return; // the Save As dialog was cancelled: keep the project
+                }
+            } else if let Err(e) = app.session.execute("file.closeProject", json!({"force": true})) {
+                app.ui.status = e.to_string();
+                return;
+            }
+            let then = d.params["then"].as_str().unwrap_or_default().to_string();
+            let mut params = d.params["params"].clone();
+            if !params.is_object() {
+                params = json!({});
+            }
+            params["force"] = json!(true);
+            if let Err(e) = crate::menus::invoke(app, ctx, &then, params) {
+                app.ui.status = e;
+            }
+            return;
         }
         Some("dontSave") | Some("save") if d.command == "app.quit" => {
             app.ui.clip_dialog = None;

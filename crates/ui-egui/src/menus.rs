@@ -148,6 +148,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         // the engine's counters plus playback, frame workers and UI timings
         return Ok(crate::perf::stats(app));
     }
+    // Replacing a project that has unsaved changes asks first (Save / Don't Save / Cancel); it
+    // used to discard them, recovery journal included. `force` skips the prompt.
+    if matches!(id, "file.newProject" | "file.open" | "file.openDemoProject")
+        && app.session.is_dirty()
+        && params.get("force").and_then(Value::as_bool) != Some(true)
+    {
+        crate::panels::clip_dialogs::open_save_prompt(app, id, params);
+        return Ok(json!({"dialog": "Save Project"}));
+    }
     if let Some(rest) = id.strip_prefix("window.panel.") {
         let p = PanelKind::from_name(rest).ok_or_else(|| format!("unknown panel `{rest}`"))?;
         app.show_panel(p);
@@ -285,6 +294,13 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         "help.shortcuts" | "app.keyboardShortcuts" => {
             crate::panels::shortcuts_dialog::open(app);
             return Ok(Value::Null);
+        }
+        // File ▸ Export ▸ Media… opens Export mode (from the menu it failed with "need `path`"); with
+        // a path it exports directly.
+        "file.exportMedia" if params.get("path").is_none() => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            app.ui.mode = crate::state::Mode::Export;
+            return Ok(json!({"mode": "export"}));
         }
         // File ▸ Export ▸ AAF… / OMF… open their settings dialogs; with a path they export directly.
         "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {

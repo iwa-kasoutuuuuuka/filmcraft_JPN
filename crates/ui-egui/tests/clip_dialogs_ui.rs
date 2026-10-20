@@ -360,3 +360,73 @@ fn speed_duration_dialog_sets_speed_reverse_and_interpolation() {
     let animated = d.v1(0).effect("crop").and_then(|e| e.param("left")).is_some_and(|p| p.is_animated());
     assert!(animated, "Crop ▸ Left is animated");
 }
+
+/// New Project / Open / Demo Project on a project with unsaved changes ask first; New Project used
+/// to replace it at once, dropping the changes and their recovery journal.
+#[test]
+fn replacing_a_project_with_unsaved_changes_asks_first() {
+    let mut d = Driver::new();
+    d.exec("file.newBin", json!({"name": "Unsaved work"}));
+    let has_bin = |d: &mut Driver| d.app().session.project.root.children.iter().any(|c| format!("{c:?}").contains("Unsaved work"));
+    assert!(d.app().session.is_dirty() && has_bin(&mut d));
+    d.menu("file.newProject");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.command.clone()).as_deref(), Some("app.replaceProject"), "the prompt opened");
+    assert!(has_bin(&mut d), "nothing replaced yet");
+    for id in ["replaceProject.save", "replaceProject.dontSave", "replaceProject.cancel"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("replaceProject.cancel");
+    assert!(d.app().ui.clip_dialog.is_none() && has_bin(&mut d) && d.app().session.is_dirty(), "Cancel keeps the project");
+    d.menu("file.openDemoProject");
+    d.click("replaceProject.dontSave");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(!has_bin(&mut d) && !d.app().session.is_dirty(), "Don't Save: the demo project replaced it");
+    // nothing unsaved: no prompt
+    d.menu("file.newProject");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.project.items.is_empty(), "a new, empty project");
+}
+
+/// File ▸ New ▸ Sequence… opens the New Sequence dialog (presets, name, size, rate, tracks); it
+/// used to make a 1080p 23.976 sequence straight away.
+#[test]
+fn new_sequence_dialog_picks_a_preset() {
+    let mut d = Driver::new();
+    let n0 = d.app().session.project.sequences().count();
+    d.menu("file.newSequence");
+    assert_eq!(d.app().session.project.sequences().count(), n0, "nothing made before OK");
+    for id in ["newSequence.name", "newSequence.preset.0", "newSequence.width", "newSequence.fps", "newSequence.video", "newSequence.ok"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("newSequence.preset.8"); // Vertical 1080×1920 30
+    d.ok("ui.set", json!({"clipDialog": {"name": "Reel", "video": 2}}));
+    d.click("newSequence.ok");
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!((seq.settings.width, seq.settings.height), (1080, 1920));
+    assert!((seq.settings.frame_rate.as_f64() - 30.0).abs() < 1e-6);
+    assert_eq!(seq.video_tracks.len(), 2);
+    assert_eq!(d.app().session.project.sequences().count(), n0 + 1);
+}
+
+/// File ▸ Export ▸ EDL / OTIO / FCP XML / FCPXML ask where to save (they failed with "need
+/// `path`" from the menu), and Export ▸ Media… opens Export mode.
+#[test]
+fn export_menu_items_ask_where_or_open_export_mode() {
+    let mut d = Driver::new();
+    let dir = std::env::temp_dir().join(format!("fc-menu-export-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.clone();
+    d.app().hooks.pick_save_as = Some(Box::new(move |_filter: &str, exts: &[&str], suggested: &str| {
+        assert!(suggested.ends_with(&format!(".{}", exts[0])), "{suggested} {exts:?}");
+        Some(target.join(suggested).to_string_lossy().to_string())
+    }));
+    for id in ["file.exportEdl", "file.exportOtio", "file.exportFcp7Xml", "file.exportFcpxml"] {
+        let r = d.ok("ui.menu.invoke", json!({"id": id}));
+        let path = r["path"].as_str().map(str::to_string).or_else(|| r.as_str().map(str::to_string));
+        assert!(std::fs::read_dir(&dir).unwrap().count() > 0, "{id} wrote a file: {r} {path:?}");
+    }
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 4, "one file per format");
+    d.menu("file.exportMedia");
+    assert_eq!(format!("{:?}", d.app().ui.mode), "Export");
+    let _ = std::fs::remove_dir_all(&dir);
+}

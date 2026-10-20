@@ -207,14 +207,27 @@ pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: &Val
             }
             return Some(r);
         }
-        "file.exportSelectionProject" | "file.exportAle" if params.get("path").is_none() => {
+        // File ▸ Export ▸ EDL / OTIO / XML / ALE / Selection: ask where (the timeline formats used
+        // to fail with "need `path`" from the menu)
+        "file.exportSelectionProject" | "file.exportAle" | "file.exportEdl" | "file.exportOtio" | "file.exportFcp7Xml" | "file.exportFcpxml"
+            if params.get("path").is_none() =>
+        {
             if let Err(e) = enabled(app, id) {
                 return Some(Err(e));
             }
-            let (filter, ext, name) = if id == "file.exportAle" {
-                ("Avid Log Exchange", "ale", format!("{}.ale", app.session.project.name))
-            } else {
-                ("FilmCraft Project", "fcproj", format!("{} Selection.fcproj", app.session.project.name))
+            let seq = app
+                .session
+                .state
+                .active_sequence
+                .and_then(|s| app.session.project.item(s))
+                .map_or_else(|| app.session.project.name.clone(), |i| i.name.clone());
+            let (filter, ext, name) = match id {
+                "file.exportAle" => ("Avid Log Exchange", "ale", format!("{}.ale", app.session.project.name)),
+                "file.exportEdl" => ("Edit Decision List (CMX 3600)", "edl", format!("{seq}.edl")),
+                "file.exportOtio" => ("OpenTimelineIO", "otio", format!("{seq}.otio")),
+                "file.exportFcp7Xml" => ("Final Cut Pro XML", "xml", format!("{seq}.xml")),
+                "file.exportFcpxml" => ("FCPXML", "fcpxml", format!("{seq}.fcpxml")),
+                _ => ("FilmCraft Project", "fcproj", format!("{} Selection.fcproj", app.session.project.name)),
             };
             let Some(path) = app.hooks.pick_save_as.as_mut().and_then(|f| f(filter, &[ext], &name)) else {
                 return Some(Ok(Value::Null));
