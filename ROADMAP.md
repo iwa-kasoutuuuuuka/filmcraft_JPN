@@ -69,9 +69,11 @@ In priority order. Agents should prefer this work over adding more checklist ite
 5. **Windows and Linux at runtime.** CI that runs the test suite and a headless playback/export
    smoke test on both, not just release builds. Fix the Linux audio path (#23).
 6. **Delivery codecs.** HEVC: hardware on Windows landed (Main SDR, Main 10 HLG / PQ HDR from P010); next macOS (VideoToolbox) and a software HEVC encoder. AV1: hardware encoders, and `rav1e` (BSD-2) in software.
-7. **Plugin hosting** (VST3 / Audio Units, then OpenFX). Needs FFI, so it falls under the isolated
-   `unsafe` crate rule (AGENTS.md §0.3). **Approved by the owner on 2026-10-20**; VST3 hosting on
-   Windows is in progress (an ADR records the containment rules).
+7. **Plugin hosting** (VST3 / Audio Units, then OpenFX). Started (owner approved 2026-10-20;
+   [ADR 0002](docs/adr/0002-audio-plugin-hosting.md)): VST3 audio effects on Windows are scanned,
+   listed under Audio Effects ▸ VST3, applied to clips and tracks, rendered in playback and export,
+   with automatable parameters and their state saved in the project. Next: the plug-in's editor
+   window, Audio Units / VST3 on macOS, out-of-process hosting, OpenFX.
 8. **AI features** with openly licensed local models: transcription (on by default since the app and CLI build it), text-based
    editing, speech enhancement, reframing.
 9. **The web app shell**: file access, WebCodecs, audio.

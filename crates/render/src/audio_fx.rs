@@ -30,6 +30,10 @@ fn f(e: &EffectInstance, id: &str, mt: Tick) -> f32 {
 }
 
 pub(crate) fn mapping(id: &str) -> Option<Mapping> {
+    // audio plug-ins (VST3): the plug-in is the DSP; parameters `p<id>` map one-to-one
+    if let Some(dsp) = filmcraft_audio_dsp::plugin::intern_effect_id(id) {
+        return Some(Mapping { dsp, preroll: |_, _| PLUGIN_PREROLL, apply: plugin_params });
+    }
     Some(match id {
         "amplify" => Mapping { dsp: "amplify", preroll: |_, _| 0.0, apply: |d, e, t| ignore(d.set_param("gain", f(e, "gain", t))) },
         "dynamics" => Mapping {
@@ -249,6 +253,40 @@ pub const DIRECT: &[(&str, &str, f64)] = &[
     ("surround_reverb", "surround_reverb", 0.0),
 ];
 
+/// Pre-roll (seconds) for a fresh chain with an audio plug-in: plug-ins do not report their tail
+/// reliably, so a fixed amount lets reverbs / delays / smoothing build up after a seek.
+const PLUGIN_PREROLL: f64 = 0.5;
+
+/// Copy a plug-in effect's (keyframed) parameters `p<id>` to the plug-in.
+fn plugin_params(d: &mut dyn AudioEffect, e: &EffectInstance, t: Tick) {
+    for (k, p) in &e.params {
+        if filmcraft_audio_dsp::plugin::parse_param_key(k).is_some() {
+            let v = p.scalar_at(t);
+            set_if_changed(d, k, if v.is_finite() { v.clamp(0.0, 1.0) as f32 } else { 0.0 });
+        }
+    }
+}
+
+/// Build the DSP for a mapped project effect: the built-in effect `dsp`, or for an audio plug-in
+/// an instance restoring the effect's saved state (a pass-through when the plug-in is missing).
+pub(crate) fn create_dsp(dsp: &str, e: &EffectInstance, sample_rate: f32, channels: usize) -> Option<Box<dyn AudioEffect>> {
+    if filmcraft_audio_dsp::plugin::is_plugin_effect(dsp) {
+        let state = e.plugin.as_ref().and_then(|p| p.state_bytes());
+        return Some(Box::new(filmcraft_audio_dsp::plugin::PluginEffect::create(dsp, sample_rate, channels, state.as_deref())));
+    }
+    filmcraft_audio_dsp::create_effect(dsp, sample_rate, channels)
+}
+
+/// Hash of what makes an effect's DSP instance (plug-in state included: loading other state
+/// needs a new instance).
+pub(crate) fn hash_instance<H: std::hash::Hasher>(e: &EffectInstance, h: &mut H) {
+    use std::hash::Hash;
+    e.effect.hash(h);
+    if let Some(p) = &e.plugin {
+        p.state.hash(h);
+    }
+}
+
 /// Pre-roll of a direct mapping: its own tail, and at least long enough for the DSP's
 /// parameter smoothing (≤ 100 ms) to settle from the defaults to the clip's settings.
 fn direct_preroll(id: &str) -> f64 {
@@ -279,13 +317,17 @@ fn direct(d: &mut dyn AudioEffect, e: &EffectInstance, t: Tick) {
 /// effect editors: [`AudioEffect::response_db`] / [`AudioEffect::transfer_db`]).
 pub fn configured(e: &EffectInstance, t: Tick, sample_rate: u32) -> Option<Box<dyn AudioEffect>> {
     let m = mapping(&e.effect)?;
-    let mut d = filmcraft_audio_dsp::create_effect(m.dsp, sample_rate as f32, 2)?;
+    let mut d = create_dsp(m.dsp, e, sample_rate as f32, 2)?;
     (m.apply)(d.as_mut(), e, t);
     Some(d)
 }
 
 /// Processing latency (samples) of a project audio effect at `sample_rate`.
 pub fn latency(effect_id: &str, sample_rate: u32) -> usize {
+    if filmcraft_audio_dsp::plugin::is_plugin_effect(effect_id) {
+        // known only from a running instance (the render chain compensates it)
+        return 0;
+    }
     mapping(effect_id).and_then(|m| filmcraft_audio_dsp::create_effect(m.dsp, sample_rate as f32, 2)).map_or(0, |d| d.latency())
 }
 
@@ -334,7 +376,7 @@ fn structure_hash(item: &TrackItem) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for (e, m) in active(item) {
-        e.effect.hash(&mut h);
+        hash_instance(e, &mut h);
         m.dsp.hash(&mut h);
     }
     h.finish()
@@ -385,8 +427,8 @@ pub fn process(item: &TrackItem, a0: i64, n: usize, sr: u32, read: &dyn Fn(i64, 
             let pre_s = act.iter().map(|(e, m)| (m.preroll)(e, mt)).fold(0.0, f64::max);
             let pre = (pre_s * sr as f64).ceil() as usize;
             let mut fx: Vec<Box<dyn AudioEffect>> = Vec::new();
-            for (_, m) in &act {
-                if let Some(d) = filmcraft_audio_dsp::create_effect(m.dsp, sr as f32, width) {
+            for (e, m) in &act {
+                if let Some(d) = create_dsp(m.dsp, e, sr as f32, width) {
                     fx.push(d);
                 }
             }

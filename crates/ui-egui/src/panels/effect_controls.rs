@@ -88,7 +88,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let scroll_out = egui::ScrollArea::vertical().id_salt("ec-scroll").auto_shrink([false, false]).show(&mut bui, |bui| {
         for idx in order {
             let e = &it.effects[idx];
-            let Some(def) = e.def() else { continue };
+            let Some(def) = e.def() else {
+                // an audio plug-in that is not installed (or not scanned yet): named, kept, inert
+                if let Some(p) = &e.plugin {
+                    let (r, _) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
+                    let label = crate::tf!("{} (plug-in not installed)", "{}（プラグインが見つかりません）", p.name);
+                    bui.painter().text(pos2(r.min.x + 42.0, r.center().y), Align2::LEFT_CENTER, &label, Tokens::ui(12.0), t.text_faint);
+                    app.auto.add(&format!("effectControls.effect.{}", e.effect), r, &label);
+                }
+                continue;
+            };
             let key = format!("{}:{}", clip.0, idx);
             let open = !app.ui.collapsed_fx.contains(&key);
             let (r, resp) = bui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::click());

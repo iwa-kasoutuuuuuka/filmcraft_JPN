@@ -57,7 +57,7 @@ and `filmcraft-cli`.
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, image sequences, WAV / Broadcast WAV |
 | `project` | L1 | document model, effect definitions, keyframes |
-| `audio-dsp` | L1 | loudness metering (BS.1770 / R128), audio effects, channel layouts (BS.775 up/downmix, 5.1 panner), music remix analysis; no dependencies |
+| `audio-dsp` | L1 | loudness metering (BS.1770 / R128), audio effects, channel layouts (BS.775 up/downmix, 5.1 panner), music remix analysis; the audio plug-in hosting interface and catalogue (`plugin`; hosts live in `platform`); no dependencies |
 | `text` | L1 | text engine: font database (bundled OFL fonts + system fonts), shaping (harfrust), bidi, line breaking, paragraph layout, glyph/path rasteriser, strokes ([crates/text/README.md](../crates/text/README.md)) |
 | `edit` | L2 | pure edit algebra (insert, overwrite, razor, ripple, roll, slip, slide, rate stretch…; text-based editing: `edit::transcript`) |
 | `speech` | L2 | speech-to-text: `Transcriber` trait, Whisper model catalogue + verified downloader (feature `download`), pure-Rust Whisper inference on candle with word timestamps (feature `whisper`), speaker labelling ([transcripts.md](transcripts.md)) |
@@ -71,7 +71,7 @@ and `filmcraft-cli`.
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
-| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
+| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)). Also VST3 audio plug-in hosting (Windows; [ADR 0002](adr/0002-audio-plugin-hosting.md)). |
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
@@ -93,7 +93,7 @@ are exempt):
 `cargo xtask wasm` runs `cargo check --target wasm32-unknown-unknown` on every L0–L4 crate, the
 egui UI and the web app, so everything up to the engine stays web-portable and the web app builds
 ([web.md](web.md)). `unsafe_code = "forbid"` applies workspace-wide, except in `platform`
-(`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md)).
+(`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md), [ADR 0002](adr/0002-audio-plugin-hosting.md)).
 
 ## 2. Time base
 

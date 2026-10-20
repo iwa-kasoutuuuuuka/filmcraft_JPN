@@ -28,6 +28,10 @@
 //! P010), and an H.264 export whose hardware encoder fails on its first frames finishes with our
 //! encoder.
 //!
+//! Audio plug-in hosting lives here too ([`audio_plugins`], ADR 0002): [`register_audio_plugins`]
+//! registers the VST3 host (Windows) with `filmcraft_audio_dsp::plugin`; plug-ins then appear as
+//! audio effects (Audio Effects ▸ VST3) after a scan.
+//!
 //! Small OS queries live here too: the display language ([`locale`]) and process / thread CPU
 //! time for the performance counters ([`cputime`]).
 //!
@@ -36,6 +40,7 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod audio_plugins;
 pub mod cputime;
 pub mod hybrid;
 pub mod locale;
@@ -48,7 +53,11 @@ pub mod mfencode;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub mod vst3host;
 
+pub use audio_plugins::register_audio_plugins;
 pub use hybrid::HybridDecoder;
 
 /// What [`register`] made available.

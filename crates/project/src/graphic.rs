@@ -376,6 +376,7 @@ fn layer_instance(id: &str) -> EffectInstance {
         post_fader: false,
         essential: false,
         layer: None,
+        plugin: None,
     })
 }
 

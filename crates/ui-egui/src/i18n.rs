@@ -1009,6 +1009,8 @@ fn tr_ja(s: &str) -> &str {
         "Track Targeting" => "トラックターゲット",
         "Apply Effect" => "エフェクトを適用",
         "Remove Effect" => "エフェクトを削除",
+        "Scan Audio Plug-ins" => "オーディオプラグインをスキャン",
+        "List Audio Plug-ins" => "オーディオプラグインの一覧",
         "Set Effect Parameter" => "エフェクトのパラメーターを設定",
         "Toggle Animation" => "アニメーションを切り替え",
         "Toggle Effect" => "エフェクトを切り替え",

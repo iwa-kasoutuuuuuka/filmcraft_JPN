@@ -144,6 +144,24 @@ FILMCRAFT_FACE_SAMPLE=/path/to/face.png FILMCRAFT_MORPH_OUT=/tmp/morph.png \
 
 PNG 形式だけ読めます。写真は、リポジトリに含めないでください。
 
+## 5.5 VST3 オーディオプラグイン（Windows）
+
+インストール済みの VST3 オーディオエフェクトを、組み込みのオーディオエフェクトと同じように使えます
+（[ADR 0002](adr/0002-audio-plugin-hosting.md)）。
+
+1. プラグインを `C:\Program Files\Common Files\VST3`（または `%LOCALAPPDATA%\Programs\Common\VST3`、
+   環境変数 `FILMCRAFT_VST3_PATH` のフォルダ）に置きます。
+2. エフェクトパネル ▸ オーディオエフェクト ▸「VST3 プラグインをスキャン…」を押します
+   （コマンドでは `audioPlugins.scan`）。起動時には読み込みません。
+3. 見つかったプラグインは「オーディオエフェクト ▸ VST3」に並びます。クリップへドラッグするか、
+   `effects.apply {"effect": "vst3.<uid>"}`、トラックには `mixer.addInsert` で追加します。
+4. パラメーターはエフェクトコントロールに `p<id>`（0〜1 の正規化値）として表示され、キーフレームも使えます。
+   プラグインの状態はプロジェクトに保存されます。
+
+プラグインが見つからないプロジェクトを開いても、そのエフェクトは音をそのまま通し、設定は保存し直されます。
+プラグイン自身の画面（エディター）はまだ表示できません。プラグインがネイティブにクラッシュすると
+FilmCraft も終了します（自動保存から復旧できます）。
+
 ## 6. 既知の制限
 
 - **Warp Stabilizer の 3D**: Subspace Warp は回転だけをモデル化します。平行移動を含むカメラの動きは、部分的にしか補正されません。

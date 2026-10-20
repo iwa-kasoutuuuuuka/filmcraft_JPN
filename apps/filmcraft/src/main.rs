@@ -87,6 +87,11 @@ fn main() -> eframe::Result {
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
     register_hardware_decoders();
+    // Audio plug-in hosts (VST3 on Windows). Nothing is loaded until a scan (Effects panel ▸
+    // Audio Effects ▸ Scan for VST3 Plug-ins, `audioPlugins.scan`, or a project that uses one), so
+    // a broken plug-in cannot stop FilmCraft from starting (docs/adr/0002-audio-plugin-hosting.md).
+    let plugins = filmcraft_platform::register_audio_plugins();
+    log::info!("audio plug-ins: {plugins:?}");
     // Settings ▸ Appearance ▸ Language "Auto" follows the operating system's language
     filmcraft_ui_egui::i18n::set_system_language(filmcraft_platform::locale::system_language());
     // perf.stats `process.cpuS` and the playback profiler on systems without Unix CPU clocks
