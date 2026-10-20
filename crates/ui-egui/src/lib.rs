@@ -854,18 +854,45 @@ impl FilmcraftApp {
         }
     }
 
-    /// Import dropped files.
+    /// Files dropped on the window: media and folders (their media files) are imported, a
+    /// project file opens (asking about unsaved changes first); what failed is reported. (A
+    /// folder failed with "access denied", a project file as "unsupported media", and errors
+    /// were dropped silently.)
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        let mut paths = Vec::new();
+        let mut media = Vec::new();
+        let mut project = None;
         for f in dropped {
             let p = f.path();
-            if p.exists() {
-                paths.push(p.to_string_lossy().to_string());
+            if !p.exists() {
+                continue;
+            }
+            let is_project = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"));
+            let path = p.to_string_lossy().to_string();
+            if is_project {
+                project.get_or_insert(path);
+            } else {
+                media.push(path);
             }
         }
-        if !paths.is_empty() {
-            let _ = self.session.execute("file.import", json!({"paths": paths}));
+        if !media.is_empty() {
+            match self.session.execute("mediaBrowser.import", json!({"paths": media})) {
+                Ok(v) => {
+                    let n = v["items"].as_array().map_or(0, Vec::len);
+                    let errors: Vec<&str> = v["errors"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                    self.ui.status = if errors.is_empty() {
+                        crate::tf!("Imported {n} item(s)", "{n} 個の項目を読み込みました")
+                    } else {
+                        crate::tf!("Imported {n} item(s); could not import: {}", "{n} 個の項目を読み込みました。読み込めなかったもの: {}", errors.join("; "))
+                    };
+                }
+                Err(e) => self.ui.status = e.to_string(),
+            }
+        }
+        if let Some(path) = project
+            && let Err(e) = menus::invoke(self, ctx, "file.open", json!({"path": path}))
+        {
+            self.ui.status = e;
         }
     }
 

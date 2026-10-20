@@ -282,3 +282,55 @@ fn first_clip_dropped_near_the_start_of_an_empty_sequence_starts_at_zero() {
     let seq = d.ok("engine.execute", json!({"command": "sequence.inspect", "params": {}}));
     assert_eq!(seq["video"][0]["items"][0]["start"], json!(0), "the clip starts at the sequence start: {}", seq["video"][0]["items"]);
 }
+
+#[derive(Debug)]
+struct Dropped(std::path::PathBuf);
+impl egui::DroppedFile for Dropped {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// Files dropped on the window: a folder imports its media (it failed with "access denied"),
+/// an unsupported file is reported (errors were dropped silently), and a project file opens,
+/// asking about unsaved changes first (it was refused as "unsupported media").
+#[test]
+fn dropped_folders_media_and_project_files() {
+    let mut d = Driver::demo();
+    let dir = std::env::temp_dir().join(format!("fc-drop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let folder = dir.join("素材フォルダ");
+    std::fs::create_dir_all(&folder).unwrap();
+    let wav = filmcraft_media::wav::write_wav16(&[0.0; 9600], 2, 48_000);
+    for n in ["ナレーション.wav", "b-roll.wav"] {
+        std::fs::write(folder.join(n), &wav).unwrap();
+    }
+    std::fs::write(folder.join("notes.txt"), b"not media").unwrap();
+    let drop = |d: &mut Driver, paths: &[std::path::PathBuf]| {
+        let files: Vec<egui::DroppedFileHandle> = paths.iter().map(|p| std::sync::Arc::new(Dropped(p.clone())) as egui::DroppedFileHandle).collect();
+        d.harness.input_mut().dropped_files = files;
+        d.frames(3);
+    };
+    let n0 = d.harness.state().session.project.items.len();
+    drop(&mut d, std::slice::from_ref(&folder));
+    assert_eq!(d.harness.state().session.project.items.len(), n0 + 2, "the folder's two audio files: {}", d.harness.state().ui.status);
+    // an unsupported file says so
+    let txt = folder.join("notes.txt");
+    drop(&mut d, &[txt]);
+    assert!(d.harness.state().ui.status.contains("notes.txt"), "{}", d.harness.state().ui.status);
+    // a project file opens, after the unsaved-changes prompt
+    let proj = dir.join("保存済み.fcproj");
+    let mut other = Session::default();
+    other.execute("file.newBin", json!({"name": "From the other project"})).unwrap();
+    other.execute("file.saveAs", json!({"path": proj.to_string_lossy()})).unwrap();
+    drop(&mut d, &[proj]);
+    assert_eq!(d.harness.state().ui.clip_dialog.as_ref().map(|x| x.command.clone()).as_deref(), Some("app.replaceProject"));
+    d.ok("ui.click", json!({"id": "replaceProject.dontSave"}));
+    d.frames(3);
+    let bins = format!("{:?}", d.harness.state().session.project.root.children);
+    assert!(bins.contains("From the other project"), "{bins}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

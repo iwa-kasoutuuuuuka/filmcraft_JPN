@@ -733,6 +733,10 @@ pub struct GfxEdit {
     pub layer: usize,
     pub caret: usize,
     pub anchor: usize,
+    /// Text being composed in the input method (Japanese kana → kanji conversion), shown at the
+    /// caret until it is committed.
+    #[serde(default)]
+    pub preedit: String,
 }
 
 fn captions_tab() -> String {

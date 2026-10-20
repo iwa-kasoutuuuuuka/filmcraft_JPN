@@ -486,6 +486,16 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let (a, b) = (sp(&v.to_screen, x, base - line.ascent), sp(&v.to_screen, x, base + line.descent));
         painter.line_segment([a, b], Stroke::new(1.5, Color32::WHITE));
         painter.line_segment([a + vec2(1.0, 0.0), b + vec2(1.0, 0.0)], Stroke::new(0.5, Color32::BLACK));
+        // the input method's composition, underlined at the caret
+        if !ed.preedit.is_empty() {
+            let size = ((b - a).length() * 0.8).clamp(10.0, 72.0);
+            let g = painter.layout_no_wrap(ed.preedit.clone(), egui::FontId::proportional(size), Color32::WHITE);
+            let r = Rect::from_min_size(pos2(a.x + 2.0, a.y), g.size());
+            painter.rect_filled(r.expand(2.0), 2.0, Color32::from_black_alpha(170));
+            painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.5, Color32::WHITE));
+            painter.galley(r.min, g, Color32::WHITE);
+            app.auto.add("program.textEdit.preedit", r, &ed.preedit);
+        }
         let er = Rect::from_points(&v.quad()).union(Rect::from_two_pos(a, b));
         app.auto.add("program.textEdit", er, &tp.text);
         ui.ctx().output_mut(|o| {
@@ -506,7 +516,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         match app.session.execute(&cmd, p) {
             Ok(r) => {
                 if then_edit && let (Some(c), Some(l)) = (r["clip"].as_u64(), r["layer"].as_u64()) {
-                    app.ui.gfx_edit = Some(GfxEdit { clip: c, layer: l as usize, caret: 0, anchor: 0 });
+                    app.ui.gfx_edit = Some(GfxEdit { clip: c, layer: l as usize, caret: 0, anchor: 0, preedit: String::new() });
                     app.ui.focused = crate::dock::PanelKind::Program;
                 }
             }
@@ -546,7 +556,7 @@ fn start_edit_at(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, p: Pos2, 
     let Some(tp) = text_of(&v.spec) else { return };
     let l = text_layout(tp);
     let caret = v.to_local(p).map_or(tp.text.len(), |(x, y)| l.hit(x, y));
-    app.ui.gfx_edit = Some(GfxEdit { clip: v.clip.0, layer: v.layer, caret, anchor: caret });
+    app.ui.gfx_edit = Some(GfxEdit { clip: v.clip.0, layer: v.layer, caret, anchor: caret, preedit: String::new() });
     app.ui.focused = crate::dock::PanelKind::Program;
     let _ = ui;
     actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": [v.layer]})));
@@ -584,6 +594,24 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
     };
     for ev in events {
         match ev {
+            // input method (Japanese): the composition shows at the caret; the committed text is
+            // typed like any other (it was dropped, so converted Japanese never reached the layer)
+            egui::Event::Ime(egui::ImeEvent::Preedit { text: pre, .. }) => ed.preedit = pre,
+            egui::Event::Ime(egui::ImeEvent::Commit(s)) => {
+                ed.preedit.clear();
+                let s: String = s.chars().filter(|c| !c.is_control() || *c == '\n').collect();
+                if s.is_empty() {
+                    continue;
+                }
+                delete_sel(&mut text, &mut ed);
+                text.insert_str(ed.caret, &s);
+                ed.caret += s.len();
+                ed.anchor = ed.caret;
+                changed = true;
+            }
+            // keys while composing belong to the input method (Enter converts, Backspace edits the
+            // composition)
+            egui::Event::Key { .. } if !ed.preedit.is_empty() => {}
             egui::Event::Text(s) | egui::Event::Paste(s) => {
                 let s: String = s.chars().filter(|c| !c.is_control() || *c == '\n').collect();
                 if s.is_empty() {

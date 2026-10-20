@@ -152,3 +152,43 @@ fn type_tool_edit_style_and_move() {
     d.ok("ui.set", json!({"tool": "Selection"}));
     d.shot("shape-layer");
 }
+
+/// Japanese input on the Program monitor's text tool: the input method's composition shows at
+/// the caret without changing the layer, keys while composing belong to the input method, and the
+/// committed text is typed (it was dropped: converted Japanese never reached the layer).
+#[test]
+fn input_method_composition_types_japanese_into_a_text_layer() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.exec("playhead.set", json!({"seconds": 2}));
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.2, "y": pic[1] + pic[3] * 0.35}));
+    d.ok("ui.type", json!({"text": "Sky "}));
+    let ime = |d: &mut Driver, ev: egui::ImeEvent| {
+        d.harness.input_mut().events.push(egui::Event::Ime(ev));
+        d.frames(2);
+    };
+    ime(&mut d, egui::ImeEvent::Preedit { text: "ゆうひ".into(), active_range_chars: None });
+    let list = d.exec("graphics.list", json!({}));
+    assert_eq!(list["layers"][0]["text"], "Sky ", "composition is not typed yet: {list}");
+    let pre = d.ok("ui.elements", json!({"prefix": "program.textEdit.preedit"}));
+    assert_eq!(pre[0]["label"], "ゆうひ", "the composition shows at the caret");
+    // Enter while composing converts in the input method: no new line in the layer
+    d.harness.input_mut().events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    d.frames(2);
+    ime(&mut d, egui::ImeEvent::Commit("夕日".into()));
+    let list = d.exec("graphics.list", json!({}));
+    assert_eq!(list["layers"][0]["text"], "Sky 夕日", "{list}");
+    assert!(d.ok("ui.elements", json!({"prefix": "program.textEdit.preedit"})).as_array().unwrap().is_empty(), "composition ended");
+    // typing continues after the committed text
+    d.ok("ui.type", json!({"text": "!"}));
+    assert_eq!(d.exec("graphics.list", json!({}))["layers"][0]["text"], "Sky 夕日!");
+}
