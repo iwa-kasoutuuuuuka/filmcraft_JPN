@@ -33,7 +33,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("fx-body"));
     bui.set_clip_rect(body);
     let filter = q.to_ascii_lowercase();
-    let defs = filmcraft_project::effect_defs();
+    // built-in effects and the scanned audio plug-ins (Audio Effects ▸ VST3)
+    let defs = filmcraft_project::all_effect_defs();
     // folder tree: top-level categories in Premiere's order
     let tops = filmcraft_project::vtransition::EFFECT_TOP_FOLDERS;
     let mut apply: Option<String> = None;
@@ -54,8 +55,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 continue;
             }
-            let mut items: Vec<_> = defs
+            let mut items: Vec<&filmcraft_project::EffectDef> = defs
                 .iter()
+                .copied()
                 .filter(|d| d.category.first() == Some(&top))
                 .filter(|d| filter.is_empty() || d.name.to_ascii_lowercase().contains(&filter))
                 .collect();
@@ -120,6 +122,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     }
                 }
             }
+            if top == "Audio Effects" && filter.is_empty() && !filmcraft_audio_dsp::plugin::host_formats().is_empty() {
+                scan_plugins_row(app, ui);
+            }
         }
     });
     if let Some(g) = grid_area
@@ -139,6 +144,39 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let r = app.session.execute("effects.apply", json!({"effect": id}));
         if let Err(e) = r {
             app.ui.status = e.to_string();
+        }
+    }
+}
+
+/// The last row of Audio Effects: scan for VST3 plug-ins (`audioPlugins.scan`; the plug-ins then
+/// appear under Audio Effects ▸ VST3). Automation id `effects.scanPlugins`.
+fn scan_plugins_row(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    let t = app.tokens;
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(r, 0.0, t.hover);
+    }
+    let label = if filmcraft_audio_dsp::plugin::scanned() {
+        crate::i18n::t("Rescan VST3 Plug-ins…", "VST3 プラグインを再スキャン…")
+    } else {
+        crate::i18n::t("Scan for VST3 Plug-ins…", "VST3 プラグインをスキャン…")
+    };
+    ui.painter().text(pos2(r.min.x + 36.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), t.text_dim);
+    app.auto.add("effects.scanPlugins", r, "Scan for VST3 Plug-ins");
+    if resp.clicked() {
+        match app.session.execute("audioPlugins.scan", json!({})) {
+            Ok(v) => {
+                let n = v["plugins"].as_array().map_or(0, Vec::len);
+                let failed = v["failures"].as_array().map_or(0, Vec::len);
+                app.ui.status = crate::tf!(
+                    "VST3: {n} plug-ins found, {failed} could not be loaded",
+                    "VST3: {n} 個のプラグインが見つかりました（読み込めなかったもの {failed} 個）"
+                );
+                if n > 0 && !app.ui.expanded_fx.iter().any(|k| k == "Audio Effects/VST3") {
+                    app.ui.expanded_fx.push("Audio Effects/VST3".into());
+                }
+            }
+            Err(e) => app.ui.status = e.to_string(),
         }
     }
 }

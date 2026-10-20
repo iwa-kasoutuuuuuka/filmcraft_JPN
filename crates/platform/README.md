@@ -87,6 +87,31 @@ hardware decoding costs about 20–27× less CPU; at 1080p the all-core software
 faster of the two in pictures per second, at 2160p the hardware is. Not yet measured: playback in
 the app, HEVC, other GPU vendors.
 
+## Audio plug-in hosting (VST3)
+
+[ADR 0002](../../docs/adr/0002-audio-plugin-hosting.md). `register_audio_plugins()` registers the
+VST3 host (Windows) with `filmcraft_audio_dsp::plugin`; nothing is loaded until a scan.
+
+- `audio_plugins.rs` (safe, every OS): the VST3 folders (`%CommonProgramFiles%\VST3`,
+  `%LOCALAPPDATA%\Programs\Common\VST3`, `$FILMCRAFT_VST3_PATH`), bundle and single-file module
+  layouts, the class-id text form (`FUID::toString`, COM layout on Windows) and the state container
+  (component + controller state).
+- `vst3host.rs` (FFI, Windows): loads the module (`LoadLibraryExW`, `InitDll`, `GetPluginFactory`;
+  never unloaded), lists `Audio Module Class` effects, creates `IComponent` + `IAudioProcessor` and
+  the `IEditController` (connected through `IConnectionPoint` when separate), sets up stereo main
+  buses (the plug-in's own arrangement when it refuses), 32-bit float processing in blocks of up to
+  1024 samples with parameter changes through `IParameterChanges`, and saves / restores state through
+  an in-memory `IBStream`. Callbacks run under `catch_unwind`.
+
+Try it: put a VST3 effect in `C:\Program Files\Common Files\VST3` (or point
+`FILMCRAFT_VST3_PATH` at a folder), then Effects ▸ Audio Effects ▸ Scan for VST3 Plug-ins (or
+`filmcraft-cli exec audioPlugins.scan`). `tests/vst3_host.rs` runs against
+`$FILMCRAFT_VST3_TEST_PLUGIN` or the `vst3` crate's `gain` example, built from the cargo registry
+copy into `target/fixtures/platform/vst3/` (a fixture, never shipped).
+
+No plug-in editor window yet, no Audio Units, in-process only (a plug-in that crashes natively takes
+the process down); see the ADR for the next steps.
+
 ## Not yet
 
 Zero-copy upload of decoded pictures (`CVPixelBuffer`s, Direct3D textures) into wgpu textures;

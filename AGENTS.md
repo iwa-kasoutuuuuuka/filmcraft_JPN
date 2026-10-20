@@ -22,10 +22,13 @@ panic path, and fix a crash before building on top of it. The cross-app standard
 3. **No `unsafe`** (`unsafe_code = "forbid"` for the workspace). The single exception is
    `crates/platform`, which needs `unsafe` to call the operating system's media APIs (hardware
    video decoding through VideoToolbox; later encoding and other OSes) plus a few read-only OS
-   queries (display language, process / thread CPU time; ADR 0001 amendment 1) and does nothing else. It
-   uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]` only on its FFI modules, a
+   queries (display language, process / thread CPU time; ADR 0001 amendment 1) and audio plug-in
+   hosting (VST3 in `vst3host`; [ADR 0002](docs/adr/0002-audio-plugin-hosting.md)), and does nothing
+   else. It uses `unsafe_code = "deny"` with `#[allow(unsafe_code)]` only on its FFI modules, a
    `// SAFETY:` comment on every `unsafe` block, a safe `Result`-returning public API, and the
-   pure-Rust decoder as the tested fallback ([ADR 0001](docs/adr/0001-platform-ffi.md)).
+   pure-Rust decoder as the tested fallback ([ADR 0001](docs/adr/0001-platform-ffi.md)). Plug-in
+   callbacks run under `catch_unwind` so no panic crosses the FFI boundary; a plug-in that crashes
+   natively can still take the process down (in-process hosting; out-of-process is future work).
 4. **Every input-derived number is hostile.** Media files, project and interchange files, presets, fonts,
    CLI / MCP / control-channel parameters and UI state are untrusted. Index and slice with `get()` (or
    validate bounds once, up front, for a hot loop); slice strings only at char boundaries; use

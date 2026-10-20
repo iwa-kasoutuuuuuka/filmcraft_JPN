@@ -1,12 +1,13 @@
 [package]
 name = "filmcraft-platform"
-description = "OS media integration: hardware video decoding (VideoToolbox, Media Foundation) and encoding (Media Foundation) through the operating system's codecs, with transparent fallback to the pure-Rust codecs"
+description = "OS media integration: hardware video decoding (VideoToolbox, Media Foundation) and encoding (Media Foundation) through the operating system's codecs, with transparent fallback to the pure-Rust codecs; VST3 audio plug-in hosting"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-# The one crate allowed to contain `unsafe` (OS media FFI; AGENTS.md §0.3, docs/adr/0001-platform-ffi.md).
+# The one crate allowed to contain `unsafe` (OS media FFI and audio plug-in hosting; AGENTS.md §0.3,
+# docs/adr/0001-platform-ffi.md, docs/adr/0002-audio-plugin-hosting.md).
 # The workspace lints, except that `unsafe_code` is `deny` instead of `forbid`: only the FFI modules
 # opt in with `#[allow(unsafe_code)]`, and every `unsafe` block carries a `// SAFETY:` comment.
 [lints.rust]
@@ -21,6 +22,7 @@ type_complexity = "allow"
 undocumented_unsafe_blocks = "deny"
 
 [dependencies]
+filmcraft-audio-dsp = { workspace = true }
 filmcraft-codecs = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 log = { workspace = true }
@@ -30,6 +32,8 @@ filmcraft-color = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-frame = { workspace = true }
 filmcraft-time = { workspace = true }
+# VST 3 API bindings generated from the MIT-licensed VST 3 SDK headers (pre-generated; no C++ build).
+vst3 = "0.3"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Globalization",
@@ -38,6 +42,7 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Media_MediaFoundation",
+    "Win32_System_LibraryLoader",
     "Win32_System_Com",
     "Win32_System_Ole",
     "Win32_System_Threading",
@@ -54,6 +59,7 @@ objc2-core-video = "0.3.2"
 objc2-video-toolbox = "0.3.2"
 
 [dev-dependencies]
+serde_json = { workspace = true }
 filmcraft-testkit = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-frame = { workspace = true }

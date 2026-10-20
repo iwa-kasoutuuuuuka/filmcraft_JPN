@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod audio_plugins;
 pub mod autosave;
 pub mod captions;
 pub mod censor;
@@ -956,6 +957,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 mod aaf_omf_tests;
 #[cfg(test)]
 mod audio_effects_tests;
+#[cfg(test)]
+mod audio_plugins_tests;
 #[cfg(test)]
 mod autosave_tests;
 #[cfg(test)]

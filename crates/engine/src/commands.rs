@@ -184,7 +184,7 @@ fn resolve_effect_name(s: &Session, p: &Value, name: &str) -> Option<&'static fi
         return Some(d);
     }
     let n = name.to_ascii_lowercase();
-    let cands: Vec<_> = filmcraft_project::effect_defs().iter().filter(|e| e.name.to_ascii_lowercase() == n).collect();
+    let cands: Vec<_> = filmcraft_project::all_effect_defs().into_iter().filter(|e| e.name.to_ascii_lowercase() == n).collect();
     if cands.len() <= 1 {
         return cands.first().copied().or_else(|| filmcraft_project::find_effect(&n));
     }
@@ -2062,6 +2062,10 @@ fn build() -> Vec<CommandSpec> {
             let is_audio = def.kind == filmcraft_project::EffectKind::Audio;
             let (fw, fh) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
             let label = format!("Apply {}", def.name);
+            // audio plug-ins: create the plug-in once now (an error if it cannot load) for its state
+            let mut template = def.instance();
+            let sr = s.active_sequence().map_or(48000, |q| q.settings.sample_rate);
+            crate::audio_plugins::prepare_instance(&mut template, sr, "effects.apply")?;
             s.edit_sequence(&label, |q, _, _| {
                 let mut n = 0;
                 for t in q.all_tracks_mut() {
@@ -2069,7 +2073,7 @@ fn build() -> Vec<CommandSpec> {
                         continue;
                     }
                     for i in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
-                        let mut inst = def.instance();
+                        let mut inst = template.clone();
                         resolve_auto_points(&mut inst, (fw, fh), (fw, fh));
                         // standard effects go before the intrinsic ones (render order)
                         let pos = i.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(i.effects.len());
@@ -2334,6 +2338,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::mixer::commands());
     v.extend(crate::multicam::commands());
     v.extend(crate::essential_sound::commands());
+    v.extend(crate::audio_plugins::commands());
     v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());
     v.extend(crate::graphic_templates::commands());
@@ -2647,8 +2652,8 @@ fn list_effects(p: &Value) -> Value {
     let kind = str_p(p, "kind");
     let folder = str_p(p, "folder");
     let detail = p.get("detail").and_then(Value::as_bool).unwrap_or(false);
-    let out = filmcraft_project::effect_defs()
-        .iter()
+    let out = filmcraft_project::all_effect_defs()
+        .into_iter()
         .filter(|d| kind.is_none_or(|k| format!("{:?}", d.kind).eq_ignore_ascii_case(k)))
         .filter(|d| folder.is_none_or(|f| d.category.join("/").starts_with(f)))
         .map(|d| {
@@ -2948,6 +2953,7 @@ fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: 
     s.offline = Default::default();
     let first = proj.sequences().next().map(|i| i.id);
     s.project = std::sync::Arc::new(proj);
+    crate::audio_plugins::on_project_installed(&s.project);
     s.history = Default::default();
     s.history.limit = 200;
     s.state = crate::Session::default().state;

@@ -56,6 +56,13 @@ record|soloSafe|output|input|fx.<n>|send.<n>|meter|name>` (popup entries below t
 `clipMixer.A1.<fader|pan|mute|solo|keyframe|value>`, `timeline.track.A1.keyframes[.<lane>|.clip]`,
 `timeline.track.A1.lane[.kf.<n>]`, `audioGain.<set|adjust|normalizeMax|normalizeAll|ok|cancel|peak>`.
 
+Audio plug-ins (VST3, Windows; [ADR 0002](adr/0002-audio-plugin-hosting.md)): `audioPlugins.scan`
+(search the VST3 folders, load and describe each plug-in; returns `plugins` with `effect` ids
+`vst3.<uid>` and their `params`, plus `failures` and `folders`), `audioPlugins.list` (the last scan).
+A scanned plug-in is an audio effect like any other: `effects.apply {effect: "vst3.<uid>" | name}`,
+`mixer.addInsert {effect}`, `effects.setParam {param: "p<id>", value: 0…1}` (normalised, keyframable),
+`effects.list {folder: "Audio Effects/VST3"}`. UI id: `effects.scanPlugins`.
+
 Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialogue|music|sfx|ambience}`,
 `essentialSound.clearType`, `essentialSound.set {key, value}` or `{values: {key: value}}` (keys such as
 `repair.noise.on`, `repair.noise.amount` (0–10), `repair.humHz`, `clarity.eqPreset`, `clarity.enhanceTone`,

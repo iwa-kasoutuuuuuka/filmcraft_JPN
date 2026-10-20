@@ -17,6 +17,9 @@ use crate::mask::Mask;
 pub use audio::{GEQ10_LABELS, GEQ20_LABELS, GEQ30_LABELS, PREMIERE_AUDIO_EFFECTS};
 
 mod vfx;
+
+pub mod plugin;
+pub use plugin::{PluginEffectSpec, PluginParamSpec, PluginRef, plugin_effect_defs, register_plugin_effect};
 pub use vfx::{EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +100,7 @@ impl EffectDef {
             post_fader: false,
             essential: false,
             layer: None,
+            plugin: plugin::plugin_ref_for(self.id),
         }
     }
 }
@@ -118,6 +122,9 @@ pub struct EffectInstance {
     /// ([`crate::graphic_design::LayerExtra`]). Schema v12.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<Box<crate::graphic_design::LayerExtra>>,
+    /// Audio plug-in effects only: which plug-in, and its saved state ([`PluginRef`]). Schema v13.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<Box<PluginRef>>,
 }
 
 impl EffectInstance {
@@ -856,8 +863,17 @@ pub fn effect_defs() -> &'static [EffectDef] {
     DEFS.get_or_init(build_effects)
 }
 
+/// The built-in effect, or the registered audio plug-in effect ([`register_plugin_effect`]), `id`.
 pub fn find_effect(id: &str) -> Option<&'static EffectDef> {
-    effect_defs().iter().find(|e| e.id == id)
+    effect_defs().iter().find(|e| e.id == id).or_else(|| plugin::find_plugin_effect(id))
+}
+
+/// The built-in effects followed by the registered audio plug-in effects (the Effects panel and
+/// `effects.list`).
+pub fn all_effect_defs() -> Vec<&'static EffectDef> {
+    let mut v: Vec<&'static EffectDef> = effect_defs().iter().collect();
+    v.extend(plugin_effect_defs());
+    v
 }
 
 /// Case-insensitive lookup by id or display name.
