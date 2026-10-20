@@ -525,6 +525,27 @@ fn edit_at_source(s: &mut Session, insert: bool) -> Result<Value> {
     Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
 }
 
+/// Add Marker with the Source monitor focused: a clip marker on the media it shows (a subclip's
+/// parent), at the Source playhead unless a time is given (media time).
+fn add_source_marker(s: &mut Session, p: &Value) -> Result<Value> {
+    let item = s.state.source_item.ok_or_else(|| EngineError::Other("open a clip in the Source monitor".into()))?;
+    let v = crate::clip_ops::source_view(s, item).ok_or_else(|| EngineError::Other("the Source monitor clip has no media".into()))?;
+    let t = time_p(s, p, "").unwrap_or(s.state.source_playhead).clamp(v.start, v.end);
+    let name = str_p(p, "name").unwrap_or("").to_string();
+    let comment = str_p(p, "comment").unwrap_or("").to_string();
+    let color = str_p(p, "color").and_then(Label::from_name).unwrap_or(Label::Green);
+    let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| v.rate.tick_of(f.clamp(0, 1 << 40))).unwrap_or_default();
+    let media = v.media;
+    let id = s.edit("Add Marker", |pr, _| {
+        let id = MarkerId(pr.alloc_id());
+        let m = pr.item_mut(media).and_then(|i| i.as_media_mut()).ok_or_else(|| EngineError::Other("the Source monitor clip has no media".into()))?;
+        m.markers.push(Marker { id, start: t, duration: dur, name, comment, kind: MarkerKind::Comment, color });
+        m.markers.sort_by_key(|k| k.start);
+        Ok(id)
+    })?;
+    Ok(json!({"marker": id.0, "item": media.0}))
+}
+
 fn marker_list_mut(s: &mut Session) -> Result<(ItemId, Tick)> {
     let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     Ok((seq, s.playhead()))
@@ -1494,9 +1515,12 @@ fn build() -> Vec<CommandSpec> {
             "Add Marker",
             ["Markers"],
             Some("M"),
-            r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?}"#,
+            r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?,"target":"program|source"?}"#,
             has_seq,
             |s, p| {
+                if str_p(p, "target") == Some("source") {
+                    return add_source_marker(s, p);
+                }
                 let (_seq, ph) = marker_list_mut(s)?;
                 let t = time_p(s, p, "").unwrap_or(ph);
                 let name = str_p(p, "name").unwrap_or("").to_string();

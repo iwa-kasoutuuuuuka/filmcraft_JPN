@@ -6,6 +6,12 @@ it with `ui.inspect` (`ui.program`, `ui.source`) and set it with `ui.set {"progr
 the `view.*` UI commands. Commands act on `params.monitor` (`"program"` / `"source"`), else on the
 focused monitor (Program by default). Code: `crates/ui-egui/src/panels/monitor_view.rs`.
 
+**Source monitor transport.** With the Source monitor focused, the playhead keys (Left / Right,
+Shift+Left / Right, Home / End, Shift+I / Shift+O), Add Marker (M: a clip marker on the Source
+clip, `markers.add {"target": "source"}`) and Space / J / K / L act on the Source clip; Space and
+the transport's Play button play it on its own playhead, with its audio at normal speed
+(`crates/ui-egui/src/source_play.rs`). Playing the sequence stops it.
+
 | Command | Menu | Effect |
 |---|---|---|
 | `view.playbackRes.<full\|half\|quarter\|eighth\|sixteenth>` | View ▸ Playback Resolution | render scale while playing |

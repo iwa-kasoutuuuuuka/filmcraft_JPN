@@ -456,7 +456,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
             (Icon::MarkOut, "src.markOut", crate::i18n::t("Mark Out (O)", "アウトをマーク (O)")),
             (Icon::GoToIn, "src.goIn", crate::i18n::t("Go to In (Shift+I)", "インへ移動 (Shift+I)")),
             (Icon::StepBack, "src.stepBack", crate::i18n::t("Step Back 1 Frame (Left)", "1フレーム戻る (Left)")),
-            (Icon::Play, "src.play", crate::i18n::t("Play-Stop Toggle (Space)", "再生/停止 (Space)")),
+            (if app.source_playing() { Icon::Pause } else { Icon::Play }, "src.play", crate::i18n::t("Play-Stop Toggle (Space)", "再生/停止 (Space)")),
             (Icon::StepFwd, "src.stepFwd", crate::i18n::t("Step Forward 1 Frame (Right)", "1フレーム進む (Right)")),
             (Icon::GoToOut, "src.goOut", crate::i18n::t("Go to Out (Shift+O)", "アウトへ移動 (Shift+O)")),
             (Icon::Insert, "source.insert", crate::i18n::t("Insert (,)", "インサート (,)")),
@@ -511,14 +511,12 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
                     source_nav(app, cmd);
                     Ok(serde_json::Value::Null)
                 }
+                // the Source clip's marker (it was added to the sequence)
+                "markers.add" if src => app.session.execute("markers.add", json!({"target": "source"})).map_err(|e| e.to_string()),
                 // (these did nothing, silently)
                 "src.play" => {
-                    app.ui.status = crate::i18n::t(
-                        "The Source monitor does not play yet: edit the clip into a sequence to play it",
-                        "ソースモニターの再生はまだ使えません。シーケンスに配置して再生してください",
-                    )
-                    .into();
-                    Ok(serde_json::Value::Null)
+                    app.toggle_source_play();
+                    Ok(json!({"playing": app.source_playing()}))
                 }
                 "exportFrame" if src => {
                     app.ui.status =
@@ -539,6 +537,43 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
         x += bw;
     }
     // (the Button Editor "+" is not shown until the editor exists: it was a button that did nothing)
+}
+
+/// A shortcut while the Source monitor has focus, applied to the Source clip; None: not a
+/// Source-monitor command (it runs as usual).
+pub(crate) fn source_key(app: &mut FilmcraftApp, id: &str) -> Option<Result<(), String>> {
+    let item = app.session.state.source_item?;
+    let v = filmcraft_engine::clip_ops::source_view(&app.session, item)?;
+    let (rate, cur) = (v.rate, app.session.state.source_playhead);
+    let last = (v.end - rate.frame_duration()).max(v.start);
+    let t = match id {
+        "playhead.stepBack" => cur - rate.frame_duration(),
+        "playhead.stepForward" => cur + rate.frame_duration(),
+        "playhead.stepBack5" => cur - rate.tick_of(5),
+        "playhead.stepForward5" => cur + rate.tick_of(5),
+        "playhead.start" => v.start,
+        "playhead.end" => last,
+        "markers.goToIn" => v.mark_in.unwrap_or(v.start),
+        "markers.goToOut" => v.mark_out.unwrap_or(last),
+        "markers.add" => {
+            return Some(app.session.execute("markers.add", json!({"target": "source"})).map(|_| ()).map_err(|e| e.to_string()));
+        }
+        // Space / J / K / L play the Source clip
+        "playback.toggle" => {
+            app.toggle_source_play();
+            return Some(Ok(()));
+        }
+        "playback.forward" | "playback.reverse" => {
+            app.shuttle_source(id == "playback.forward");
+            return Some(Ok(()));
+        }
+        "playback.stop" => {
+            app.stop_source();
+            return Some(Ok(()));
+        }
+        _ => return None,
+    };
+    Some(app.session.execute("source.setPlayhead", json!({"time": t.clamp(v.start, last).0})).map(|_| ()).map_err(|e| e.to_string()))
 }
 
 fn source_nav(app: &mut FilmcraftApp, cmd: &str) {

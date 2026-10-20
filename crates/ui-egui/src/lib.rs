@@ -20,6 +20,7 @@ pub mod links;
 pub mod menus;
 pub mod panels;
 pub mod perf;
+mod source_play;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -161,6 +162,8 @@ pub struct FilmcraftApp {
     /// The user answered the unsaved-changes prompt (or there was nothing to save): the next
     /// close request closes the window.
     pub(crate) quit_confirmed: bool,
+    /// Source monitor playback ([`source_play`]).
+    pub(crate) source_play: Option<source_play::SourcePlay>,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
@@ -358,6 +361,7 @@ impl FilmcraftApp {
             synthetic: Vec::new(),
             control_input: None,
             quit_confirmed: false,
+            source_play: None,
             loudness: None,
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
@@ -502,6 +506,7 @@ impl FilmcraftApp {
         if self.session.active_sequence().is_none() {
             return;
         }
+        self.stop_source();
         // restart from the end → from the start (Settings ▸ Timeline ▸ "At playback end, return to
         // beginning when restarting playback")
         let dur = self.session.active_sequence().map(|q| q.duration()).unwrap_or_default();
@@ -895,6 +900,17 @@ impl FilmcraftApp {
             }
         });
         for id in fire {
+            // The Source monitor's own playhead and clip markers when it has focus (these moved
+            // the sequence's playhead and added sequence markers)
+            if self.ui.focused == PanelKind::Source
+                && self.session.state.source_item.is_some()
+                && let Some(r) = crate::panels::monitor::source_key(self, &id)
+            {
+                if let Err(e) = r {
+                    self.ui.status = e;
+                }
+                continue;
+            }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if self.ui.focused == PanelKind::Source
                 && (matches!(id.as_str(), "markers.markIn" | "markers.markOut") || id.starts_with("markers.markSplit") || id.starts_with("markers.goToSplit"))
@@ -1058,6 +1074,7 @@ impl FilmcraftApp {
         }
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
+        self.advance_source_playback(&ctx);
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
