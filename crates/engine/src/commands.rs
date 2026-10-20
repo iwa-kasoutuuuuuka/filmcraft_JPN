@@ -2911,7 +2911,11 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     {
         name_project(std::sync::Arc::make_mut(&mut s.project), name);
     }
-    let bytes = filmcraft_format::encode(&s.project, false);
+    // the Timeline tabs travel with the file (restored on open)
+    let mut snapshot = (*s.project).clone();
+    snapshot.open_sequences =
+        Some(filmcraft_project::OpenSequences { tabs: s.state.open_sequences.clone(), active: s.state.active_sequence }).filter(|o| o.active.is_some());
+    let bytes = filmcraft_format::encode(&snapshot, false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -2946,13 +2950,24 @@ fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: 
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
     s.offline = Default::default();
-    let first = proj.sequences().next().map(|i| i.id);
+    // the Timeline tabs open when it was saved, else its first sequence (it always opened the
+    // first one, e.g. a multi-camera source sequence instead of the edit)
+    let saved = proj.open_sequences.take().unwrap_or_default();
+    let is_seq = |id: &ItemId| proj.sequence(*id).is_some();
+    let mut tabs: Vec<ItemId> = saved.tabs.iter().copied().filter(is_seq).collect();
+    tabs.dedup();
+    let active = saved.active.filter(is_seq).or_else(|| tabs.first().copied()).or_else(|| proj.sequences().next().map(|i| i.id));
+    if let Some(a) = active
+        && !tabs.contains(&a)
+    {
+        tabs.push(a);
+    }
     s.project = std::sync::Arc::new(proj);
     s.history = Default::default();
     s.history.limit = 200;
     s.state = crate::Session::default().state;
-    s.state.active_sequence = first;
-    s.state.open_sequences = first.into_iter().collect();
+    s.state.active_sequence = active;
+    s.state.open_sequences = tabs;
     if let Some(p) = &path
         && !cfg!(target_arch = "wasm32")
     {

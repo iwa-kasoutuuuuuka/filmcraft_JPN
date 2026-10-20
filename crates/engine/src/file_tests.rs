@@ -93,3 +93,31 @@ fn project_is_named_after_its_file() {
     assert_eq!(s.project.name, "Apollo 11 - Tranquility");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The Timeline tabs open when a project is saved, and the active one, come back on open (it
+/// always opened its first sequence, e.g. a multi-camera source sequence instead of the edit).
+#[test]
+fn open_restores_the_saved_timeline_tabs() {
+    let dir = std::env::temp_dir().join(format!("fc-open-tabs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tabs.fcproj").to_string_lossy().to_string();
+    let mut s = crate::Session::default();
+    let a = s.execute("file.newSequence", serde_json::json!({"name": "A"})).unwrap()["sequence"].as_u64().unwrap();
+    let b = s.execute("file.newSequence", serde_json::json!({"name": "B"})).unwrap()["sequence"].as_u64().unwrap();
+    assert_eq!(s.state.active_sequence.map(|i| i.0), Some(b));
+    s.execute("file.saveAs", serde_json::json!({"path": path})).unwrap();
+    let mut t = crate::Session::default();
+    t.execute("file.open", serde_json::json!({"path": path})).unwrap();
+    assert_eq!(t.state.active_sequence.map(|i| i.0), Some(b), "the active sequence");
+    assert_eq!(t.state.open_sequences.iter().map(|i| i.0).collect::<Vec<_>>(), vec![a, b], "the tabs, in order");
+    assert!(!t.is_dirty(), "opening is not an edit");
+    // a tab whose sequence is gone (a hand-edited file) is dropped
+    let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    doc["project"]["open_sequences"] = serde_json::json!({"tabs": [999_999, a], "active": 999_999});
+    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let mut u = crate::Session::default();
+    u.execute("file.open", serde_json::json!({"path": path})).unwrap();
+    assert_eq!(u.state.active_sequence.map(|i| i.0), Some(a));
+    assert_eq!(u.state.open_sequences.iter().map(|i| i.0).collect::<Vec<_>>(), vec![a]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

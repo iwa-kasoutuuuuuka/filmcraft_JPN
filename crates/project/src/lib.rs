@@ -1132,6 +1132,17 @@ pub struct Project {
     /// project item. Schema v12.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_graphics: BTreeMap<ItemId, SourceGraphic>,
+    /// The sequences open in the Timeline when the project was last saved (tab order) and the
+    /// active one, restored on open. Set by saving, not by edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_sequences: Option<OpenSequences>,
+}
+
+/// Timeline tabs saved with a project ([`Project::open_sequences`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpenSequences {
+    pub tabs: Vec<ItemId>,
+    pub active: Option<ItemId>,
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
@@ -1166,6 +1177,7 @@ impl Project {
             transcripts: BTreeMap::new(),
             search_bins: Vec::new(),
             source_graphics: BTreeMap::new(),
+            open_sequences: None,
         }
     }
 

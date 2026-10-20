@@ -190,3 +190,107 @@ fn interview_cut_broll_colour_captions_and_delivery() {
 
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A second job, end to end: two camera angles of one event (a shared clap in their sound) are
+/// synchronised into a multi-camera source sequence by audio, cut between angles, mixed (one
+/// track down, one muted), captioned and burned in, sent through the export queue, and the
+/// project survives save and reopen.
+#[test]
+fn multicam_mix_burned_captions_queue_and_reopen() {
+    let (ff, fp) = filmcraft_testkit::require_oracles!();
+    let d = filmcraft_testkit::fixtures_dir("engine").join(format!("workflow マルチカム {}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+
+    // ---- two angles: different pictures, the same clap 1 s / 1.5 s into each recording
+    let mut angles = Vec::new();
+    for (i, (src, delay)) in [("testsrc2=size=640x360:rate=25", 1000), ("mandelbrot=size=640x360:rate=25", 1500)].iter().enumerate() {
+        let p = d.join(format!("カメラ{}.mp4", i + 1));
+        let clap = format!("sine=frequency=1000:sample_rate=48000:duration=0.1,adelay={delay}|{delay},apad=whole_dur=6");
+        ffmpeg(
+            &ff,
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                src,
+                "-f",
+                "lavfi",
+                "-i",
+                &clap,
+                "-t",
+                "6",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+                p.to_str().unwrap(),
+            ],
+        );
+        angles.push(p);
+    }
+    let mut s = Session::default();
+    let r = run(&mut s, "file.import", json!({"paths": angles.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()}));
+    let items: Vec<u64> = r["items"].as_array().unwrap().iter().filter_map(Value::as_u64).collect();
+    assert_eq!(items.len(), 2, "{r}");
+
+    // ---- multi-camera source sequence, synchronised by audio
+    let mc = run(&mut s, "clip.createMulticam", json!({"items": items, "method": "audio", "name": "イベント マルチカム"}));
+    let mc_item = mc["item"].as_u64().or_else(|| mc["sequence"].as_u64()).unwrap_or_else(|| panic!("multicam item: {mc}"));
+    run(&mut s, "file.newSequence", json!({"name": "本編", "width": 640, "height": 360, "fps": 25}));
+    run(&mut s, "timeline.place", json!({"item": mc_item, "track": "V1", "seconds": 0.0}));
+    let v1 = track(&mut s, 0);
+    assert_eq!(v1.len(), 1, "{v1:?}");
+    // cut to camera 2 at 2 s
+    run(&mut s, "playhead.set", json!({"seconds": 2.0}));
+    run(&mut s, "timeline.select", json!({"clips": [v1[0].0]}));
+    // Ctrl+2: an edit at the playhead and camera 2 from there (a plain 2 only switches the clip)
+    run(&mut s, "multicam.cutToCamera", json!({"camera": 2, "time": (2.0 * TPS) as i64}));
+    let v1 = track(&mut s, 0);
+    assert_eq!(v1.len(), 2, "the cut splits the multi-camera clip: {v1:?}");
+    assert!(close(v1[1].1, 2.0), "{v1:?}");
+
+    // ---- mix: A1 down 6 dB
+    run(&mut s, "mixer.setStrip", json!({"strip": "A1", "volumeDb": -6.0}));
+    let mixer = run(&mut s, "mixer.inspect", json!({}));
+    assert!(mixer.to_string().contains("-6"), "{mixer}");
+
+    // ---- captions, burned in
+    run(&mut s, "captions.newTrack", json!({"format": "Subtitle", "language": "ja"}));
+    run(&mut s, "captions.add", json!({"text": "乾杯！", "seconds": 0.5, "durationSeconds": 3.0}));
+    let list = run(&mut s, "captions.list", json!({}));
+    assert!(list.to_string().contains("乾杯"), "{list}");
+
+    // ---- the export queue: plain and burned-in versions
+    let plain = d.join("本編.mp4");
+    let burned = d.join("本編 字幕入り.mp4");
+    run(&mut s, "export.queue.add", json!({"format": "h264", "path": plain.to_string_lossy()}));
+    run(&mut s, "export.queue.add", json!({"format": "h264", "path": burned.to_string_lossy(), "burnCaptions": true}));
+    let q = run(&mut s, "export.queue.list", json!({}));
+    assert_eq!(q["items"].as_array().map(Vec::len).or_else(|| q.as_array().map(Vec::len)), Some(2), "{q}");
+    run(&mut s, "export.queue.start", json!({"wait": true}));
+    for p in [&plain, &burned] {
+        let o = Command::new(&fp).args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0"]).arg(p).output().unwrap();
+        let dur: f64 = String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0.0);
+        assert!(dur > 5.0, "{} lasts {dur} s", p.display());
+    }
+    // the burned-in version differs from the plain one where the caption is (1 s in)
+    let grab = |p: &Path| ffmpeg(&ff, &["-ss", "1.0", "-i", p.to_str().unwrap(), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"]);
+    let (a, b) = (grab(&plain), grab(&burned));
+    let diff = a.iter().zip(&b).filter(|(x, y)| x.abs_diff(**y) > 40).count();
+    assert!(diff > 500, "the caption is burned in ({diff} pixels differ)");
+
+    // ---- save and reopen
+    let proj = d.join("イベント.fcproj");
+    run(&mut s, "file.saveAs", json!({"path": proj.to_string_lossy()}));
+    let before = run(&mut s, "sequence.inspect", json!({}));
+    let mut t = Session::default();
+    run(&mut t, "file.open", json!({"path": proj.to_string_lossy()}));
+    let after = run(&mut t, "sequence.inspect", json!({}));
+    assert_eq!(before["video"], after["video"], "the cut survives save / open");
+    assert_eq!(before["captions"].to_string(), after["captions"].to_string());
+    let _ = std::fs::remove_dir_all(&d);
+}
