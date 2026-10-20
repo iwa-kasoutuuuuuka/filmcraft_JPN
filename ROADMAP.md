@@ -2,7 +2,7 @@
 
 Progress toward parity with Adobe Premiere Pro, with estimates. Updated as milestones land.
 
-**Last updated:** 2026-10-05 · **Feature checklist:** ~87% · **Ready for real work:** ~50–60% · **Code:** 35 crates, 1605+ tests
+**Last updated:** 2026-10-20 · **Feature checklist:** ~87% · **Ready for real work:** ~50–60% · **Code:** 42 crates + 3 apps, 1750+ tests
 
 Two numbers, because they answer different questions. The **feature checklist** counts whether
 Premiere's menu items, effects, panels and formats exist in FilmCraft. **Ready for real work** is
@@ -33,14 +33,14 @@ before choosing work.
 | Dimension | Checklist says | Honest estimate | Evidence |
 |---|---|---|---|
 | **Feature breadth** (menus, commands, panels) | ~86–95% | **~85%** | Menu diff against Premiere 26.5; effect, transition and audio-effect catalogues complete by test. The long tail is mostly there. |
-| **Correctness in depth** | not tracked | **~60–70%** | A first-time contributor found four real bugs in core paths within hours (#5–#8: AIFF import failed, Slide left linked audio behind, transitions didn't follow ripple trims, export ignored start/end times). User reports: Color Matte always grey with no picker (#29, fixed: New Color Matte dialog); ALSA audio error on Linux (#23, fixed). Settings are "most wired", not all. |
+| **Correctness in depth** | not tracked | **~60–70%** | A first-time contributor found four real bugs in core paths within hours (#5–#8: AIFF import failed, Slide left linked audio behind, transitions didn't follow ripple trims, export ignored start/end times). User reports: Color Matte always grey with no picker (#29, fixed: New Color Matte dialog); ALSA audio error on Linux (#23, fixed). Settings are "most wired", not all. A Windows dogfooding pass (2026-10-19/20) found and fixed a further batch of real-use bugs: about ten "…" commands that ran with defaults instead of opening their dialog (Speed/Duration silently reset the speed; New Project dropped unsaved work), dead buttons, trims that became moves, a Source monitor that could not play, multi-step undo for compound commands, IME input ignored by the text tool. `command_integrity.rs` now checks every command for exact one-step undo / redo and hostile parameters. |
 | **Codecs and media** | ~90% | **~75%** | Our decoders are bit-exact on conformance streams. Real camera and phone media (variable frame rate, damaged files, unusual containers) is far less tested. No camera RAW (RED, BRAW, ARRIRAW), no E-AC-3. |
 | **Export** | ~92% | **~70%** | Delivery: H.264, and HEVC where the system has a hardware HEVC encoder (Windows): Main for SDR, Main 10 HLG / PQ for HDR sequences; ProRes, DNxHR and image sequences cover mastering. No software HEVC encoder, no AV1 export. AAF and OMF have never been validated in Avid Media Composer or Pro Tools. Export renders on the GPU compositor where the app has one (SDR at the sequence geometry, no overlays; CPU otherwise); H.264 / HEVC encode on the GPU's media engine on Windows (Media Foundation, Export ▸ Performance ▸ Hardware Encoding), H.264 on the CPU elsewhere. |
 | **Performance and hardware** | ~62% | **~35–40%** | Premiere runs effects, decoding and encoding on the GPU and the hardware media engines. Here, hardware decode works on macOS (VideoToolbox, #33) and Windows (Media Foundation on Direct3D 11: H.264 bit-exact with our decoder on one NVIDIA machine, 20–27× less CPU per frame; HEVC untested), with decoded pictures still copied through system memory. The GPU does compositing, blend modes (#32), masks and 38 effect ids: the 31 common effects (GPU2: colour adjustments, crop/flip/transform, blurs, sharpen), the whole of Lumetri (wheels, curves, LUTs, HSL Secondary, Sharpen), Ultra / Color / Luma Key, Video Limiter, Mosaic and Vignette. HDR and wide-gamut sequences composite on the GPU too (BT.709 / sRGB media decoded there; HDR, log and other-gamut media converted on the CPU per layer). The remaining effects (glows, distortions, generators…), export and encoding are CPU. Linux has no hardware path. 8K and AV1 aren't real-time. The effect list shows Premiere's "GPU accelerated" badge, but only those 38 effect ids run on the GPU here. |
-| **Stability** | not tracked | **improving, unproven** | The never-crash pass (no panics in product code, last-resort guards) landed on 2026-10-04. There's no field record from real users' projects yet. |
+| **Stability** | not tracked | **improving, unproven** | The never-crash pass (no panics in product code, last-resort guards) landed on 2026-10-04. A sweep of every command with hostile parameters (10,155 runs, 2026-10-20) found no panic; an export deadlock under concurrent exports was fixed. There's no field record from real users' projects yet. |
 | **Plugins and pro ecosystem** | not tracked | **~0–10%** | No audio plugin hosting (VST3 / Audio Units) and no third-party video effects (OpenFX). For many professional editors this alone rules FilmCraft out. Team Projects and Productions are out of scope by design. |
 | **AI features** | partial | **~25–35%** | Speech to text (local Whisper, pure Rust) is on in the app and CLI builds; the model (≈290 MB for `whisper-base`) downloads on first use. Enhance Speech is a DSP chain, not a model. Auto Reframe is approximate. No Generative Extend, and no media-intelligence search or auto colour. |
-| **Platforms** | not tracked | **macOS solid; Windows and Linux thin** | Development and testing happen on macOS. Windows and Linux are built for releases but barely exercised at runtime. The web build is a compile target; the browser app shell isn't finished. |
+| **Platforms** | not tracked | **macOS solid; Windows improving; Linux thin** | Development and testing happen mostly on macOS. Windows was exercised at runtime in October 2026 (the full CI on Windows, hardware decode and encode through Media Foundation, Japanese paths and IME, live-app dogfooding); Linux is built for releases but barely exercised at runtime. The web build is a compile target; the browser app shell isn't finished. |
 | **UI fidelity** | ~85% | **~80%** | Agents compare with Premiere reference screenshots; this hasn't been checked independently. |
 
 ### Where we are lacking
@@ -70,7 +70,8 @@ In priority order. Agents should prefer this work over adding more checklist ite
    smoke test on both, not just release builds. Fix the Linux audio path (#23).
 6. **Delivery codecs.** HEVC: hardware on Windows landed (Main SDR, Main 10 HLG / PQ HDR from P010); next macOS (VideoToolbox) and a software HEVC encoder. AV1: hardware encoders, and `rav1e` (BSD-2) in software.
 7. **Plugin hosting** (VST3 / Audio Units, then OpenFX). Needs FFI, so it falls under the isolated
-   `unsafe` crate rule (AGENTS.md §0.3). **Owner decision needed** before starting.
+   `unsafe` crate rule (AGENTS.md §0.3). **Approved by the owner on 2026-10-20**; VST3 hosting on
+   Windows is in progress (an ADR records the containment rules).
 8. **AI features** with openly licensed local models: transcription (on by default since the app and CLI build it), text-based
    editing, speech enhancement, reframing.
 9. **The web app shell**: file access, WebCodecs, audio.
