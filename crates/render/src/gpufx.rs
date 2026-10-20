@@ -211,6 +211,8 @@ pub enum FxOp {
     HslSecondary(Box<crate::effects::HslSecondary>),
     /// Several operations of one effect, in order (Lumetri, then its Sharpen).
     Chain(Vec<FxOp>),
+    /// Noise, Drop Shadow, the warps, stylize and Generate effects ([`crate::gpufx_ext`]).
+    Ext(crate::gpufx_ext::ExtOp),
 }
 
 /// Samples of each curve table in [`LumetriExtra`] (as the CPU grade samples them).
@@ -482,10 +484,33 @@ pub const GPU_EFFECTS: &[&str] = &[
     "channel_mix",
     "color_replace",
     "alpha_adjust",
+    "mosaic_legacy",
+    // `gpufx_ext::EXT_EFFECTS`
+    "noise",
+    "noise_legacy",
+    "drop_shadow",
+    "corner_pin",
+    "lens_distortion",
+    "twirl",
+    "twirl_legacy",
+    "wave_warp",
+    "spherize",
+    "basic_3d",
+    "magnify",
+    "magnify_legacy",
+    "find_edges",
+    "emboss",
+    "bevel_alpha",
+    "replicate",
+    "strobe",
+    "ramp",
+    "four_color_gradient",
+    "circle",
+    "grid",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
-fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
+pub(crate) fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
     let Some(inv) = m.inverse() else { return Resample { inv: None, rect: [0; 4], opacity } };
     let b = m.bounds(&filmcraft_geom::Rect::new(0.0, 0.0, w as f64, h as f64));
     let y0 = (b.y.floor().max(0.0) as usize).min(h);
@@ -793,7 +818,7 @@ impl FxOp {
             "video_limiter" => FxOp::VideoLimiter(VideoLimiter::from_effect(e, cx)),
             "ultra_key" => FxOp::UltraKey(Box::new(UltraKey::from_effect(e, cx, w, h))),
             "luma_key" => FxOp::LumaKey { th: f(e, "threshold", cx) / 100.0, cut: f(e, "cutoff", cx) / 100.0 },
-            "mosaic" => {
+            "mosaic" | "mosaic_legacy" => {
                 // Softness blends towards an interpolation of the blocks: the CPU does that
                 if crate::vfx::fv(e, "softness", cx).abs() > 1e-6 {
                     return None;
@@ -812,7 +837,7 @@ impl FxOp {
                     target: if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] },
                 }
             }
-            _ => return None,
+            _ => return crate::gpufx_ext::ExtOp::eval(e, cx, w, h).map(FxOp::Ext),
         })
     }
 
@@ -881,6 +906,7 @@ impl FxOp {
                     && LumetriHdr::code(h.grade_space()).1.iter().all(|v| v.is_finite())
             }
             FxOp::Chain(ops) => ops.iter().all(FxOp::gpu_ok),
+            FxOp::Ext(x) => x.gpu_ok(),
         }
     }
 
@@ -1216,6 +1242,7 @@ impl FxOp {
                     op.apply(img);
                 }
             }
+            FxOp::Ext(x) => x.apply(img),
         }
     }
 }

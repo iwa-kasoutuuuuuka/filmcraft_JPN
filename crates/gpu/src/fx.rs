@@ -21,6 +21,7 @@
 use std::collections::{HashMap, HashSet};
 
 use filmcraft_render::gpufx::{FxOp, LumetriHdr, luma2020};
+use filmcraft_render::gpufx_ext::{ExtOp, Generator, Warp};
 use filmcraft_render::mask::FlatMask;
 use filmcraft_render::plan::LayerFx;
 
@@ -69,6 +70,17 @@ const OP_VIDEO_LIMITER: u32 = 39;
 const OP_UKEY_MATTE: u32 = 40;
 const OP_UKEY_CHOKE: u32 = 41;
 const OP_UKEY_APPLY: u32 = 42;
+const OP_NOISE: u32 = 43;
+const OP_WARP: u32 = 44;
+const OP_MAGNIFY: u32 = 45;
+const OP_FIND_EDGES: u32 = 46;
+const OP_EMBOSS: u32 = 47;
+const OP_BEVEL_ALPHA: u32 = 48;
+const OP_REPLICATE: u32 = 49;
+const OP_STROBE: u32 = 50;
+const OP_SHADOW: u32 = 51;
+const OP_SHADOW_OVER: u32 = 52;
+const OP_GENERATE: u32 = 53;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
@@ -322,8 +334,75 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 out.extend(steps(op));
             }
         }
+        FxOp::Ext(x) => ext_steps(x, &mut out),
     }
     out
+}
+
+/// The passes of a GPU3 op (`gpufx_ext`): one per pixel, but Drop Shadow, whose shadow (and its
+/// blur) is made beside the layer, which the last pass puts over it (as Unsharp keeps its original).
+fn ext_steps(x: &ExtOp, out: &mut Vec<Step>) {
+    match x {
+        ExtOp::Nop => {}
+        ExtOp::Noise { amount, colored, clip, grain, frame } => {
+            // (`gpu_ok`: a whole number of pixels, below 4096)
+            let flags = u32::from(*colored) | (u32::from(*clip) << 1);
+            out.push(step(OP_NOISE, [flags, *grain as u32, *frame as u32, (*frame >> 32) as u32], &[*amount]));
+        }
+        ExtOp::Warp(w) => {
+            let (kind, p): (u32, Vec<f64>) = match w {
+                Warp::CornerPin { inv, w, h } => (1, inv.iter().copied().chain([*w, *h]).collect()),
+                Warp::Lens { k, cx, cy, norm } => (2, vec![*k, *cx, *cy, *norm]),
+                Warp::Twirl { cx, cy, ang, rad } => (3, vec![*cx, *cy, *ang, *rad]),
+                // the phase in cycles, reduced here in f64 (sin of a large f32 angle is coarse)
+                Warp::Wave { hgt, wid, ux, uy, phase } => (4, vec![*hgt, *wid, *ux, *uy, (phase / std::f64::consts::TAU).rem_euclid(1.0)]),
+                Warp::Spherize { cx, cy, r } => (5, vec![*cx, *cy, *r]),
+                Warp::Basic3d { n, u, v, z0, focal, w, h } => (6, vec![n[0], n[1], n[2], u[0], u[1], u[2], v[0], v[1], v[2], *z0, *focal, 0.0, *w, *h]),
+            };
+            let p: Vec<f32> = p.iter().map(|v| *v as f32).collect();
+            out.push(step(OP_WARP, [kind, 0, 0, 0], &p));
+        }
+        ExtOp::Magnify { cx, cy, m, r, fe, op, square, mode } => {
+            out.push(step(OP_MAGNIFY, [u32::from(*square), *mode, 0, 0], &[*cx as f32, *cy as f32, *m as f32, *r, *fe, *op]));
+        }
+        ExtOp::FindEdges { invert, blend } => out.push(step(OP_FIND_EDGES, [u32::from(*invert), 0, 0, 0], &[*blend])),
+        ExtOp::Emboss { dx, dy, contrast, blend } => out.push(step(OP_EMBOSS, [0; 4], &[*dx, *dy, *contrast, *blend])),
+        ExtOp::BevelAlpha { th, lx, ly, intensity } => out.push(step(OP_BEVEL_ALPHA, [0; 4], &[*th, *lx, *ly, *intensity])),
+        ExtOp::Replicate { n } => out.push(step(OP_REPLICATE, [(*n).clamp(1, 16) as u32, 0, 0, 0], &[])),
+        ExtOp::Strobe { color: c, blend } => out.push(step(OP_STROBE, [0; 4], &[c[0], c[1], c[2], *blend])),
+        ExtOp::DropShadow(d) => {
+            let c = d.color;
+            let mut shadow = vec![step(OP_SHADOW, d.rect, &[(-d.dx) as f32, (-d.dy) as f32, d.opacity, 0.0, c[0], c[1], c[2]])];
+            boxes(&d.boxes.0, false, false, &mut shadow);
+            boxes(&d.boxes.1, true, false, &mut shadow);
+            for s in &mut shadow {
+                s.unsharp_blur = true;
+            }
+            out.append(&mut shadow);
+            let mut over = step(OP_SHADOW_OVER, [u32::from(d.only), 0, 0, 0], &[]);
+            over.combine = true;
+            out.push(over);
+        }
+        ExtOp::Generate(g) => {
+            let s = match g {
+                Generator::Ramp { sx, sy, vx, vy, sc, ec, radial, blend } => step(
+                    OP_GENERATE,
+                    [1, u32::from(*radial), 0, 0],
+                    &[*sx as f32, *sy as f32, *vx as f32, *vy as f32, sc[0], sc[1], sc[2], *blend, ec[0], ec[1], ec[2]],
+                ),
+                Generator::FourColor { colors: c, opacity, exp } => step(
+                    OP_GENERATE,
+                    [2, 0, 0, 0],
+                    &[c[0][0], c[0][1], c[0][2], *opacity, c[1][0], c[1][1], c[1][2], *exp, c[2][0], c[2][1], c[2][2], 0.0, c[3][0], c[3][1], c[3][2]],
+                ),
+                Generator::Circle { cx, cy, r, color: c, opacity } => {
+                    step(OP_GENERATE, [3, 0, 0, 0], &[*cx as f32, *cy as f32, *r, *opacity, c[0], c[1], c[2]])
+                }
+                Generator::Grid { size, border, color: c, opacity } => step(OP_GENERATE, [4, 0, 0, 0], &[*size, *border, *opacity, 0.0, c[0], c[1], c[2]]),
+            };
+            out.push(s);
+        }
+    }
 }
 
 impl FxStage {

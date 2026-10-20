@@ -134,7 +134,8 @@ export CARGO_TARGET_DIR=target/agent-hevc     # separate build dir, no lock figh
 3. Add a test in `crates/render/src/tests.rs`.
 4. The GPU path needs no change: `render::plan` pre-renders layers with standard effects on the CPU.
    To run it on the GPU too, make it an `FxOp` in `crates/render/src/gpufx.rs` instead (parameter
-   evaluation in `FxOp::eval`, the CPU reference in `FxOp::apply`, the id in `GPU_EFFECTS`), add
+   evaluation in `FxOp::eval`, the CPU reference in `FxOp::apply`, the id in `GPU_EFFECTS`; or an
+   `ExtOp` in `crates/render/src/gpufx_ext.rs`, its id also in `EXT_EFFECTS`), add
    its passes to `crates/gpu/src/fx.rs` and its math to `fx.wgsl`, and a parity case to
    `crates/gpu/src/fx_tests.rs`.
 

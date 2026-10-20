@@ -259,7 +259,10 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   Balance, Leave Color, Change to Color, Color Pass, Color Replace, Channel Mix, ASC CDL, Gamma
   Correction, Levels, Extract, Invert, Posterize, Alpha Adjust, Gaussian Blur and Directional Blur
   (and their legacy aliases), Camera Blur, Sharpen, Unsharp Mask, Crop, Edge Feather, Transform,
-  Horizontal / Vertical Flip, Mirror and Offset. When every enabled effect of a media clip is in
+  Horizontal / Vertical Flip, Mirror and Offset; Lumetri, the keys, Video Limiter, Mosaic and
+  Vignette; and (`render::gpufx_ext`) Noise, Drop Shadow, Corner Pin, Lens Distortion, Twirl, Wave
+  Warp, Spherize, Basic 3D, Magnify, Find Edges, Emboss, Bevel Alpha, Replicate, Strobe Light,
+  Ramp, 4-Color Gradient, Circle and Grid. When every enabled effect of a media clip is in
   that set (with finite parameters, and no Transform shrinking the picture below half
   size, which the CPU pre-filters), the plan hands the GPU the clip's source with
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`

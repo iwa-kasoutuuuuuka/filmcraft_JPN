@@ -38,6 +38,11 @@ const TRANSCENDENTAL_EFFECTS: &[&str] = &[
     "color_key",
     "luma_key",
     "video_limiter",
+    // GPU3: warps through sin / cos, and pow (measured below 5e-6 on Windows / D3D12)
+    "twirl",
+    "twirl_legacy",
+    "wave_warp",
+    "four_color_gradient",
 ];
 const FLIPS: f64 = 0.01;
 
@@ -328,6 +333,58 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
             ],
             false,
         ),
+        // GPU3 (`gpufx_ext`)
+        ("mosaic_legacy", vec![("horizontal", fl(9.0)), ("vertical", fl(5.0))], false),
+        ("noise", vec![("amount", fl(30.0))], false),
+        ("noise", vec![("amount", fl(80.0)), ("color", ParamValue::Bool(false)), ("clip", ParamValue::Bool(false))], false),
+        ("noise", vec![("amount", fl(50.0)), ("grain_size", fl(3.0))], false),
+        ("noise_legacy", vec![("amount", fl(40.0))], false),
+        ("drop_shadow", vec![], false),
+        (
+            "drop_shadow",
+            vec![("softness", fl(20.0)), ("distance", fl(12.0)), ("direction", fl(200.0)), ("color", col(0.2, 0.1, 0.6)), ("opacity", fl(80.0))],
+            false,
+        ),
+        ("drop_shadow", vec![("only", ParamValue::Bool(true)), ("softness", fl(120.0)), ("distance", fl(7.5))], false),
+        ("drop_shadow", vec![("distance", fl(500.0))], false),
+        ("corner_pin", vec![("upper_left", pt(5.0, 3.0)), ("lower_right", pt(60.0, 38.0)), ("upper_right", pt(70.0, -4.0))], true),
+        ("corner_pin", vec![("lower_left", pt(20.0, 30.0)), ("upper_right", pt(40.0, 10.0))], true),
+        ("corner_pin", vec![], false),
+        ("lens_distortion", vec![("curvature", fl(40.0))], false),
+        ("lens_distortion", vec![("curvature", fl(-60.0)), ("h_decentering", fl(30.0)), ("v_decentering", fl(-20.0))], false),
+        ("twirl", vec![("angle", fl(120.0)), ("radius", fl(60.0))], false),
+        ("twirl_legacy", vec![("center", pt(20.0, 15.0))], false),
+        ("wave_warp", vec![], false),
+        ("wave_warp", vec![("height", fl(-6.0)), ("width", fl(9.0)), ("direction", fl(30.0))], false),
+        ("spherize", vec![("radius", fl(25.0)), ("center", pt(30.0, 20.0))], false),
+        ("spherize", vec![("radius", fl(300.0))], false),
+        ("basic_3d", vec![("swivel", fl(30.0)), ("tilt", fl(-20.0)), ("distance", fl(5.0))], false),
+        ("basic_3d", vec![("swivel", fl(80.0)), ("tilt", fl(10.0)), ("distance", fl(-3.0))], false),
+        ("magnify", vec![("size", fl(15.0)), ("magnification", fl(300.0))], false),
+        (
+            "magnify",
+            vec![("size", fl(18.0)), ("feather", fl(6.0)), ("shape", ParamValue::Choice(1)), ("mode", ParamValue::Choice(2)), ("opacity", fl(70.0))],
+            false,
+        ),
+        ("magnify_legacy", vec![("size", fl(20.0)), ("mode", ParamValue::Choice(4)), ("center", pt(20.0, 30.0))], false),
+        ("find_edges", vec![], false),
+        ("find_edges", vec![("invert", ParamValue::Bool(true)), ("blend", fl(30.0))], false),
+        ("emboss", vec![], false),
+        ("emboss", vec![("direction", fl(100.0)), ("relief", fl(4.0)), ("contrast", fl(300.0)), ("blend", fl(20.0))], false),
+        ("bevel_alpha", vec![], false),
+        ("bevel_alpha", vec![("thickness", fl(5.0)), ("angle", fl(30.0)), ("intensity", fl(90.0))], false),
+        ("replicate", vec![], false),
+        ("replicate", vec![("count", fl(5.0))], false),
+        ("strobe", vec![], false),
+        ("strobe", vec![("color", col(0.9, 0.2, 0.1)), ("blend", fl(40.0))], false),
+        ("ramp", vec![], false),
+        ("ramp", vec![("shape", ParamValue::Choice(1)), ("blend", fl(30.0)), ("start_color", col(0.9, 0.3, 0.1)), ("end", pt(10.0, 40.0))], false),
+        ("four_color_gradient", vec![], false),
+        ("four_color_gradient", vec![("blend", fl(400.0)), ("opacity", fl(50.0))], false),
+        ("circle", vec![], false),
+        ("circle", vec![("radius", fl(15.0)), ("opacity", fl(60.0)), ("color", col(0.1, 0.7, 0.3))], false),
+        ("grid", vec![], false),
+        ("grid", vec![("size", fl(7.0)), ("border", fl(2.5)), ("opacity", fl(80.0))], false),
     ]
 }
 
@@ -440,12 +497,14 @@ fn masked_effects_match_cpu() {
         // no passes: its masks must not start a mix
         effect("gaussian_blur", &[("blurriness", fl(0.0))]),
         effect("invert", &[]),
+        // keeps the layer beside its shadow while the mask keeps the image before it
+        effect("drop_shadow", &[("distance", fl(15.0)), ("softness", fl(25.0))]),
     ];
     let ops: Vec<FxOp> = chain.iter().filter_map(|e| FxOp::eval(e, &cx(Tick::ZERO, 1.0), w as usize, h as usize)).collect();
     assert!(ops.len() == chain.len() && ops.iter().all(FxOp::gpu_ok));
     let unmasked = LayerFx { size: (w, h), decimation: 1, ops: ops.clone(), ..Default::default() };
     let cases = [
-        ("every effect", LayerFx { masks: vec![all.clone(), one(), all.clone(), one(), all.clone()], ..unmasked.clone() }),
+        ("every effect", LayerFx { masks: vec![all.clone(), one(), all.clone(), one(), all.clone(), one()], ..unmasked.clone() }),
         ("some effects and opacity", LayerFx { masks: vec![one(), Vec::new(), all.clone()], opacity_masks: all.clone(), ..unmasked.clone() }),
         ("opacity only", LayerFx { ops: Vec::new(), opacity_masks: one(), ..unmasked.clone() }),
         ("blur only", LayerFx { ops: ops.iter().take(1).cloned().collect(), masks: vec![all.clone()], ..unmasked.clone() }),
@@ -945,5 +1004,111 @@ fn hdr_media_decodes_on_the_gpu() {
                 assert!(p99 <= 6 && mean < 1.5, "{working:?} {transfer:?} fx {with_fx}: p99 {p99}, mean {mean}, max {max}");
             }
         }
+    }
+}
+
+/// GPU3 effects that follow the clip time (Noise's frame, Wave Warp's phase, Strobe's flashes),
+/// at ordinary and huge times, and chained with each other.
+#[test]
+fn gpu3_effects_over_time_and_in_chains() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (96u32, 54u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let chains: Vec<Vec<EffectInstance>> = vec![
+        vec![effect("noise", &[("amount", fl(40.0))])],
+        vec![effect("noise", &[("amount", fl(40.0)), ("grain_size", fl(2.0)), ("clip", ParamValue::Bool(false))])],
+        vec![effect("wave_warp", &[("speed", fl(3.7))])],
+        vec![effect("strobe", &[("period", fl(0.3)), ("duration", fl(0.1)), ("blend", fl(20.0))])],
+        vec![
+            effect("ramp", &[("blend", fl(60.0))]),
+            effect("corner_pin", &[("upper_left", pt(10.0, 5.0)), ("lower_right", pt(80.0, 50.0))]),
+            effect("drop_shadow", &[("distance", fl(6.0)), ("softness", fl(8.0))]),
+            effect("noise", &[("amount", fl(20.0))]),
+            effect("find_edges", &[("blend", fl(50.0))]),
+            effect("twirl", &[("angle", fl(-70.0))]),
+            effect("drop_shadow", &[("distance", fl(3.0)), ("only", ParamValue::Bool(true))]),
+        ],
+    ];
+    let mut failures = Vec::new();
+    for seconds in [0.0, 0.25, 12.34, 36_000.0, 3.0e8, 1e30] {
+        let cx = FxCtx { seconds, ..cx(Tick::ZERO, 1.0) };
+        for chain in &chains {
+            let ops: Vec<FxOp> = chain.iter().filter_map(|e| FxOp::eval(e, &cx, w as usize, h as usize)).collect();
+            assert_eq!(ops.len(), chain.len());
+            if !ops.iter().all(FxOp::gpu_ok) {
+                // only Wave Warp's phase grows out of what the GPU takes (weeks into a clip)
+                assert!(seconds > 1e7 && chain[0].effect == "wave_warp", "{seconds} s: {:?} not GPU-capable", chain[0].effect);
+                continue;
+            }
+            let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            for op in &ops {
+                op.apply(&mut cpu);
+            }
+            let names: Vec<&str> = chain.iter().map(|e| e.effect.as_str()).collect();
+            let (_, _, gpu) = c.effect_image(&frame, &LayerFx { size: (w, h), decimation: 1, ops, ..Default::default() }).expect("effect image");
+            let (worst, flips) = compare(&cpu.px, &gpu);
+            eprintln!("{names:?} at {seconds} s: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+            // (Corner Pin's edge test may flip a pixel on the quad's outline)
+            if worst > TRANSCENDENTAL || flips > 0.002 {
+                failures.push(format!("{names:?} at {seconds} s: {worst:.2e}, flips {flips:.4}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "GPU3 effects differ from the CPU:\n{}", failures.join("\n"));
+}
+
+/// One 1080p frame through each of the most used GPU3 effects: the CPU reference against the GPU
+/// effect stage (upload, passes and readback included). Informational; run with
+/// `cargo test -p filmcraft-gpu --release gpu3_speed -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn gpu3_speed() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (1920u32, 1080u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let cases = [
+        effect("noise", &[("amount", fl(30.0))]),
+        effect("drop_shadow", &[("distance", fl(20.0)), ("softness", fl(40.0))]),
+        effect("corner_pin", &[("upper_left", pt(100.0, 50.0)), ("lower_right", pt(1800.0, 1000.0))]),
+        effect("lens_distortion", &[("curvature", fl(30.0))]),
+        effect("twirl", &[("angle", fl(90.0))]),
+        effect("wave_warp", &[]),
+        effect("find_edges", &[]),
+        effect("ramp", &[("blend", fl(50.0))]),
+    ];
+    let time = |f: &mut dyn FnMut()| {
+        f();
+        let t0 = std::time::Instant::now();
+        for _ in 0..5 {
+            f();
+        }
+        t0.elapsed().as_secs_f64() * 1000.0 / 5.0
+    };
+    let base = LayerFx { size: (w, h), decimation: 1, ops: Vec::new(), ..Default::default() };
+    let io_ms = time(&mut || {
+        let _ = c.effect_image(&frame, &base);
+    });
+    eprintln!("no effect (upload + source draw + readback): {io_ms:.1} ms");
+    for e in &cases {
+        let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("op");
+        let cpu_ms = time(&mut || {
+            let mut img = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut img);
+        });
+        let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op.clone()], ..Default::default() };
+        let gpu_ms = time(&mut || {
+            let _ = c.effect_image(&frame, &fx);
+        });
+        eprintln!("{}: CPU {cpu_ms:.1} ms, GPU {gpu_ms:.1} ms ({:.1} ms over no effect)", e.effect, gpu_ms - io_ms);
     }
 }
