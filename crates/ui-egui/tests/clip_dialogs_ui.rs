@@ -480,3 +480,24 @@ fn ellipsis_menu_items_open_their_dialogs() {
     d.click("nest.ok");
     assert!(d.app().session.project.sequences().any(|i| i.name == "Opening"), "nested as named");
 }
+
+/// While a dialog is open, shortcuts do not reach the panels behind it (Space started playback
+/// and Delete removed the selected clips under an open dialog).
+#[test]
+fn shortcuts_do_not_reach_the_panels_behind_a_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(1).id.0;
+    d.exec("timeline.select", json!({"clips": [c]}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.menu("sequence.addTracks");
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(3);
+    assert!(d.app().session.active_sequence().unwrap().find_item(filmcraft_engine::project::ClipId(c)).is_some(), "Delete did not reach the timeline");
+    assert!(!d.app().playback.playing, "Space did not start playback");
+    // closed: the keys work again
+    d.click("addTracks.cancel");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().playback.playing);
+}

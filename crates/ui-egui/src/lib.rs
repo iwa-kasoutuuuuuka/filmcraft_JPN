@@ -883,6 +883,16 @@ impl FilmcraftApp {
         if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) {
             return;
         }
+        // A dialog is open (a modal such as Recover Unsaved Changes, or a command's dialog): keys
+        // go to it, not to the panels behind (Space started playback, Delete removed clips)
+        if ctx.memory(|m| m.top_modal_layer()).is_some()
+            || self.dialog.is_some()
+            || self.ui.clip_dialog.is_some()
+            || self.ui.extras.dialog.is_some()
+            || self.ui.color_dialog.is_some()
+        {
+            return;
+        }
         // Esc cancels a dynamic trim in progress
         if self.session.trim_play.dynamic.is_some() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             let _ = self.session.execute("trim.cancelDynamic", json!({}));
