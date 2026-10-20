@@ -1748,17 +1748,32 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
 
-    // ---- context menu on clips
+    // right-clicking a clip outside the selection selects it first (the menu acted on whatever was
+    // selected before)
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Clip { clip, .. } = hit(seq, layout, p)
+        && !app.session.state.selection.contains(&clip)
+        && let Err(e) = app.session.execute("timeline.select", json!({"clips": [clip.0]}))
+    {
+        app.ui.status = e.to_string();
+    }
+    // ---- context menu on clips (through the menu router, so commands with dialogs open them)
     resp.context_menu(|ui| {
         ui.set_min_width(200.0);
         let sel_n = app.session.state.selection.len();
+        let sel_items: Vec<filmcraft_project::TrackItem> =
+            app.session.state.selection.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.clone())).collect();
+        let all_enabled = sel_items.iter().all(|i| i.enabled);
+        let all_linked = !sel_items.is_empty() && sel_items.iter().all(|i| i.link.is_some());
         let items: [(&str, &str); 11] = [
             (crate::i18n::t("Cut", "カット"), "edit.cut"),
             (crate::i18n::t("Copy", "コピー"), "edit.copy"),
             (crate::i18n::t("Clear", "消去"), "edit.clear"),
             (crate::i18n::t("Ripple Delete", "リップル削除"), "edit.rippleDelete"),
-            (crate::i18n::t("Enable", "有効化"), "clip.enable"),
-            (crate::i18n::t("Unlink", "リンク解除"), "clip.link"),
+            // checked while the selection is enabled (a toggle, as in Premiere)
+            (if all_enabled { crate::i18n::t("✓ Enable", "✓ 有効") } else { crate::i18n::t("Enable", "有効") }, "clip.enable"),
+            (if all_linked { crate::i18n::t("Unlink", "リンク解除") } else { crate::i18n::t("Link", "リンク") }, "clip.link"),
             (crate::i18n::t("Group", "グループ化"), "clip.group"),
             (crate::i18n::t("Speed/Duration…", "速度・デュレーション…"), "clip.speedDuration"),
             (crate::i18n::t("Nest…", "ネスト…"), "clip.nest"),
@@ -1766,28 +1781,30 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             (crate::i18n::t("Join Through Edits", "フロースルー編集を結合"), "sequence.joinThroughEdits"),
         ];
         for (label, cmd) in items {
-            if ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label)).clicked() {
-                if cmd == "clip.speedDuration" {
-                    // the Speed/Duration dialog (it used to set 50 % straight away)
-                    app.dialog = None;
-                    if let Err(e) = crate::menus::invoke(app, ui.ctx(), cmd, json!({})) {
-                        app.ui.status = e;
-                    }
-                } else if let Err(e) = app.session.execute(cmd, json!({})) {
-                    app.ui.status = e.to_string();
+            let b = ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label));
+            app.auto.add(&format!("timeline.context.{cmd}"), b.rect, label);
+            if b.clicked() {
+                app.dialog = None;
+                if let Err(e) = crate::menus::invoke(app, ui.ctx(), cmd, json!({})) {
+                    app.ui.status = e;
                 }
                 ui.close();
             }
         }
         ui.separator();
-        ui.menu_button(crate::i18n::t("Label", "ラベル"), |ui| {
+        let lm = ui.menu_button(crate::i18n::t("Label", "ラベル"), |ui| {
             for l in filmcraft_project::Label::ALL {
-                if ui.button(l.name()).clicked() {
-                    let _ = app.session.execute("edit.label", json!({"label": l.name()}));
+                let b = ui.button(crate::i18n::tr(l.name()));
+                app.auto.add(&format!("timeline.context.label.{}", l.name()), b.rect, l.name());
+                if b.clicked() {
+                    if let Err(e) = app.session.execute("edit.label", json!({"label": l.name()})) {
+                        app.ui.status = e.to_string();
+                    }
                     ui.close();
                 }
             }
         });
+        app.auto.add("timeline.context.label", lm.response.rect, "Label");
     });
 
     // ---- drops: project items and effects

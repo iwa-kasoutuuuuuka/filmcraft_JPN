@@ -70,6 +70,11 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "sequence.transcribe" => ("Transcribe Sequence", "transcribe", "Transcribe"),
         "file.saveAsTemplate" => ("Save as Template", "saveTemplate", "Save"),
         "markers.addFlashCue" => ("Flash Cue Marker", "flashCue", "OK"),
+        "markers.addChapter" => ("Chapter Marker", "chapterMarker", "OK"),
+        "clip.nest" => ("Nested Sequence Name", "nest", "OK"),
+        "sequence.addTracks" => ("Add Tracks", "addTracks", "OK"),
+        "sequence.settings" => ("Sequence Settings", "sequenceSettings", "OK"),
+        "captions.newTrack" => ("New Caption Track", "captionTrack", "OK"),
         "help.systemCompatibilityReport" => ("System Compatibility Report", "systemReport", "Close"),
         _ => return None,
     })
@@ -96,6 +101,12 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "sequence.transcribe" => "sequence.transcribe",
         "file.saveAsTemplate" => "file.saveAsTemplate",
         "markers.addFlashCue" => "markers.addFlashCue",
+        // these ran straight away from the menu, without their dialogs
+        "markers.addChapter" => "markers.addChapter",
+        "clip.nest" => "clip.nest",
+        "sequence.addTracks" => "sequence.addTracks",
+        "sequence.settings" => "sequence.settings",
+        "captions.newTrack" => "captions.newTrack",
         _ => return None,
     })
 }
@@ -356,7 +367,18 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
             (json!({"language": "auto", "track": "mix", "diarize": true}), json!({"tracks": tracks}))
         }
         "file.saveAsTemplate" => (json!({"name": s.project.name}), Value::Null),
-        "markers.addFlashCue" => (json!({"name": "", "comment": ""}), Value::Null),
+        "markers.addFlashCue" | "markers.addChapter" => (json!({"name": "", "comment": ""}), Value::Null),
+        "clip.nest" => {
+            let n = s.project.sequences().filter(|it| it.name.starts_with("Nested Sequence")).count() + 1;
+            (json!({"name": format!("Nested Sequence {n:02}")}), Value::Null)
+        }
+        "sequence.addTracks" => (json!({"video": 1, "audio": 0}), Value::Null),
+        "sequence.settings" => {
+            let name = s.state.active_sequence.and_then(|i| s.project.item(i)).map(|i| i.name.clone()).unwrap_or_default();
+            let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
+            (json!({"name": name, "width": st.width, "height": st.height, "fps": st.frame_rate.as_f64(), "sampleRate": st.sample_rate}), Value::Null)
+        }
+        "captions.newTrack" => (json!({"format": "Subtitle", "language": ""}), Value::Null),
         _ => (json!({}), Value::Null),
     })
 }
@@ -804,9 +826,27 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     check(ui, &mut elems, pre, p, "diarize", "Recognize when different speakers are talking");
                 }
                 "file.saveAsTemplate" => text(ui, &mut elems, pre, p, "name", "Template Name:", 240.0),
-                "markers.addFlashCue" => {
+                "markers.addFlashCue" | "markers.addChapter" => {
                     text(ui, &mut elems, pre, p, "name", "Name:", 220.0);
                     text(ui, &mut elems, pre, p, "comment", "Comments:", 220.0);
+                }
+                "clip.nest" => text(ui, &mut elems, pre, p, "name", "Name:", 240.0),
+                "sequence.addTracks" => {
+                    number(ui, &mut elems, pre, p, "video", "Video Tracks:", 0.0..=99.0, "");
+                    number(ui, &mut elems, pre, p, "audio", "Audio Tracks:", 0.0..=99.0, "");
+                }
+                "sequence.settings" => {
+                    text(ui, &mut elems, pre, p, "name", "Sequence Name:", 220.0);
+                    number(ui, &mut elems, pre, p, "width", "Width:", 16.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "height", "Height:", 16.0..=16384.0, " px");
+                    number(ui, &mut elems, pre, p, "fps", "Frame Rate:", 1.0..=240.0, " fps");
+                    number(ui, &mut elems, pre, p, "sampleRate", "Sample Rate:", 8000.0..=192_000.0, " Hz");
+                }
+                "captions.newTrack" => {
+                    let formats: Vec<(String, String)> =
+                        ["Subtitle", "CEA-608", "CEA-708", "Teletext"].iter().map(|f| (f.to_string(), f.to_string())).collect();
+                    combo(ui, &mut elems, "captionTrack.format", "Format:", &mut p["format"], &formats);
+                    text(ui, &mut elems, pre, p, "language", "Language:", 120.0);
                 }
                 "help.systemCompatibilityReport" => {
                     let r = &d.info;
@@ -935,6 +975,12 @@ fn run(app: &mut FilmcraftApp, d: &ClipDialogDraft) -> Result<Option<String>, St
         }
         cmd => {
             let mut q = p.clone();
+            if matches!(cmd, "markers.addFlashCue" | "markers.addChapter" | "captions.newTrack") && q["name"].as_str().is_some_and(str::is_empty) {
+                q.as_object_mut().map(|m| m.remove("name"));
+            }
+            if cmd == "captions.newTrack" && q["language"].as_str().is_some_and(str::is_empty) {
+                q.as_object_mut().map(|m| m.remove("language"));
+            }
             if cmd == "markers.addFlashCue" && q["name"].as_str().is_some_and(str::is_empty) {
                 q.as_object_mut().map(|m| m.remove("name"));
             }

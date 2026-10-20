@@ -430,3 +430,53 @@ fn export_menu_items_ask_where_or_open_export_mode() {
     assert_eq!(format!("{:?}", d.app().ui.mode), "Export");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Nest…, Add Tracks…, Sequence Settings…, Add Chapter Marker… and Add New Caption Track… open
+/// their dialogs from the menus (they ran straight away with defaults); the timeline's context
+/// menu goes through the same router, and right-clicking a clip selects it first.
+#[test]
+fn ellipsis_menu_items_open_their_dialogs() {
+    let mut d = Driver::new();
+    let seq_id = d.app().session.state.active_sequence.unwrap();
+    let rev = |d: &mut Driver| d.app().session.revision;
+    // Add Tracks: 2 video, 1 audio
+    let (v0, a0) = {
+        let q = d.app().session.active_sequence().unwrap();
+        (q.video_tracks.len(), q.audio_tracks.len())
+    };
+    let r0 = rev(&mut d);
+    d.menu("sequence.addTracks");
+    assert_eq!(rev(&mut d), r0, "nothing added before OK");
+    d.ok("ui.set", json!({"menuDialog": {"video": 2, "audio": 1}}));
+    d.click("addTracks.ok");
+    let q = d.app().session.active_sequence().unwrap();
+    assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (v0 + 2, a0 + 1));
+    // Sequence Settings: rename
+    d.menu("sequence.settings");
+    d.ok("ui.set", json!({"menuDialog": {"name": "Final Cut"}}));
+    d.click("sequenceSettings.ok");
+    assert_eq!(d.app().session.project.item(seq_id).unwrap().name, "Final Cut");
+    // Chapter marker with a name
+    d.menu("markers.addChapter");
+    d.ok("ui.set", json!({"menuDialog": {"name": "Intro"}}));
+    d.click("chapterMarker.ok");
+    assert!(d.app().session.active_sequence().unwrap().markers.iter().any(|m| m.name == "Intro"));
+    // Caption track: CEA-708
+    d.menu("captions.newTrack");
+    d.ok("ui.set", json!({"menuDialog": {"format": "CEA-708"}}));
+    d.click("captionTrack.ok");
+    let list = d.exec("captions.list", json!({}));
+    assert!(list.to_string().contains("708"), "{list}");
+    // right-click an unselected clip, then Nest… from the context menu: the dialog names it
+    let (a, b) = (d.v1(0).id.0, d.v1(1).id.0);
+    d.exec("timeline.select", json!({"clips": [a]}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": format!("timeline.clip.{b}"), "button": "right"}));
+    d.frames(3);
+    assert!(d.app().session.state.selection.iter().any(|c| c.0 == b), "right-click selected the clip");
+    assert!(!d.app().session.state.selection.iter().any(|c| c.0 == a), "and only it");
+    d.click("timeline.context.clip.nest");
+    d.ok("ui.set", json!({"menuDialog": {"name": "Opening"}}));
+    d.click("nest.ok");
+    assert!(d.app().session.project.sequences().any(|i| i.name == "Opening"), "nested as named");
+}
