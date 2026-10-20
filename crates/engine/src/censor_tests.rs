@@ -112,10 +112,10 @@ fn the_area_follows_what_it_covers() {
     }
     eprintln!("censor tracking: the area's centre is within {worst:.2} px of the disc over 40 frames");
     assert!(worst < 3.0, "{worst} px");
-    // undo: backward track, forward track, then the area itself
+    // one undo step: the area and its tracking
     let h = s.execute("history.list", json!({})).unwrap();
     let undo: Vec<&str> = h["undo"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
-    assert_eq!(&undo[undo.len() - 3..], ["Censor Area", "Track Mask", "Track Mask"], "{undo:?}");
+    assert!(undo.last().is_some_and(|l| l.starts_with("Censor Area")), "{undo:?}");
 }
 
 #[test]

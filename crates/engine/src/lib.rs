@@ -669,6 +669,11 @@ impl Session {
             }
             return Err(e);
         }
+        // One command is one undo step: the steps its nested commands push are folded into one,
+        // and a command that fails leaves nothing behind (Undo used to step through a command's
+        // parts, e.g. Add Caption's new track, or Set Look's added Lumetri)
+        let history_cmd = matches!(id, "edit.undo" | "edit.redo") || id.starts_with("history.");
+        let mark = (self.exec_depth == 0 && !history_cmd && self.history.undo.len() < self.history.limit).then_some(self.history.undo.len());
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
@@ -676,6 +681,19 @@ impl Session {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
         self.exec_depth -= 1;
+        if let Some(mark) = mark
+            && self.history.undo.len() > mark
+        {
+            if r.is_err() {
+                if let Some((_, before)) = self.history.undo.get(mark).cloned() {
+                    self.project = before;
+                    self.history.undo.truncate(mark);
+                    self.bump();
+                }
+            } else if self.history.undo.len() > mark + 1 {
+                clip_ops::collapse_history(self, mark, spec.label.trim_end_matches('…'));
+            }
+        }
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);

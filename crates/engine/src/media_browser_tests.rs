@@ -189,8 +189,7 @@ fn import_the_selection_and_open_in_source() {
     let r = s.execute("mediaBrowser.import", json!({})).unwrap();
     assert_eq!(r["items"].as_array().unwrap().len(), 2, "{r}");
     assert_eq!(s.project.items.len(), 2);
-    // undoable like any import
-    s.execute("edit.undo", json!({})).unwrap();
+    // undoable like any import: one step for the whole selection
     s.execute("edit.undo", json!({})).unwrap();
     assert!(s.project.items.is_empty());
     // File ▸ Import from Media Browser uses the selection too
