@@ -5,7 +5,7 @@
 //! are shared atomics so the UI (Export mode, header progress) and MCP can observe/cancel jobs.
 //!
 //! Video encoders implement [`VideoEncoder`]; codec crates register theirs with
-//! [`register_encoder`] (H.264, ProRes …), and `filmcraft-platform` registers the OS hardware
+//! [`register_encoder`] (H.264, AV1, ProRes …), and `filmcraft-platform` registers the OS hardware
 //! encoders in front of ours ([`hw`]). Built in: Motion-JPEG (MOV), PNG / TIFF / BMP
 //! sequences, GIF, WAV and AIFF.
 //!
@@ -17,6 +17,7 @@
 use std::io::Write;
 
 mod audio_out;
+mod av1_out;
 pub mod hw;
 mod job;
 mod mxf_out;
@@ -68,6 +69,9 @@ pub enum Format {
     /// where the system has one (Windows: Media Foundation).
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
+    /// MPEG-4, AV1 video (rav1e, 8-bit 4:2:0) + AAC audio.
+    #[serde(rename = "av1", alias = "Av1", alias = "AV1")]
+    Av1,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
     #[serde(rename = "prores", alias = "ProRes")]
     ProRes,
@@ -106,6 +110,7 @@ impl Format {
         Some(match s.to_ascii_lowercase().replace([' ', '-', '_', '.'], "").as_str() {
             "h264" | "mp4" | "avc" | "m4v" => Format::H264,
             "hevc" | "h265" => Format::Hevc,
+            "av1" | "av01" | "aomav1" | "av1mp4" | "mp4av1" => Format::Av1,
             "prores" | "mov" | "appleprores" => Format::ProRes,
             "dnxhr" | "dnxhd" | "dnx" | "avid" | "aviddnxhr" | "aviddnxhd" | "vc3" => Format::DnxHr,
             "mxf" | "mxfop1a" | "op1a" => Format::MxfOp1a,
@@ -125,6 +130,7 @@ impl Format {
         match self {
             Format::H264 => "h264",
             Format::Hevc => "hevc",
+            Format::Av1 => "av1",
             Format::ProRes => "prores",
             Format::DnxHr => "dnxhr",
             Format::Mjpeg => "mjpeg",
@@ -140,7 +146,7 @@ impl Format {
     }
     pub fn extension(self) -> &'static str {
         match self {
-            Format::H264 | Format::Hevc => "mp4",
+            Format::H264 | Format::Hevc | Format::Av1 => "mp4",
             Format::ProRes | Format::DnxHr | Format::Mjpeg => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
@@ -155,6 +161,7 @@ impl Format {
         match self {
             Format::H264 => "H.264",
             Format::Hevc => "HEVC (H.265)",
+            Format::Av1 => "AV1",
             Format::ProRes => "Apple ProRes",
             Format::DnxHr => "Avid DNxHR",
             Format::Mjpeg => "QuickTime (Motion JPEG)",
@@ -173,12 +180,18 @@ impl Format {
         matches!(self, Format::MxfOp1a | Format::MxfOpAtom)
     }
     /// A bitrate-driven delivery codec in MP4 (or QuickTime) with AAC audio: H.264 or HEVC.
+    /// (AV1 is bitrate-driven too but goes in MP4 only: see [`Format::is_bitrate_driven`].)
     pub fn is_delivery(self) -> bool {
         matches!(self, Format::H264 | Format::Hevc)
     }
-    pub const ALL: [Format; 13] = [
+    /// A codec whose size is set by a target bitrate (H.264, HEVC, AV1).
+    pub fn is_bitrate_driven(self) -> bool {
+        matches!(self, Format::H264 | Format::Hevc | Format::Av1)
+    }
+    pub const ALL: [Format; 14] = [
         Format::H264,
         Format::Hevc,
+        Format::Av1,
         Format::ProRes,
         Format::DnxHr,
         Format::Mjpeg,
@@ -581,7 +594,7 @@ pub type AudioEncoderFactory = fn(format: Format, sample_rate: u32, channels: u3
 
 fn video_factories() -> &'static RwLock<Vec<EncoderFactory>> {
     static F: OnceLock<RwLock<Vec<EncoderFactory>>> = OnceLock::new();
-    F.get_or_init(|| RwLock::new(vec![h264_factory, prores_factory, dnx_factory, mjpeg_factory]))
+    F.get_or_init(|| RwLock::new(vec![h264_factory, av1_out::av1_factory, prores_factory, dnx_factory, mjpeg_factory]))
 }
 fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
     static F: OnceLock<RwLock<Vec<AudioEncoderFactory>>> = OnceLock::new();
@@ -1142,7 +1155,7 @@ fn h264_factory(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSetti
     cfg.aud = s.format.is_mxf();
     cfg.keyint = s.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (rate.num as f64 / rate.den as f64 * 2.0).round().max(1.0) as u32);
     let kbps = s.bitrate_kbps.max(100);
-    let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or(kbps * 3 / 2);
+    let max = s.max_bitrate_kbps.filter(|m| *m >= kbps).unwrap_or(kbps.saturating_mul(3) / 2);
     cfg.rate = match s.bitrate_mode {
         BitrateMode::Cbr => filmcraft_h264enc::RateControl::Cbr { kbps },
         _ => filmcraft_h264enc::RateControl::Vbr { target_kbps: kbps, max_kbps: max },
@@ -1328,7 +1341,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             }
             (total, count)
         }
-        Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
+        Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
             return Err(ExportError::Unsupported(format!("{} is a stepped export", settings.format.label())));
         }
     };
@@ -1351,3 +1364,6 @@ mod surround_tests;
 
 #[cfg(test)]
 mod mxf_tests;
+
+#[cfg(test)]
+mod av1_tests;

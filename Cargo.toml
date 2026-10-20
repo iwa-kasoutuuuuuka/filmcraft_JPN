@@ -33,6 +33,7 @@ filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
 filmcraft-opus = { path = "crates/opus" }
 filmcraft-h264enc = { path = "crates/h264enc" }
+filmcraft-av1enc = { path = "crates/av1enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
 filmcraft-frame = { path = "crates/frame" }
 filmcraft-media = { path = "crates/media" }
@@ -99,6 +100,13 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-dnx]
+opt-level = 3
+
+[profile.dev.package.filmcraft-av1enc]
+opt-level = 3
+
+# rav1e (AV1 export) runs its pure-Rust kernels, far too slow for tests below opt-level 3.
+[profile.dev.package.rav1e]
 opt-level = 3
 
 [profile.dev.package.filmcraft-av1]

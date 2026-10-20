@@ -27,7 +27,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · h264 · h264enc · hevc · vp9 · av1 · mpeg2v · prores · dnx · aac · ac3 · opus
+     codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · h264 · h264enc · av1enc · hevc · vp9 · av1 · mpeg2v · prores · dnx · aac · ac3 · opus
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -46,6 +46,7 @@ and `filmcraft-cli`.
 | `mpegts` | L0 | MPEG-2 Systems demux (H.222.0): transport streams (188 / 192-byte BDAV / 204), program streams (MPEG-2 / MPEG-1, VOB, MOD), PSI, PES, PTS / PCR, access-unit index built on open ([README](../crates/mpegts/README.md)) |
 | `ogg` | L0 | Ogg demux (RFC 3533), Ogg Opus timing (RFC 7845 granules, pre-skip, end trimming), Vorbis headers |
 | `h264`, `h264enc` | L0 | H.264 decoder; H.264 encoder |
+| `av1enc` | L0 | AV1 encoder: a safe wrapper around rav1e (BSD-2-Clause, pure Rust, no assembly), panics caught, `av1C` from the sequence header ([README](../crates/av1enc/README.md)) |
 | `hevc` | L0 | H.265 Main/Main 10 decoder |
 | `prores` | L0 | ProRes decoder and encoder |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
@@ -599,6 +600,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | Format | Encoder | Container |
 |---|---|---|
 | `h264` | `filmcraft-h264enc` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `filmcraft-aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
+| `av1` | `filmcraft-av1enc` (rav1e speed 10, one-pass average bitrate, keyframe distance; 8-bit 4:2:0 BT.709) + `filmcraft-aac` | MP4 only (`av01` / `av1C`, `av01` compatible brand) |
 | `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ) | MOV |
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |

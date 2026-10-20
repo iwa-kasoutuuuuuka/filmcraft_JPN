@@ -127,6 +127,8 @@ fn preset_in_japanese(name: &str) -> std::borrow::Cow<'_, str> {
         "Match Source – Adaptive High Bitrate" => "ソースに合わせる – アダプティブ高ビットレート",
         "Match Source – Adaptive Medium Bitrate" => "ソースに合わせる – アダプティブ中ビットレート",
         "Match Source – Adaptive Low Bitrate" => "ソースに合わせる – アダプティブ低ビットレート",
+        "Match Source – AV1" => "ソースに合わせる – AV1",
+        "AV1 1080p Full HD" => "AV1 1080p フル HD",
         "High Quality 1080p HD" => "高品質 1080p HD",
         "High Quality 2160p 4K" => "高品質 2160p 4K",
         "Social Vertical 1080×1920" => "SNS 縦型 1080×1920",
@@ -167,6 +169,7 @@ fn summary_in_japanese(s: &str) -> String {
         ("Lower First", "下位フィールドから"),
         ("Progressive", "プログレッシブ"),
         ("auto level", "レベル自動"),
+        ("average ", "平均 "),
         ("VBR, 1 pass", "VBR 1 パス"),
         ("VBR, 2 pass", "VBR 2 パス"),
         ("Target ", "ターゲット "),
@@ -652,7 +655,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if section(ui, &mut reg, &mut ex.open_sections, "effects", crate::i18n::t("Effects", "エフェクト"), &t) {
             pick_overlay = effects_section(ui, &mut reg, s, &t);
         }
-        if matches!(s.format, Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr | Format::Mjpeg)
+        if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Mjpeg)
             && section(ui, &mut reg, &mut ex.open_sections, "metadata", crate::i18n::t("Metadata", "メタデータ"), &t)
         {
             let m = &mut s.metadata;
@@ -747,6 +750,16 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             });
             delivery_bitrate_rows(ui, reg, s, t, &[BitrateMode::Cbr, BitrateMode::Vbr1Pass]);
         }
+        Format::Av1 => {
+            row(ui, t, "Profile", |ui| {
+                ui.label(egui::RichText::new("Main (8-bit 4:2:0)").size(12.0));
+            });
+            row(ui, t, "Performance", |ui| {
+                ui.label(egui::RichText::new(crate::i18n::tr_export("Software Encoding")).size(12.0));
+            });
+            // rav1e encodes one pass towards an average bitrate
+            delivery_bitrate_rows(ui, reg, s, t, &[BitrateMode::Vbr1Pass]);
+        }
         Format::H264 => {
             row(ui, t, "Profile", |ui| {
                 let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High];
@@ -815,13 +828,14 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     }
     row(ui, t, "Audio Format", |ui| {
-        let fixed = s.format == Format::H264 && s.multiplexer == Multiplexer::Mp4 || audio_only || s.format.is_mxf();
+        // MP4 carries AAC: H.264 in MP4, and AV1 (MP4 only)
+        let mp4_aac = s.format == Format::Av1 || (s.format == Format::H264 && s.multiplexer == Multiplexer::Mp4);
+        let fixed = mp4_aac || audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
             _ => "Uncompressed (PCM)",
         };
-        let labels =
-            vec![("AAC".to_string(), !audio_only), ("Uncompressed (PCM)".to_string(), !(s.format == Format::H264 && s.multiplexer == Multiplexer::Mp4))];
+        let labels = vec![("AAC".to_string(), !audio_only), ("Uncompressed (PCM)".to_string(), !mp4_aac)];
         if fixed {
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {

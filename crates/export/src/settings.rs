@@ -371,7 +371,7 @@ impl ExportSettings {
         .max(100);
         let max = match self.bitrate_mode {
             BitrateMode::Cbr => target,
-            _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or(target * 3 / 2),
+            _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or(target.saturating_mul(3) / 2),
         };
         let keyint = self.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (fps * 2.0).round().max(1.0) as u32);
         let channels = match self.audio.channels {
@@ -396,6 +396,8 @@ impl ExportSettings {
         match (self.format, self.audio.codec) {
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::H264 | Format::Hevc, _) if self.multiplexer == Multiplexer::Mp4 => AudioCodec::Aac,
+            // AV1 goes in MP4 only, with AAC (no PCM in MP4)
+            (Format::Av1, _) => AudioCodec::Aac,
             (_, AudioCodec::Auto) if self.format.is_delivery() => AudioCodec::Aac,
             (_, AudioCodec::Auto) => AudioCodec::Pcm,
             (_, c) => c,
@@ -424,7 +426,7 @@ impl ExportSettings {
         let fps = r.rate.num as f64 / r.rate.den as f64;
         let px = r.width as f64 * r.height as f64;
         let video_bps = match self.video_format() {
-            Format::H264 | Format::Hevc => r.target_kbps as f64 * 1000.0,
+            Format::H264 | Format::Hevc | Format::Av1 => r.target_kbps as f64 * 1000.0,
             Format::ProRes => crate::prores_profile(&self.prores_profile).nominal_mbps_1080p30() * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97,
             Format::DnxHr => {
                 // nominal 1080p29.97 data rates of the DNxHR profiles (Mb/s)
@@ -496,6 +498,14 @@ impl ExportSettings {
                     };
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
+                Format::Av1 => {
+                    v += &format!(
+                        ", AV1 Main 8-bit 4:2:0 (rav1e speed {}), average {}, keyframe every {} frames",
+                        crate::av1_out::AV1_SPEED,
+                        mbps(r.target_kbps),
+                        r.keyint
+                    );
+                }
                 Format::ProRes => {
                     use filmcraft_prores::Profile;
                     v += match crate::prores_profile(&self.prores_profile) {
@@ -526,7 +536,7 @@ impl ExportSettings {
         };
         let container = match self.format {
             Format::H264 | Format::Hevc if self.multiplexer == Multiplexer::Mov => "QuickTime",
-            Format::H264 | Format::Hevc => "MP4",
+            Format::H264 | Format::Hevc | Format::Av1 => "MP4",
             Format::ProRes | Format::DnxHr | Format::Mjpeg => "QuickTime",
             Format::MxfOp1a | Format::MxfOpAtom => self.mxf_video_codec.label(),
             Format::PngSequence | Format::TiffSequence | Format::BmpSequence => "Image sequence",

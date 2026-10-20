@@ -154,6 +154,12 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!(a["codec_name"], "aac", "{name}");
                 assert!((num(&a["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", a["bit_rate"]);
             }
+            "av1" => {
+                assert!(fmt_name.contains("mp4"), "{name}: {fmt_name}");
+                assert_eq!(v["codec_name"], "av1", "{name}");
+                assert_eq!(v["pix_fmt"], "yuv420p", "{name}");
+                assert_eq!(a["codec_name"], "aac", "{name}");
+            }
             "prores" => {
                 assert!(fmt_name.contains("mov"), "{name}: {fmt_name}");
                 assert_eq!(v["codec_name"], "prores", "{name}");

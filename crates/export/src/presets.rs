@@ -48,17 +48,24 @@ fn h264(size: Option<(u32, u32)>, kbps: u32, max_kbps: u32) -> ExportSettings {
 
 /// The settings a format starts from when it is picked in Export mode: H.264 as the default preset
 /// (Match Source, 0.2 bits per pixel), HEVC likewise at half that (it reaches the same quality at
-/// about half H.264's bitrate), the other formats their own defaults.
+/// about half H.264's bitrate) and AV1 the same, the other formats their own defaults.
 pub fn format_defaults(format: Format) -> ExportSettings {
     match format {
         Format::H264 => adaptive(0.2),
         Format::Hevc => ExportSettings { format: Format::Hevc, ..adaptive(0.1) },
+        // AV1 is at least as efficient as HEVC: the "Match Source – AV1" preset
+        Format::Av1 => av1(None, 5_000, Some(0.1)),
         f => ExportSettings { format: f, ..Default::default() },
     }
 }
 
 fn adaptive(bpp: f32) -> ExportSettings {
     ExportSettings { adaptive_bitrate: Some(bpp), max_bitrate_kbps: None, ..h264(None, 10_000, 0) }
+}
+
+/// AV1 in MP4 with AAC; `bpp` = adaptive bits per pixel (None: `kbps`).
+fn av1(size: Option<(u32, u32)>, kbps: u32, bpp: Option<f32>) -> ExportSettings {
+    ExportSettings { format: Format::Av1, adaptive_bitrate: bpp, max_bitrate_kbps: None, ..h264(size, kbps, 0) }
 }
 
 fn mov(format: Format, profile: &str) -> ExportSettings {
@@ -111,6 +118,12 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p(DEFAULT_PRESET, ms, "H.264 at the sequence's frame size and rate; bitrate adapts to the frame size (0.2 bits per pixel)", adaptive(0.2)),
         p("Match Source – Adaptive Medium Bitrate", ms, "H.264 at the sequence's frame size and rate; 0.1 bits per pixel", adaptive(0.1)),
         p("Match Source – Adaptive Low Bitrate", ms, "H.264 at the sequence's frame size and rate; 0.05 bits per pixel", adaptive(0.05)),
+        p(
+            "Match Source – AV1",
+            ms,
+            "AV1 (MP4) at the sequence's frame size and rate; 0.1 bits per pixel, fast software encode, AAC 320 kbps",
+            av1(None, 5_000, Some(0.1)),
+        ),
         p("High Quality 1080p HD", web, "H.264 1920×1080, VBR 1 pass, 20 Mbps target, AAC 320 kbps", h264(Some((1920, 1080)), 20_000, 24_000)),
         p("High Quality 2160p 4K", web, "H.264 3840×2160, VBR 1 pass, 60 Mbps target, AAC 320 kbps", h264(Some((3840, 2160)), 60_000, 72_000)),
         p("YouTube 1080p Full HD", web, "H.264 1920×1080 for video sharing sites, VBR 1 pass, 16 Mbps", h264(Some((1920, 1080)), 16_000, 20_000)),
@@ -127,6 +140,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             "H.264 3840×2160, VBR 2 pass, 50 Mbps",
             ExportSettings { bitrate_mode: BitrateMode::Vbr2Pass, ..h264(Some((3840, 2160)), 50_000, 65_000) },
         ),
+        p("AV1 1080p Full HD", web, "AV1 (MP4) 1920×1080, 8 Mbps average, fast software encode, AAC 320 kbps", av1(Some((1920, 1080)), 8_000, None)),
         p("Social Vertical 1080×1920", web, "H.264 9:16 portrait for short-form social video, scaled to fill, 12 Mbps", vertical),
         p("Apple ProRes 422 HQ", bc, "QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM", mov(Format::ProRes, "hq")),
         p("Apple ProRes 422", bc, "QuickTime, ProRes 422, 24-bit 48 kHz PCM", mov(Format::ProRes, "standard")),
