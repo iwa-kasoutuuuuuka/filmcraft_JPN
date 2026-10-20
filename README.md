@@ -113,8 +113,8 @@ cd filmcraft_JPN
 # 2. アプリケーションのビルドと起動（GUIモード）
 cargo run --release -p filmcraft
 
-# （オプション）AI 連携用 MCP サーバーとして起動する場合
-cargo run --release -p filmcraft-cli -- mcp
+# （オプション）AI 連携用 MCP サーバーをビルドする場合（Claude Code / Antigravity から使う。詳細は「AI / MCP 連携」）
+cargo build --release -p filmcraft-cli
 ```
 
 > [!TIP]
@@ -404,46 +404,95 @@ Premiere Pro 標準キーバインドに完全準拠しています。`Ctrl + Al
 
 ## <a id="aiエージェント--mcp自動化連携"></a>🤖 AI エージェント / MCP 自動化連携
 
-FilmCraft は、AI エージェントや外部スクリプトから自動操作できるように設計されています。すべての編集操作、タイムライン走査、エフェクト適用、書き出しは **MCP (Model Context Protocol)** 経由で呼び出すことができます。
+FilmCraft は、AI エージェントや外部スクリプトから自動操作できるように設計されています。すべての編集操作、タイムライン走査、エフェクト適用、書き出しは **MCP (Model Context Protocol)** 経由で呼び出すことができます。MCP に対応したクライアントなら何でも接続できます。**Claude Code** と **Antigravity** は設定ファイルをリポジトリに同梱済みで、フォルダを開くだけで使えます。
 
-### MCP サーバーの起動
+### MCP サーバーの 2 つのモード
+
+`filmcraft-cli mcp` が stdio で MCP サーバーになります。
+
+| モード | コマンド | 操作対象 |
+|---|---|---|
+| **ヘッドレス** | `filmcraft-cli mcp --demo` または `--project 作品.fcproj`（どちらも無ければ空のプロジェクト） | ウィンドウを開かずにエンジンを直接操作。編集・レンダリングの自動化向け |
+| **ブリッジ** | `filmcraft-cli mcp --bridge 127.0.0.1:9876` | `filmcraft --control 9876` で起動中のデスクトップアプリ。`ui_click` / `ui_screenshot` で画面そのものを操作 |
+
+どちらのモードでも、先に CLI をビルドしておきます（設定ファイルは `target/release/filmcraft-cli` を指しています）。
 
 ```powershell
-cargo run --release -p filmcraft-cli -- mcp
+cargo build --release -p filmcraft-cli -p filmcraft
+
+# ブリッジモードを使うときだけ、アプリを制御ポート付きで起動しておく
+cargo run --release -p filmcraft -- --control 9876
 ```
 
-### 主要な MCP コマンドの例 (JSON-RPC)
+### Claude Code で使う
+
+リポジトリ直下の [`.mcp.json`](.mcp.json) に `filmcraft`（ブリッジ）と `filmcraft-headless`（ヘッドレス / デモ）の 2 つが登録されています。このフォルダで `claude` を起動し、プロジェクトの MCP サーバーを承認すれば完了です。手動で登録する場合や別のフォルダから使う場合は、絶対パスで追加します。
+
+```powershell
+claude mcp add filmcraft-headless -- E:\path\to\filmcraft_JPN\target\release\filmcraft-cli.exe mcp --demo
+```
+
+### Antigravity で使う
+
+Antigravity はワークスペース直下の [`.agents/mcp_config.json`](.agents/mcp_config.json) を読み込みます。このファイルも同梱済みなので、Antigravity でこのフォルダを開き、エージェントパネル右上の **…** ➔ **MCP Servers** ➔ **Manage MCP Servers** で `filmcraft` / `filmcraft-headless` が有効になっていることを確認してください。
+
+全ワークスペース共通で使いたい場合、または相対パスで接続できない場合は、**View raw config** で開く `~/.gemini/config/mcp_config.json` に絶対パスで追加します（Windows では `C:\Users\<ユーザー名>\.gemini\config\mcp_config.json`）。
+
+```json
+{
+  "mcpServers": {
+    "filmcraft-headless": {
+      "command": "E:\path\to\filmcraft_JPN\target\release\filmcraft-cli.exe",
+      "args": ["mcp", "--demo"]
+    },
+    "filmcraft": {
+      "command": "E:\path\to\filmcraft_JPN\target\release\filmcraft-cli.exe",
+      "args": ["mcp", "--bridge", "127.0.0.1:9876"]
+    }
+  }
+}
+```
+
+### その他の MCP クライアント (Cursor / Gemini CLI / Codex など)
+
+上と同じ `command` と `args` を、各クライアントの MCP 設定（stdio サーバー）に登録してください。設定ファイルの形式はどれも `{"mcpServers": {"名前": {"command": …, "args": […]}}}` が基本です。
+
+### MCP ツール一覧
+
+| ツール | 内容 |
+|---|---|
+| `command_list` | エンジンコマンド（約 600 個）の ID とパラメータを一覧 |
+| `command_run` | コマンドを実行（すべて「元に戻す」可能） |
+| `project_inspect` / `sequence_inspect` | プロジェクトツリー / アクティブなシーケンスを JSON で取得。返ってくる ID をコマンドに渡せます |
+| `media_import` | 素材の読み込み |
+| `render_frame` | 指定時刻のフレームを画像で取得 |
+| `ui_inspect` / `ui_elements` / `ui_click` / `ui_drag` / `ui_key` / `ui_type` / `ui_screenshot` / `ui_control` | ブリッジモードで起動中のアプリを操作（画面要素の列挙、クリック、キー入力、スクリーンショット） |
+
+時間は Tick（1 秒 = 254,016,000,000）ですが、コマンドは `seconds` / `frame` / `timecode` でも受け付けます。
+
+### `command_run` の例
+
+エージェントからは「`sequence.removeSilence` を実行して」のように頼むだけで済みますが、内部では次のような呼び出しになります。
 
 - **無音区間の自動削除**:
   ```json
-  {
-    "method": "transcript.removePauses",
-    "params": { "minSeconds": 0.5, "keepSeconds": 0.1 }
-  }
+  { "command": "sequence.removeSilence", "params": { "minSeconds": 0.5, "keepSeconds": 0.1 } }
   ```
-- **クリップのカット**:
+- **再生ヘッド位置でカット**:
   ```json
-  {
-    "method": "sequence.addEdit",
-    "params": {}
-  }
+  { "command": "sequence.addEdit", "params": { "seconds": 3 } }
   ```
 - **マルチカメラシーケンスの生成**:
   ```json
-  {
-    "method": "clip.createMulticam",
-    "params": { "name": "対談_マルチカム", "syncPoint": "Audio" }
-  }
+  { "command": "clip.createMulticam", "params": { "name": "対談_マルチカム", "method": "audio", "audio": "switch" } }
   ```
 - **プロキシの生成**:
   ```json
-  {
-    "method": "media.createProxies",
-    "params": { "format": "ProResProxy", "scale": 0.5 }
-  }
+  { "command": "media.createProxies", "params": { "preset": "prores_proxy_half" } }
   ```
 
----
+MCP を介さずスクリプトから直接叩く場合は、制御チャネル（`filmcraft --control 9876`、1 行 1 JSON）に `{"id": 1, "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}` を送ります。詳細は [docs/control-protocol.md](docs/control-protocol.md) と [docs/agents.md](docs/agents.md) を参照してください。
+
 
 ## <a id="便利機能"></a>✨ この版で追加した便利機能
 
