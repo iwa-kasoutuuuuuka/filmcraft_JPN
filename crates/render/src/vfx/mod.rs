@@ -14,7 +14,7 @@
 mod blur;
 pub(crate) mod color;
 pub(crate) use color::cdl;
-mod distort;
+pub(crate) mod distort;
 mod immersive;
 mod lights;
 mod stylize;
@@ -466,7 +466,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "ultra_key" => color::ultra_key(img, e, cx),
         "track_matte" => color::track_matte(img, e, cx),
         "cineon_converter" => color::cineon(img, e, cx),
-        "noise" | "noise_legacy" => color::noise(img, e, cx),
         // Blur & Sharpen
         "bokeh_blur" => blur::bokeh(img, e, cx),
         "channel_blur" => blur::channel_blur(img, e, cx),
@@ -476,9 +475,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "gaussian_blur_legacy" => alias(img, "gaussian_blur"),
         "directional_blur_legacy" => alias(img, "directional_blur"),
         // Distort / Transform / Utility geometry
-        "corner_pin" => distort::corner_pin(img, e, cx),
-        "magnify" | "magnify_legacy" => distort::magnify(img, e, cx),
-        "spherize" => distort::spherize(img, e, cx),
         "turbulent_displace" => distort::turbulent_displace(img, e, cx),
         "rotate_3d" => distort::rotate_3d(img, e, cx),
         "grow" | "shrink" => distort::grow(img, e, cx),
@@ -491,7 +487,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "auto_align" => distort::auto_align(img, e, cx),
         "rounded_crop" => distort::rounded_crop(img, e, cx),
         "mosaic" | "mosaic_legacy" => distort::mosaic(img, e, cx),
-        "twirl_legacy" => alias(img, "twirl"),
         // Lights & Glows
         "echo_glow" => lights::echo_glow(img, e, cx),
         "edge_glow" => lights::edge_glow(img, e, cx),

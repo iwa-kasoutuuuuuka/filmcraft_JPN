@@ -73,6 +73,18 @@ const OP_VIDEO_LIMITER: u32 = 39u;
 const OP_UKEY_MATTE: u32 = 40u;
 const OP_UKEY_CHOKE: u32 = 41u;
 const OP_UKEY_APPLY: u32 = 42u;
+// GPU3 (`filmcraft_render::gpufx_ext`): `ext_pixel`
+const OP_NOISE: u32 = 43u;
+const OP_WARP: u32 = 44u;
+const OP_MAGNIFY: u32 = 45u;
+const OP_FIND_EDGES: u32 = 46u;
+const OP_EMBOSS: u32 = 47u;
+const OP_BEVEL_ALPHA: u32 = 48u;
+const OP_REPLICATE: u32 = 49u;
+const OP_STROBE: u32 = 50u;
+const OP_SHADOW: u32 = 51u;
+const OP_SHADOW_OVER: u32 = 52u;
+const OP_GENERATE: u32 = 53u;
 
 fn size() -> vec2<i32> {
     return vec2<i32>(i32(u.i0.y), i32(u.i0.z));
@@ -1391,6 +1403,10 @@ fn fx_px(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let p = vec2<i32>(id.xy);
+    if u.i0.x >= OP_NOISE {
+        textureStore(dst, p, ext_pixel(u.i0.x, p));
+        return;
+    }
     textureStore(dst, p, pixel(u.i0.x, p));
 }
 
@@ -1427,6 +1443,374 @@ fn fx_run(@builtin(global_invocation_id) id: vec3<u32>) {
         if repeat || in_i < n {
             let j = clamp(in_i, 0, n - 1);
             acc += ld(select(vec2(j, line), vec2(line, j), vertical));
+        }
+    }
+}
+
+// ---- GPU3: `filmcraft_render::gpufx_ext::ExtOp::apply`
+
+// 64-bit unsigned arithmetic on (lo, hi) pairs, wrapping as Rust's `wrapping_*` (Noise's hash).
+fn mul32_wide(a: u32, b: u32) -> vec2<u32> {
+    let a0 = a & 0xffffu; let a1 = a >> 16u;
+    let b0 = b & 0xffffu; let b1 = b >> 16u;
+    let p00 = a0 * b0; let p01 = a0 * b1; let p10 = a1 * b0; let p11 = a1 * b1;
+    let mid = (p00 >> 16u) + (p01 & 0xffffu) + (p10 & 0xffffu);
+    return vec2((p00 & 0xffffu) | (mid << 16u), p11 + (p01 >> 16u) + (p10 >> 16u) + (mid >> 16u));
+}
+
+fn mul64(a: vec2<u32>, b: vec2<u32>) -> vec2<u32> {
+    let p = mul32_wide(a.x, b.x);
+    return vec2(p.x, p.y + a.x * b.y + a.y * b.x);
+}
+
+fn shr64(a: vec2<u32>, n: u32) -> vec2<u32> {
+    return vec2((a.x >> n) | (a.y << (32u - n)), a.y >> n);
+}
+
+fn add64(a: vec2<u32>, c: u32) -> vec2<u32> {
+    let lo = a.x + c;
+    return vec2(lo, a.y + select(0u, 1u, lo < a.x));
+}
+
+// `effects::hash3`
+fn hash3(x: u32, y: u32, z: vec2<u32>) -> f32 {
+    var h = mul64(vec2(x, 0u), vec2(0x7F4A7C15u, 0x9E3779B9u)) ^ mul64(vec2(y, 0u), vec2(0x27D4EB4Fu, 0xC2B2AE3Du))
+        ^ mul64(z, vec2(0x9E3779F9u, 0x165667B1u));
+    h = h ^ shr64(h, 31u);
+    h = mul64(h, vec2(0x1CE4E5B9u, 0xBF58476Du));
+    h = h ^ shr64(h, 29u);
+    return f32(h.y >> 8u) / 16777216.0;
+}
+
+// `Image::unpremul`
+fn unpremul(p: vec4<f32>) -> vec3<f32> {
+    return select(p.rgb / p.a, vec3(0.0), p.a <= 1e-6);
+}
+
+// `vfx::blend_simple`
+fn blend_simple(mode: u32, b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    switch mode {
+        case 1u: { return b + s; }
+        case 2u: { return 1.0 - (1.0 - min(b, vec3(1.0))) * (1.0 - min(s, vec3(1.0))); }
+        case 3u: { return b * s; }
+        case 4u: {
+            let hi = 1.0 - 2.0 * (1.0 - min(b, vec3(1.0))) * (1.0 - min(s, vec3(1.0)));
+            return select(hi, 2.0 * b * s, b < vec3(0.5));
+        }
+        default: { return s; }
+    }
+}
+
+// `Warp::map`; (1e30, 1e30) for "transparent" (None): outside any image.
+fn warp_map(x: f32, y: f32) -> vec2<f32> {
+    let none = vec2(1e30, 1e30);
+    let p0 = u.p0; let p1 = u.p1; let p2 = u.p2; let p3 = u.p3;
+    switch u.i1.x {
+        case 1u: {
+            // Corner Pin: p0..p2.x the inverse homography (row-major), p2.y / p2.z the size
+            let w = p1.z * x + p1.w * y + p2.x;
+            if abs(w) < 1e-12 {
+                return none;
+            }
+            let uu = (p0.x * x + p0.y * y + p0.z) / w;
+            let vv = (p0.w * x + p1.x * y + p1.y) / w;
+            if uu >= -1e-3 && vv >= -1e-3 && uu <= 1.0 + 1e-3 && vv <= 1.0 + 1e-3 {
+                return vec2(uu * p2.y, vv * p2.z);
+            }
+            return none;
+        }
+        case 2u: {
+            // Lens Distortion: k, centre, norm
+            let d = (vec2(x, y) - p0.yz) / p0.w;
+            let s = 1.0 - p0.x * dot(d, d);
+            return p0.yz + d * s * p0.w;
+        }
+        case 3u: {
+            // Twirl: centre, angle, radius
+            let d = vec2(x, y) - p0.xy;
+            let dist = sqrt(dot(d, d));
+            if dist >= p0.w {
+                return vec2(x, y);
+            }
+            let k = 1.0 - dist / p0.w;
+            let a = p0.z * k * k;
+            let sn = sin(a);
+            let cs = cos(a);
+            return p0.xy + vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+        }
+        case 4u: {
+            // Wave Warp: height, width, direction, phase in cycles (reduced on the CPU)
+            let along = x * p0.z + y * p0.w;
+            let cyc = fract_euclid(along / p0.y - p1.x);
+            let off = p0.x * sin(cyc * 6.283185307179586);
+            return vec2(x - p0.w * off, y + p0.z * off);
+        }
+        case 5u: {
+            // Spherize: centre, radius
+            let d = vec2(x, y) - p0.xy;
+            let dist = sqrt(dot(d, d));
+            if dist >= p0.z || dist < 1e-9 {
+                return vec2(x, y);
+            }
+            let n = dist / p0.z;
+            let k = 1.0 - 0.5 * sqrt(1.0 - n * n);
+            return p0.xy + d * k;
+        }
+        case 6u: {
+            // Basic 3D: n = p0.xyz, u = (p0.w, p1.xy), v = (p1.zw, p2.x), z0 p2.y, focal p2.z,
+            // size p3.xy
+            let px = x - p3.x / 2.0;
+            let py = y - p3.y / 2.0;
+            let n = p0.xyz;
+            let denom = n.x * px + n.y * py + n.z * p2.z;
+            if abs(denom) < 1e-9 {
+                return none;
+            }
+            let tt = (n.z * p2.y) / denom;
+            if tt <= 0.0 {
+                return none;
+            }
+            // (dir.z tt - z0, rearranged: no cancellation of two large numbers in f32)
+            let hz = p2.y * (-(n.x * px + n.y * py)) / denom;
+            let hit = vec3(px * tt, py * tt, hz);
+            let su = dot(hit, vec3(p0.w, p1.x, p1.y));
+            let sv = dot(hit, vec3(p1.z, p1.w, p2.x));
+            return vec2(su + p3.x / 2.0, sv + p3.y / 2.0);
+        }
+        default: {
+            return vec2(x, y);
+        }
+    }
+}
+
+// `effects::fill_over` for one pixel
+fn fill_over(o: vec4<f32>, c: vec3<f32>, op: f32) -> vec4<f32> {
+    return vec4(c * op + o.rgb * (1.0 - op), op + o.a * (1.0 - op));
+}
+
+// `f32::rem_euclid` (the division's rounding corrected into the remainder's range)
+fn rem_euclid(x: f32, m: f32) -> f32 {
+    var r = x - m * floor(x / m);
+    if r < 0.0 { r += m; }
+    if r >= m { r -= m; }
+    return r;
+}
+
+fn generate(p: vec2<i32>, o: vec4<f32>) -> vec4<f32> {
+    let s = size();
+    let pc = vec2<f32>(p) + 0.5;
+    let p0 = u.p0; let p1 = u.p1; let p2 = u.p2; let p3 = u.p3;
+    switch u.i1.x {
+        case 1u: {
+            // Ramp: start p0.xy, vector p0.zw, colours p1.xyz / p2.xyz (sRGB), blend p1.w
+            let v = p0.zw;
+            let len2 = max(dot(v, v), 1e-9);
+            let d = pc - p0.xy;
+            var t: f32;
+            if u.i1.y != 0u {
+                t = sqrt(dot(d, d)) / sqrt(len2);
+            } else {
+                t = dot(d, v) / len2;
+            }
+            t = clamp(t, 0.0, 1.0);
+            return fill_over(o, dec(p1.xyz + (p2.xyz - p1.xyz) * t), 1.0 - p1.w);
+        }
+        case 2u: {
+            // 4-Color Gradient: colours p0..p3 .xyz, opacity p0.w, exponent p1.w
+            let w = f32(s.x);
+            let h = f32(s.y);
+            var pts = array<vec2<f32>, 4>(vec2(0.25 * w, 0.25 * h), vec2(0.75 * w, 0.25 * h), vec2(0.25 * w, 0.75 * h), vec2(0.75 * w, 0.75 * h));
+            var cs = array<vec3<f32>, 4>(p0.xyz, p1.xyz, p2.xyz, p3.xyz);
+            var acc = vec3(0.0);
+            var wsum = 0.0;
+            for (var i = 0; i < 4; i++) {
+                let dd = pc - pts[i];
+                let d = max(sqrt(dd.x * dd.x + dd.y * dd.y), 1.0);
+                let wgt = 1.0 / pow(d, p1.w);
+                acc += cs[i] * wgt;
+                wsum += wgt;
+            }
+            return fill_over(o, dec(acc / wsum), p0.w);
+        }
+        case 3u: {
+            // Circle: centre p0.xy, radius p0.z, opacity p0.w, linear colour p1.xyz
+            let dd = pc - p0.xy;
+            let a = clamp(p0.z - sqrt(dot(dd, dd)) + 0.5, 0.0, 1.0) * p0.w;
+            if a > 0.0 {
+                return fill_over(o, p1.xyz, a);
+            }
+            return o;
+        }
+        case 4u: {
+            // Grid: size p0.x, border p0.y, opacity p0.z, linear colour p1.xyz, from the centre
+            let sz = p0.x;
+            let rx = rem_euclid(f32(p.x) - f32(s.x) / 2.0, sz);
+            let ry = rem_euclid(f32(p.y) - f32(s.y) / 2.0, sz);
+            let g = min(min(rx, sz - rx), min(ry, sz - ry));
+            let a = clamp(p0.y * 0.5 - g + 0.5, 0.0, 1.0) * p0.z;
+            if a > 0.0 {
+                return fill_over(o, p1.xyz, a);
+            }
+            return o;
+        }
+        default: {
+            return o;
+        }
+    }
+}
+
+fn ext_pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
+    let s = size();
+    let pc = vec2<f32>(p) + 0.5;
+    switch op {
+        case OP_NOISE: {
+            // i1: flags (colour, clip), grain (whole pixels), frame (lo, hi); p0.x amount
+            let o = ld(p);
+            let a = o.a;
+            if a <= 0.0 {
+                return o;
+            }
+            let g = max(u.i1.y, 1u);
+            let gx = u32(p.x) / g;
+            let gy = u32(p.y) / g;
+            let frame = vec2(u.i1.z, u.i1.w);
+            let n0 = hash3(gx, gy, frame) - 0.5;
+            var ns = vec3(n0);
+            if (u.i1.x & 1u) != 0u {
+                ns = vec3(n0, hash3(gx, gy, add64(frame, 7777u)) - 0.5, hash3(gx, gy, add64(frame, 99991u)) - 0.5);
+            }
+            var c = enc(o.rgb / a) + ns * u.p0.x;
+            if (u.i1.x & 2u) != 0u {
+                c = clamp(c, vec3(0.0), vec3(1.0));
+            }
+            return vec4(dec(c) * a, a);
+        }
+        case OP_WARP: {
+            let q = warp_map(pc.x, pc.y);
+            // (far outside, or not a number: transparent, as every tap there)
+            if !(abs(q.x) < 1e7 && abs(q.y) < 1e7) {
+                return vec4(0.0);
+            }
+            return sample_bilinear(q.x, q.y);
+        }
+        case OP_MAGNIFY: {
+            // p0: centre, magnification, size; p1.xy: feather, opacity; i1: square, mode
+            let o = ld(p);
+            let c = u.p0.xy;
+            let m = u.p0.z;
+            let r = u.p0.w;
+            let fe = u.p1.x;
+            let op = u.p1.y;
+            let d2 = pc - c;
+            var d: f32;
+            if u.i1.x != 0u {
+                d = max(abs(d2.x), abs(d2.y));
+            } else {
+                d = sqrt(dot(d2, d2));
+            }
+            var k: f32;
+            if fe > 0.0 {
+                k = clamp((r - d) / fe, 0.0, 1.0);
+            } else {
+                k = clamp(r - d + 0.5, 0.0, 1.0);
+            }
+            k = k * op;
+            if k <= 0.0 {
+                return o;
+            }
+            let sm = sample_bilinear(c.x + d2.x / m, c.y + d2.y / m);
+            let mixed = blend_simple(u.i1.y, unpremul(o), unpremul(sm));
+            let out = vec4(mixed * sm.a, sm.a);
+            return o + (out - o) * k;
+        }
+        case OP_FIND_EDGES: {
+            // luma of the 3x3 neighbourhood (edge-clamped), l[(dy + 1) * 3 + dx + 1]
+            var l: array<f32, 9>;
+            for (var j = 0; j < 3; j++) {
+                for (var i = 0; i < 3; i++) {
+                    let q = clamp(p + vec2(i - 1, j - 1), vec2(0), s - 1);
+                    l[j * 3 + i] = luma709(ld(q).rgb);
+                }
+            }
+            let gx = l[2] + 2.0 * l[5] + l[8] - l[0] - 2.0 * l[3] - l[6];
+            let gy = l[6] + 2.0 * l[7] + l[8] - l[0] - 2.0 * l[1] - l[2];
+            var m = min(sqrt(gx * gx + gy * gy), 1.0);
+            if u.i1.x == 0u {
+                m = 1.0 - m;
+            }
+            let o = ld(p);
+            let blend = u.p0.x;
+            return vec4(m * o.a * (1.0 - blend) + o.rgb * blend, o.a);
+        }
+        case OP_EMBOSS: {
+            let dx = u.p0.x;
+            let dy = u.p0.y;
+            let contrast = u.p0.z;
+            let blend = u.p0.w;
+            let a = sample_clamped(pc.x + dx, pc.y + dy);
+            let b = sample_clamped(pc.x - dx, pc.y - dy);
+            let v = srgb_to_linear1(clamp(0.5 + (luma709(a.rgb) - luma709(b.rgb)) * contrast * 2.0, 0.0, 1.0));
+            let o = ld(p);
+            return vec4(v * o.a * (1.0 - blend) + o.rgb * blend, o.a);
+        }
+        case OP_BEVEL_ALPHA: {
+            let th = u.p0.x;
+            let lx = u.p0.y;
+            let ly = u.p0.z;
+            let inten = u.p0.w;
+            let gx = sample_clamped(pc.x + th, pc.y).a - sample_clamped(pc.x - th, pc.y).a;
+            let gy = sample_clamped(pc.x, pc.y + th).a - sample_clamped(pc.x, pc.y - th).a;
+            let shade = -(gx * lx + gy * ly) * inten;
+            let o = ld(p);
+            let al = max(o.a, 0.0);
+            return vec4(clamp(o.rgb + shade * al, vec3(0.0), vec3(al)), o.a);
+        }
+        case OP_REPLICATE: {
+            let n = u.i1.x;
+            let uu = (u32(p.x) * n) % u32(s.x);
+            let vv = (u32(p.y) * n) % u32(s.y);
+            let fnn = f32(n);
+            return sample_clamped((f32(uu) + 0.5) + (fnn - 1.0) * 0.5 / fnn, f32(vv) + 0.5);
+        }
+        case OP_STROBE: {
+            let o = ld(p);
+            let a = o.a;
+            if a <= 1e-6 {
+                return o;
+            }
+            let lc = u.p0.xyz;
+            return vec4((lc + (o.rgb / a - lc) * u.p0.w) * a, a);
+        }
+        case OP_SHADOW: {
+            // the layer moved (inverse offset p0.xy, rect i1), its alpha x p0.z in colour p1.xyz
+            if u32(p.x) < u.i1.x || u32(p.x) >= u.i1.y || u32(p.y) < u.i1.z || u32(p.y) >= u.i1.w {
+                return vec4(0.0);
+            }
+            let uu = pc.x + u.p0.x;
+            let vv = pc.y + u.p0.y;
+            if uu < -1.0 || vv < -1.0 || uu > f32(s.x) + 1.0 || vv > f32(s.y) + 1.0 {
+                return vec4(0.0);
+            }
+            let a = sample_bilinear(uu, vv).a * u.p0.z;
+            return vec4(u.p1.xyz * a, a);
+        }
+        case OP_SHADOW_OVER: {
+            // src: the (blurred) shadow, aux: the layer; i1.x: shadow only
+            let sh = ld(p);
+            if u.i1.x != 0u {
+                return sh;
+            }
+            let o = textureLoad(aux, p, 0);
+            if o.a <= 0.0 {
+                return sh;
+            }
+            return o + sh * (1.0 - o.a);
+        }
+        case OP_GENERATE: {
+            return generate(p, ld(p));
+        }
+        default: {
+            return ld(p);
         }
     }
 }
