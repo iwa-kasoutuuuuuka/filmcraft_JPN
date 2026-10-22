@@ -212,3 +212,34 @@ fn rav1e_panics_become_errors() {
     assert!(enc.encode(&YuvFrame { y: &y, u: &u, v: &v, y_stride: 32, uv_stride: 16 }).is_err());
     assert!(enc.flush().is_err());
 }
+
+/// Detailed pictures (noise-like texture) at a low target: bitrate mode may use any quantizer, so
+/// the stream follows the target (the default quantizer cap held a 720p export at 6.4 Mbps
+/// whether 500 or 2000 kbps was asked for).
+#[test]
+fn bitrate_mode_follows_the_target_on_detailed_pictures() {
+    let (w, h) = (320usize, 192usize);
+    let rate = |kbps: u32| {
+        let mut cfg = EncoderConfig::new(w as u32, h as u32, 25, 1);
+        cfg.rate = RateControl::Bitrate { kbps };
+        let mut enc = Encoder::new(&cfg).unwrap();
+        let mut packets = Vec::new();
+        let mut seed = 12345u32;
+        for _ in 0..75 {
+            // fresh texture every frame: hard to compress
+            let y: Vec<u8> = (0..w * h)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    16 + (seed >> 24) as u8 % 200
+                })
+                .collect();
+            let (u, v) = (vec![128u8; w.div_ceil(2) * h.div_ceil(2)], vec![128u8; w.div_ceil(2) * h.div_ceil(2)]);
+            packets.extend(enc.encode(&YuvFrame { y: &y, u: &u, v: &v, y_stride: w, uv_stride: w.div_ceil(2) }).unwrap());
+        }
+        packets.extend(enc.flush().unwrap());
+        packets.iter().map(|p| p.data.len()).sum::<usize>() as f64 * 8.0 / 3.0 / 1000.0
+    };
+    let (low, high) = (rate(150), rate(1200));
+    assert!(low < 300.0, "150 kbps asked, {low:.0} kbps made");
+    assert!(high > low * 3.0, "the target steers the size: {low:.0} vs {high:.0} kbps");
+}

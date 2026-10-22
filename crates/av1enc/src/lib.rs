@@ -167,6 +167,10 @@ impl EncoderConfig {
         match self.rate {
             RateControl::Bitrate { kbps } => {
                 e.bitrate = i32::try_from(kbps as u64 * 1000).unwrap_or(i32::MAX);
+                // in bitrate mode rav1e takes `quantizer` as the coarsest quantizer it may use: the
+                // preset's default (100) floored detailed pictures far above the target (a 720p
+                // export at 500 or 2000 kbps both came out at 6.4 Mbps)
+                e.quantizer = 255;
             }
             RateControl::Quantizer(q) => {
                 e.bitrate = 0;
