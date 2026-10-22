@@ -262,7 +262,11 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   Horizontal / Vertical Flip, Mirror and Offset; Lumetri, the keys, Video Limiter, Mosaic and
   Vignette; and (`render::gpufx_ext`) Noise, Drop Shadow, Corner Pin, Lens Distortion, Twirl, Wave
   Warp, Spherize, Basic 3D, Magnify, Find Edges, Emboss, Bevel Alpha, Replicate, Strobe Light,
-  Ramp, 4-Color Gradient, Circle and Grid. When every enabled effect of a media clip is in
+  Ramp, 4-Color Gradient, Circle and Grid; and (`render::gpufx_more`) Lens Flare, RGB Split,
+  Lighting Effects, Color Emboss, Rounded Crop, Gradient, Light Leaks, Turbulent Displace, Median,
+  Channel Blur, Alpha Glow, Edge Glow, Roughen Edges and Reduce Interlace Flicker (planes such as
+  a glow's edge mask or blurred alpha are made in single channels of a texture kept beside the
+  layer, with channel-masked box passes). When every enabled effect of a media clip is in
   that set (with finite parameters, and no Transform shrinking the picture below half
   size, which the CPU pre-filters), the plan hands the GPU the clip's source with
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`

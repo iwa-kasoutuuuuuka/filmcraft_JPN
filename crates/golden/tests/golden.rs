@@ -885,7 +885,7 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
 /// (no CPU-rendered image), including keyframed parameters, transformed clips, partial opacity
 /// and blend modes, and matches the CPU render with the GPU parity tolerance (p99 ≤ 6, mean < 1.5
 /// away from layer outlines) at three times. A clip with an effect the GPU stage lacks
-/// (Median) still falls back to a CPU layer image.
+/// (Wonder Glow) still falls back to a CPU layer image.
 #[test]
 fn gpu_effect_chains_match_cpu_render() {
     let mut b = Builder::new(5);
@@ -921,7 +921,7 @@ fn gpu_effect_chains_match_cpu_render() {
     b.effect(v4, "black_white", &[]);
     let v5 = b.place(4, sunset, 0, 48);
     b.fixed(v5, "motion", &[("scale", fl(25.0)), ("position", pt(60.0, 140.0))]);
-    b.effect(v5, "median", &[("radius", fl(2.0))]);
+    b.effect(v5, "wonder_glow", &[]);
     let mut s = b.at(12);
     let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
@@ -930,7 +930,7 @@ fn gpu_effect_chains_match_cpu_render() {
         let fx = l.fx.as_ref().unwrap_or_else(|| panic!("V{}: not a GPU effect layer", i + 1));
         assert!(!fx.ops.is_empty());
     }
-    assert!(layers[4].fx.is_none(), "Median is rendered on the CPU");
+    assert!(layers[4].fx.is_none(), "Wonder Glow is rendered on the CPU");
     let Some((dev, q)) = device() else {
         eprintln!("SKIPPED (gpu effect parity): no GPU adapter");
         return;

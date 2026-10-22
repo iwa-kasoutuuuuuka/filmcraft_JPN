@@ -532,3 +532,47 @@ fn gpu3_effects_plan_as_gpu_layers() {
         assert!(max < 0.02, "scale {scale}: max diff {max}");
     }
 }
+
+/// Clips with GPU4 effects (glows, Turbulent Displace, Median, Channel Blur, Roughen Edges…) are
+/// planned as GPU effect layers, at full and half resolution, and the plan run on the CPU gives
+/// `render_sequence`'s frame.
+#[test]
+fn gpu4_effects_plan_as_gpu_layers() {
+    let (mut p, red, ocean, seq, map) = setup();
+    place(&mut p, seq, 0, ocean, 0, 48);
+    let top = place(&mut p, seq, 1, red, 0, 48);
+    let fx = |id: &str, params: &[(&str, f64)]| {
+        let mut e = filmcraft_project::find_effect(id).unwrap().instance();
+        for (k, v) in params {
+            e.params.get_mut(*k).unwrap().value = ParamValue::Float(*v);
+        }
+        e
+    };
+    let ids = ["edge_glow", "turbulent_displace", "median", "channel_blur", "roughen_edges", "lens_flare", "reduce_interlace_flicker"];
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(top).unwrap();
+        it.effects.push(fx("edge_glow", &[("radius", 12.0)]));
+        it.effects.push(fx("turbulent_displace", &[("amount", 20.0)]));
+        it.effects.push(fx("median", &[("radius", 2.0)]));
+        it.effects.push(fx("channel_blur", &[("red", 8.0)]));
+        it.effects.push(fx("roughen_edges", &[("border", 10.0)]));
+        it.effects.push(fx("lens_flare", &[]));
+        it.effects.push(fx("reduce_interlace_flicker", &[("softness", 2.0)]));
+        it.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
+    }
+    let r = FrameRate::FPS_24;
+    for scale in [1.0, 0.5] {
+        let opts = RenderOptions { scale, ..Default::default() };
+        let plan = plan::plan_frame(&p, seq, r.tick_of(12), opts, &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("GPU4 effects should be GPU-drawable") };
+        let fx: Vec<&plan::LayerFx> = layers.iter().filter_map(|l| l.fx.as_deref()).collect();
+        assert_eq!(fx.len(), 1, "the clip runs the effect stage");
+        assert_eq!(fx[0].ops.len(), ids.len());
+        let got = plan::execute_cpu(&plan);
+        let reference = render_sequence(&p, seq, r.tick_of(12), opts, &map);
+        assert_eq!((got.w, got.h), (reference.w, reference.h));
+        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(max < 0.02, "scale {scale}: max diff {max}");
+    }
+}

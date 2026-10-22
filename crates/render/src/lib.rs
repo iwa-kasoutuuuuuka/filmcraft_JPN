@@ -18,6 +18,7 @@ pub mod effects;
 pub mod facedet;
 pub mod gpufx;
 pub mod gpufx_ext;
+pub mod gpufx_more;
 pub mod graphic_clip;
 pub mod graphics;
 pub mod image;

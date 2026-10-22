@@ -1036,7 +1036,7 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
                     acc += ld(select(vec2(j, p.y), vec2(p.x, j), vertical));
                 }
             }
-            return acc * (1.0 / f32(2 * r + 1));
+            return box_masked(p, acc * (1.0 / f32(2 * r + 1)));
         }
         case OP_DIRECTIONAL: {
             let steps = u.i1.x;
@@ -1410,6 +1410,16 @@ fn fx_px(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(dst, p, pixel(u.i0.x, p));
 }
 
+// A box pass on the channels of the mask i1.w (bit k: channel k; 0: every channel): the others
+// are copied (Channel Blur, and the planes the glows keep in single channels).
+fn box_masked(p: vec2<i32>, v: vec4<f32>) -> vec4<f32> {
+    let m = u.i1.w;
+    if m == 0u {
+        return v;
+    }
+    return select(ld(p), v, (vec4(m) & vec4(1u, 2u, 4u, 8u)) != vec4(0u));
+}
+
 // A box pass as a running sum along one row (i1.z = 0) or column (1) per invocation: O(1) per
 // pixel for any radius, the arithmetic of `effects::box_rows`.
 @compute @workgroup_size(64)
@@ -1433,7 +1443,8 @@ fn fx_run(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     for (var x = 0; x < n; x++) {
-        textureStore(dst, select(vec2(x, line), vec2(line, x), vertical), acc * inv);
+        let at = select(vec2(x, line), vec2(line, x), vertical);
+        textureStore(dst, at, box_masked(at, acc * inv));
         let out_i = x - r;
         let in_i = x + r + 1;
         if repeat || out_i >= 0 {
@@ -1813,4 +1824,558 @@ fn ext_pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
             return ld(p);
         }
     }
+}
+
+// ---- GPU4: `filmcraft_render::gpufx_more::MoreOp::apply`
+
+const OP_LENS_FLARE: u32 = 54u;
+const OP_RGB_SPLIT: u32 = 55u;
+const OP_LIGHTING: u32 = 56u;
+const OP_COLOR_EMBOSS: u32 = 57u;
+const OP_ROUNDED_CROP: u32 = 58u;
+const OP_GRADIENT: u32 = 59u;
+const OP_LIGHT_LEAKS: u32 = 60u;
+const OP_TURBULENT: u32 = 61u;
+const OP_MEDIAN: u32 = 62u;
+const OP_ALPHA_GLOW: u32 = 63u;
+const OP_EDGE_GLOW_EDGES: u32 = 64u;
+const OP_EDGE_GLOW_X3: u32 = 65u;
+const OP_EDGE_GLOW_ADD: u32 = 66u;
+const OP_ROUGHEN: u32 = 67u;
+
+// A pass's table (Lens Flare's ghosts, Lighting Effects' lights), bound where the mask points go.
+fn more_data(i: u32) -> f32 {
+    let q = mask_pts[i / 2u];
+    if (i & 1u) == 0u {
+        return q.x;
+    }
+    return q.y;
+}
+
+// `vfx::add_light`: light added to a pixel, opaque where it lands on transparency.
+fn add_light(p: vec4<f32>, add: vec3<f32>) -> vec4<f32> {
+    let m = clamp(max(add.x, max(add.y, add.z)), 0.0, 1.0);
+    return vec4(p.rgb + add, p.a + (1.0 - p.a) * m);
+}
+
+// `vfx::over`: premultiplied `top` over `under`.
+fn over_px(under: vec4<f32>, top: vec4<f32>) -> vec4<f32> {
+    return top + under * (1.0 - top.a);
+}
+
+// ---- `vfx::noise3` / `vfx::fbm`: 64-bit hash (`vfx::hash_u`) on (lo, hi) pairs
+
+// an i32 sign-extended to 64 bits (Rust's `i64 as u64`)
+fn i64v(v: i32) -> vec2<u32> {
+    return vec2(bitcast<u32>(v), select(0u, 0xffffffffu, v < 0));
+}
+
+// `seed.wrapping_mul(0x27D4_EB2F_1656_67C5)`: the seed's term of `hash_u`
+fn hash_seed(seed: vec2<u32>) -> vec2<u32> {
+    return mul64(seed, vec2(0x165667C5u, 0x27D4EB2Fu));
+}
+
+// `vfx::hash_u` with the seed term made by `hash_seed`
+fn hash_u(x: i32, y: i32, z: i32, sk: vec2<u32>) -> vec2<u32> {
+    var h = mul64(i64v(x), vec2(0x7F4A7C15u, 0x9E3779B9u)) ^ mul64(i64v(y), vec2(0x27D4EB4Fu, 0xC2B2AE3Du))
+        ^ mul64(i64v(z), vec2(0x9E3779F9u, 0x165667B1u)) ^ sk;
+    h = h ^ shr64(h, 31u);
+    h = mul64(h, vec2(0x1CE4E5B9u, 0xBF58476Du));
+    h = h ^ shr64(h, 29u);
+    h = mul64(h, vec2(0x133111EBu, 0x94D049BBu));
+    return vec2(h.x ^ h.y, h.y);
+}
+
+// `vfx::hash01`
+fn hash01(x: i32, y: i32, z: i32, sk: vec2<u32>) -> f32 {
+    return f32(hash_u(x, y, z, sk).y >> 8u) / 16777216.0;
+}
+
+fn noise_fade(t: f32) -> f32 {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+// `vfx::grad3` for the hash h (h % 12 of the 64-bit value: 2^32 = 4 mod 12)
+fn noise_grad(h: vec2<u32>, x: f32, y: f32, z: f32) -> f32 {
+    switch ((h.y % 12u) * 4u + h.x % 12u) % 12u {
+        case 0u: { return x + y; }
+        case 1u: { return -x + y; }
+        case 2u: { return x - y; }
+        case 3u: { return -x - y; }
+        case 4u: { return x + z; }
+        case 5u: { return -x + z; }
+        case 6u: { return x - z; }
+        case 7u: { return -x - z; }
+        case 8u: { return y + z; }
+        case 9u: { return -y + z; }
+        case 10u: { return y - z; }
+        default: { return -y - z; }
+    }
+}
+
+// `vfx::noise3`
+fn noise3(x: f32, y: f32, z: f32, seed: vec2<u32>) -> f32 {
+    let xi = floor(x);
+    let yi = floor(y);
+    let zi = floor(z);
+    let xf = x - xi;
+    let yf = y - yi;
+    let zf = z - zi;
+    let ix = i32(xi);
+    let iy = i32(yi);
+    let iz = i32(zi);
+    let uu = noise_fade(xf);
+    let vv = noise_fade(yf);
+    let ww = noise_fade(zf);
+    let sk = hash_seed(seed);
+    let g000 = noise_grad(hash_u(ix, iy, iz, sk), xf, yf, zf);
+    let g100 = noise_grad(hash_u(ix + 1, iy, iz, sk), xf - 1.0, yf, zf);
+    let g010 = noise_grad(hash_u(ix, iy + 1, iz, sk), xf, yf - 1.0, zf);
+    let g110 = noise_grad(hash_u(ix + 1, iy + 1, iz, sk), xf - 1.0, yf - 1.0, zf);
+    let g001 = noise_grad(hash_u(ix, iy, iz + 1, sk), xf, yf, zf - 1.0);
+    let g101 = noise_grad(hash_u(ix + 1, iy, iz + 1, sk), xf - 1.0, yf, zf - 1.0);
+    let g011 = noise_grad(hash_u(ix, iy + 1, iz + 1, sk), xf, yf - 1.0, zf - 1.0);
+    let g111 = noise_grad(hash_u(ix + 1, iy + 1, iz + 1, sk), xf - 1.0, yf - 1.0, zf - 1.0);
+    let x00 = g000 + (g100 - g000) * uu;
+    let x10 = g010 + (g110 - g010) * uu;
+    let x01 = g001 + (g101 - g001) * uu;
+    let x11 = g011 + (g111 - g011) * uu;
+    let y0 = x00 + (x10 - x00) * vv;
+    let y1 = x01 + (x11 - x01) * vv;
+    return (y0 + (y1 - y0) * ww) * 0.9;
+}
+
+// `vfx::fbm`: `octaves` (1..10, a fractional last one fades in)
+fn fbm(x: f32, y: f32, z: f32, octaves: f32, seed: vec2<u32>) -> f32 {
+    let n = clamp(octaves, 1.0, 10.0);
+    var sum = 0.0;
+    var amp = 1.0;
+    var freq = 1.0;
+    var norm = 0.0;
+    for (var i = 0u; i < 10u; i++) {
+        if !(f32(i) < n) {
+            break;
+        }
+        let k = min(n - f32(i), 1.0);
+        sum += noise3(x * freq, y * freq, z * freq + f32(i) * 17.13, add64(seed, i)) * amp * k;
+        norm += amp * k;
+        amp *= 0.5;
+        freq *= 2.0;
+    }
+    return sum / max(norm, 1e-6);
+}
+
+// `vfx::distort::round_rect_sdf`
+fn round_rect_sdf(p: vec2<f32>, x0: f32, y0: f32, x1: f32, y1: f32, r: f32) -> f32 {
+    let cx = (x0 + x1) / 2.0;
+    let cy = (y0 + y1) / 2.0;
+    let hx = (x1 - x0) / 2.0 - r;
+    let hy = (y1 - y0) / 2.0 - r;
+    let qx = abs(p.x - cx) - hx;
+    let qy = abs(p.y - cy) - hy;
+    let ox = max(qx, 0.0);
+    let oy = max(qy, 0.0);
+    return sqrt(ox * ox + oy * oy) + min(max(qx, qy), 0.0) - r;
+}
+
+// Lighting Effects' bump source: the (inverted) luma of a clamped neighbour
+fn light_lum(p: vec2<i32>) -> f32 {
+    let l = luma709(unpremul(ld(clamp(p, vec2(0), size() - 1))));
+    return select(1.0 - l, l, u.i1.x != 0u);
+}
+
+// Turbulent Displace's noise: p0 = (amount, size, ox, oy), p1 = (complexity, ex, ey, ez)
+fn turb_n(x: f32, y: f32, ch: f32) -> f32 {
+    return fbm(x + u.p1.y + ch * 31.7, y + u.p1.z, u.p1.w + ch * 3.1, u.p1.x, vec2(u.i1.y, u.i1.z));
+}
+
+fn pin_edge(d: f32, len: f32) -> f32 {
+    return smoothstep_fx(1.0, max(len * 0.1, 2.0), d);
+}
+
+fn more_pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
+    let s = size();
+    let pc = vec2<f32>(p) + 0.5;
+    switch op {
+        case OP_LENS_FLARE: {
+            // p0: centre, scale, k; p1: tint, core falloff; i1: lens type, ghosts (6 floats each)
+            let o = ld(p);
+            let c = u.p0.xy;
+            let scale = u.p0.z;
+            let lens = u.i1.x;
+            let dv = pc - c;
+            let d = sqrt(dot(dv, dv)) / scale;
+            let core = 0.35 * exp(-d * u.p1.w) + 0.08 * exp(-d * 3.0);
+            var add = vec3(core);
+            if lens == 1u || lens == 2u {
+                let ring = max(1.0 - abs((d - 0.12) / 0.012), 0.0) * 0.08;
+                add += ring * vec3(0.6, 0.8, 1.0);
+            }
+            if lens == 3u {
+                let st = exp(-(abs(pc.y - c.y) / scale) * 160.0) * exp(-(abs(pc.x - c.x) / scale) * 2.0) * 0.5;
+                add += st * vec3(0.5, 0.7, 1.0);
+            }
+            for (var i = 0u; i < min(u.i1.y, 8u); i++) {
+                let b = i * 6u;
+                let gd = pc - vec2(more_data(b), more_data(b + 1u));
+                let rad = more_data(b + 2u);
+                let dd = sqrt(dot(gd, gd)) / scale;
+                var gv = max(1.0 - abs((dd - rad) / 0.01), 0.0) * 0.12;
+                if dd < rad {
+                    gv += 0.05;
+                }
+                add += vec3(more_data(b + 3u), more_data(b + 4u), more_data(b + 5u)) * gv;
+            }
+            return add_light(o, add * u.p1.xyz * u.p0.w);
+        }
+        case OP_RGB_SPLIT: {
+            // p0: offset, centre; p1: max distance, amount, blend; i1.x: radial
+            var off = u.p0.xy;
+            if u.i1.x != 0u {
+                let d = pc - u.p0.zw;
+                off = vec2(d.x / u.p1.x * u.p1.y, d.y / u.p1.x * u.p1.y);
+            }
+            let r = sample_bilinear(pc.x - off.x, pc.y - off.y);
+            let g = ld(p);
+            let b = sample_bilinear(pc.x + off.x, pc.y + off.y);
+            let o = vec4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+            return o + (g - o) * u.p1.z;
+        }
+        case OP_LIGHTING: {
+            // p0: ambience, gloss; p1: material, exposure, bump; i1: white is high, lights (12 floats each)
+            let o = ld(p);
+            if o.a <= 1e-6 {
+                return o;
+            }
+            let bump = u.p1.z;
+            var gx = 0.0;
+            var gy = 0.0;
+            if bump != 0.0 {
+                gx = (light_lum(p + vec2(1, 0)) - light_lum(p - vec2(1, 0))) * bump;
+                gy = (light_lum(p + vec2(0, 1)) - light_lum(p - vec2(0, 1))) * bump;
+            }
+            var light = u.p0.xyz;
+            var spec = vec3(0.0);
+            for (var i = 0u; i < min(u.i1.y, 5u); i++) {
+                let b = i * 12u;
+                let kind = u32(more_data(b));
+                let dx = pc.x - more_data(b + 1u);
+                let dy = pc.y - more_data(b + 2u);
+                let major = more_data(b + 3u);
+                let minor = more_data(b + 4u);
+                let sn = more_data(b + 5u);
+                let cs = more_data(b + 6u);
+                let inten = more_data(b + 7u);
+                let focus = more_data(b + 8u);
+                let col = vec3(more_data(b + 9u), more_data(b + 10u), more_data(b + 11u));
+                var fall = 1.0;
+                if kind == 2u {
+                    let q = max(1.0 - sqrt(dx * dx + dy * dy) / major, 0.0);
+                    fall = q * q;
+                } else if kind != 1u {
+                    let a = (dx * cs + dy * sn) / major;
+                    let bb = (-dx * sn + dy * cs) / minor;
+                    fall = 1.0 - smoothstep_fx(focus * 0.95, 1.0, sqrt(a * a + bb * bb));
+                }
+                var lx = cs;
+                var ly = sn;
+                if kind != 1u {
+                    lx = -dx;
+                    ly = -dy;
+                }
+                let ln = max(sqrt(lx * lx + ly * ly), 1e-6);
+                let shade = max(1.0 - (gx * lx + gy * ly) / ln, 0.0);
+                let f2 = fall * fall;
+                let f4 = f2 * f2;
+                light += col * inten * fall * shade;
+                spec += col * max(u.p0.w, 0.0) * (f4 * f4) * max(inten, 0.0);
+            }
+            let c = unpremul(o);
+            let mat = u.p1.x;
+            let sv = spec * (1.0 - mat) + spec * c * mat;
+            return vec4(max((c * light + sv) * u.p1.y, vec3(0.0)) * o.a, o.a);
+        }
+        case OP_COLOR_EMBOSS: {
+            let o = ld(p);
+            if o.a <= 1e-6 {
+                return o;
+            }
+            let a = sample_clamped(pc.x + u.p0.x, pc.y + u.p0.y);
+            let b = sample_clamped(pc.x - u.p0.x, pc.y - u.p0.y);
+            let d = luma709(unpremul(a)) - luma709(unpremul(b));
+            let v = enc(o.rgb / o.a);
+            let e = clamp(v + d * u.p0.z * 2.0, vec3(0.0), vec3(1.0));
+            return vec4(dec(e + (v - e) * u.p0.w) * o.a, o.a);
+        }
+        case OP_ROUNDED_CROP: {
+            // p0: left, top, right, bottom; p1: radius, feather, border; p2: border colour
+            var o = ld(p);
+            let d = round_rect_sdf(pc, u.p0.x, u.p0.y, u.p0.z, u.p0.w, u.p1.x);
+            let fe = u.p1.y;
+            let border = u.p1.z;
+            if border > 0.0 {
+                let k = clamp(0.5 - d, 0.0, 1.0) - clamp(0.5 - d - border, 0.0, 1.0);
+                if k > 0.0 {
+                    o = over_px(o, vec4(u.p2.xyz * k, k));
+                }
+            }
+            var a: f32;
+            if fe > 0.0 {
+                a = clamp(-d / fe, 0.0, 1.0);
+            } else {
+                a = clamp(0.5 - d, 0.0, 1.0);
+            }
+            if a < 1.0 {
+                o = o * a;
+            }
+            return o;
+        }
+        case OP_GRADIENT: {
+            // p0: start, vector; p1 / p2: sRGB start / end colours with alpha; p3: scatter, gamma,
+            // blend; i1.x: shape
+            let o = ld(p);
+            let v = u.p0.zw;
+            let l2 = max(v.x * v.x + v.y * v.y, 1e-6);
+            let dx = pc.x - u.p0.x;
+            let dy = pc.y - u.p0.y;
+            let along = (dx * v.x + dy * v.y) / l2;
+            let across = (-dx * v.y + dy * v.x) / l2;
+            var t: f32;
+            switch u.i1.x {
+                case 1u: { t = sqrt(dx * dx + dy * dy) / sqrt(l2); }
+                case 2u: { t = abs(along); }
+                case 3u: { t = abs(along) + abs(across); }
+                default: { t = along; }
+            }
+            if u.p3.x > 0.0 {
+                t += (hash01(p.x, p.y, 0, hash_seed(vec2(13u, 0u))) - 0.5) * u.p3.x * 0.1;
+            }
+            t = powf(clamp(t, 0.0, 1.0), u.p3.y);
+            let c = dec(u.p1.rgb + (u.p2.rgb - u.p1.rgb) * t);
+            let a = u.p1.a + (u.p2.a - u.p1.a) * t;
+            let g = vec4(c * a, a);
+            return g + (o - g) * u.p3.z;
+        }
+        case OP_LIGHT_LEAKS: {
+            // p0: colour 1, intensity; p1: colour 2, scale; p2: direction, time; i1: mode, seed
+            let o = ld(p);
+            let c1 = u.p0.xyz;
+            let c2 = u.p1.xyz;
+            let scale = u.p1.w;
+            let dx = u.p2.x;
+            let dy = u.p2.y;
+            let t = u.p2.z;
+            let seed = vec2(u.i1.y, u.i1.z);
+            let uu = pc.x / scale;
+            let vv = pc.y / scale;
+            let along = ((pc.x / f32(s.x) - 0.5) * dx + (pc.y / f32(s.y) - 0.5) * dy) * 2.0;
+            let bias = smoothstep_fx(-0.2, 1.0, -along);
+            let n = fbm(uu + dx * t * 0.3, vv + dy * t * 0.3, t * 0.15, 3.0, seed) * 0.5 + 0.5;
+            let m = fbm(uu * 0.7 + 5.2, vv * 0.7, t * 0.1 + 9.0, 2.0, seed) * 0.5 + 0.5;
+            let k = smoothstep_fx(0.35, 0.85, n) * bias * u.p0.w;
+            let light = (c1 + (c2 - c1) * m) * k;
+            let base = unpremul(o);
+            var oc: vec3<f32>;
+            switch u.i1.x {
+                case 1u: { oc = base + light; }
+                case 2u: { oc = blend_simple(4u, base, base + (light + 0.5 - base) * min(k, 1.0)); }
+                default: { oc = blend_simple(2u, base, light); }
+            }
+            let a = o.a + (1.0 - o.a) * min(k, 1.0);
+            return vec4(oc * a, a);
+        }
+        case OP_TURBULENT: {
+            // i1: displacement kind, seed, pinning
+            let size = u.p0.y;
+            let uu = pc.x / size + u.p0.z;
+            let vv = pc.y / size + u.p0.w;
+            let kind = u.i1.x;
+            var d: vec2<f32>;
+            if kind == 0u || kind == 3u {
+                d = vec2(turb_n(uu, vv, 0.0), turb_n(uu, vv, 1.0));
+            } else if kind == 1u || kind == 4u || kind == 2u || kind == 5u {
+                let eps = 0.05;
+                let gx = (turb_n(uu + eps, vv, 0.0) - turb_n(uu - eps, vv, 0.0)) / (2.0 * eps);
+                let gy = (turb_n(uu, vv + eps, 0.0) - turb_n(uu, vv - eps, 0.0)) / (2.0 * eps);
+                if kind == 1u || kind == 4u {
+                    d = vec2(gx * 0.3, gy * 0.3);
+                } else {
+                    d = vec2(-gy * 0.3, gx * 0.3);
+                }
+            } else if kind == 6u {
+                d = vec2(0.0, turb_n(uu, vv, 0.0));
+            } else if kind == 7u {
+                d = vec2(turb_n(uu, vv, 0.0), 0.0);
+            } else {
+                let q = turb_n(uu, vv, 0.0);
+                d = vec2(q, q);
+            }
+            let w = f32(s.x);
+            let h = f32(s.y);
+            var k = 1.0;
+            switch u.i1.w {
+                case 1u: { k = min(pin_edge(min(pc.x, w - pc.x), w), pin_edge(min(pc.y, h - pc.y), h)); }
+                case 2u: { k = pin_edge(min(pc.x, w - pc.x), w); }
+                case 3u: { k = pin_edge(min(pc.y, h - pc.y), h); }
+                default: {}
+            }
+            let amount = u.p0.x;
+            let q = vec2(pc.x - d.x * amount * k, pc.y - d.y * amount * k);
+            if !(abs(q.x) < 1e7 && abs(q.y) < 1e7) {
+                return vec4(0.0);
+            }
+            return sample_bilinear(q.x, q.y);
+        }
+        case OP_ALPHA_GLOW: {
+            // src: the blurred alpha (in A), aux: the layer; p0: start colour, brightness; p1: end
+            // colour; i1: use end colour, fade out
+            let o = textureLoad(aux, p, 0);
+            let gv = min(ld(p).a * 2.0, 1.0);
+            var k = 0.0;
+            if u.i1.y != 0u {
+                k = gv * u.p0.w;
+            } else if gv > 0.02 {
+                k = u.p0.w;
+            }
+            if k <= 0.0 || o.a >= 1.0 {
+                return o;
+            }
+            var col = u.p0.xyz;
+            if u.i1.x != 0u {
+                col = u.p1.xyz + (u.p0.xyz - u.p1.xyz) * gv;
+            }
+            return over_px(vec4(col * k, k), o);
+        }
+        case OP_EDGE_GLOW_EDGES: {
+            // Sobel of display luma × alpha (edge-clamped), into R and G
+            var l: array<f32, 9>;
+            for (var j = 0; j < 3; j++) {
+                for (var i = 0; i < 3; i++) {
+                    let q = ld(clamp(p + vec2(i - 1, j - 1), vec2(0), s - 1));
+                    l[j * 3 + i] = linear_to_srgb1(clamp(luma709(q.rgb), 0.0, 1.0)) * min(q.a, 1.0);
+                }
+            }
+            let gx = l[2] + 2.0 * l[5] + l[8] - l[0] - 2.0 * l[3] - l[6];
+            let gy = l[6] + 2.0 * l[7] + l[8] - l[0] - 2.0 * l[1] - l[2];
+            let th = u.p0.x;
+            let m = smoothstep_fx(th, th + 0.1, sqrt(gx * gx + gy * gy) / 4.0);
+            return vec4(m, m, 0.0, 0.0);
+        }
+        case OP_EDGE_GLOW_X3: {
+            let o = ld(p);
+            return vec4(min(o.x * 3.0, 1.0), min(o.y * 3.0, 1.0), o.z, o.w);
+        }
+        case OP_EDGE_GLOW_ADD: {
+            // src: halo (R) and core (G), aux: the layer; p0: colour, intensity; i1.x: glow only
+            let e = ld(p);
+            var o = textureLoad(aux, p, 0);
+            if u.i1.x != 0u {
+                o = vec4(0.0);
+            }
+            let v = (e.y * 0.6 + e.x * 1.6) * u.p0.w;
+            return add_light(o, u.p0.xyz * v);
+        }
+        case OP_ROUGHEN: {
+            // src: the blurred alpha (in A), aux: the layer; p0: sharpness, influence, scale,
+            // stretch; p1: offset, complexity, evolution; p2: edge colour; i1: edge type, seed
+            var o = textureLoad(aux, p, 0);
+            if o.a <= 1e-6 {
+                return o;
+            }
+            let d = ld(p).a;
+            let kind = u.i1.x;
+            let seed = vec2(u.i1.y, u.i1.z);
+            let scale = u.p0.z;
+            let stretch = u.p0.w;
+            let cplx = u.p1.z;
+            let evo = u.p1.w;
+            let uu = (f32(p.x) + u.p1.x) / (scale * stretch);
+            let vv = (f32(p.y) + u.p1.y) * stretch / scale;
+            var n = fbm(uu, vv, evo, cplx, seed);
+            if kind == 3u {
+                n = 1.0 - 2.0 * abs(n);
+            }
+            var k = clamp((d - 0.5 + n * u.p0.y * 0.5) * (1.0 + u.p0.x * 4.0) + 0.5, 0.0, 1.0);
+            if kind == 2u {
+                k = select(0.0, 1.0, k > 0.5);
+            }
+            if kind >= 4u && kind <= 7u {
+                let hole = fbm(uu * 2.3 + 11.0, vv * 2.3, evo, cplx, add64(seed, 1u));
+                if d < 0.97 && hole > 0.25 {
+                    k *= 1.0 - smoothstep_fx(0.25, 0.4, hole) * (1.0 - d);
+                }
+            }
+            if (kind == 1u || kind == 5u || kind == 7u) && d < 0.97 {
+                let t = (1.0 - d) * 1.5;
+                let c = unpremul(o);
+                let col = c + (u.p2.xyz - c) * min(t, 1.0);
+                o = vec4(col * o.a, o.a);
+            }
+            if kind == 6u {
+                let l = select(0.0, 1.0, luma709(enc(unpremul(o))) > 0.5);
+                o = vec4(vec3(l * o.a), o.a);
+            }
+            return o * k;
+        }
+        default: {
+            return ld(p);
+        }
+    }
+}
+
+// `effects::median`: per channel, the middle of the (2r + 1)² edge-clamped window (its own
+// entry point: the windows' arrays would cost every other pass registers)
+fn median_pixel(p: vec2<i32>) -> vec4<f32> {
+    let s = size();
+    let r = i32(clamp(u.i1.x, 1u, 4u));
+    var px: array<vec4<f32>, 81>;
+    var n = 0u;
+    for (var dy = -r; dy <= r; dy++) {
+        for (var dx = -r; dx <= r; dx++) {
+            px[n] = ld(clamp(p + vec2(dx, dy), vec2(0), s - 1));
+            n++;
+        }
+    }
+    let k = n / 2u;
+    var out = vec4(0.0);
+    var win: array<f32, 81>;
+    for (var ch = 0; ch < 4; ch++) {
+        for (var i = 0u; i < n; i++) {
+            win[i] = px[i][ch];
+        }
+        // the k-th smallest, by selection
+        for (var i = 0u; i <= k; i++) {
+            var m = i;
+            for (var j = i + 1u; j < n; j++) {
+                if win[j] < win[m] {
+                    m = j;
+                }
+            }
+            let t = win[i];
+            win[i] = win[m];
+            win[m] = t;
+        }
+        out[ch] = win[k];
+    }
+    return out;
+}
+
+// GPU4 passes (`more_pixel`), in their own entry point like Median's, so the GPU2 / GPU3 passes
+// keep their register budget.
+@compute @workgroup_size(16, 16)
+fn fx_more(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= u.i0.y || id.y >= u.i0.z {
+        return;
+    }
+    let p = vec2<i32>(id.xy);
+    textureStore(dst, p, more_pixel(u.i0.x, p));
+}
+
+@compute @workgroup_size(16, 16)
+fn fx_median(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= u.i0.y || id.y >= u.i0.z {
+        return;
+    }
+    let p = vec2<i32>(id.xy);
+    textureStore(dst, p, median_pixel(p));
 }

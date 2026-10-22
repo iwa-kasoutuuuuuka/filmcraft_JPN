@@ -70,92 +70,6 @@ pub fn brush_strokes(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     });
 }
 
-/// Color Emboss: emboss relief that keeps the picture's colours.
-pub fn color_emboss(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let dir = (fv(e, "direction", cx) as f64).to_radians();
-    let relief = fv(e, "relief", cx) * cx.px_scale.max(0.25);
-    let contrast = fv(e, "contrast", cx) / 100.0;
-    let blend = fv(e, "blend", cx) / 100.0;
-    let (dx, dy) = ((dir.cos() as f32) * relief, (-dir.sin() as f32) * relief);
-    let src = img.clone();
-    img.map_rgb(|c, x, y| {
-        let a = src.sample_bilinear_clamped(x as f32 + 0.5 + dx, y as f32 + 0.5 + dy);
-        let b = src.sample_bilinear_clamped(x as f32 + 0.5 - dx, y as f32 + 0.5 - dy);
-        let d = luma(Image::unpremul(a)) - luma(Image::unpremul(b));
-        let v = enc(c);
-        let o = v.map(|q| (q + d * contrast * 2.0).clamp(0.0, 1.0));
-        dec(lerp3(o, v, blend))
-    });
-}
-
-/// Roughen Edges: fractal-eroded alpha edges (Roughen, Cut, Spiky, Rusty, Photocopy…).
-pub fn roughen_edges(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let kind = chv(e, "edge_type");
-    let border = fv(e, "border", cx) * cx.px_scale;
-    if border < 0.5 {
-        return;
-    }
-    let sharp = fv(e, "sharpness", cx).max(0.0);
-    let infl = fv(e, "influence", cx).clamp(0.0, 1.0);
-    let scale = (fv(e, "scale", cx) / 100.0 * 30.0 * cx.px_scale).max(0.5);
-    let stretch = 2f32.powf(fv(e, "stretch", cx));
-    let off = offv(e, "offset", cx);
-    let cplx = fv(e, "complexity", cx).clamp(1.0, 10.0);
-    let evo = fv(e, "evolution", cx) / 360.0;
-    let seed = fv(e, "seed", cx).max(0.0) as u64;
-    let ec = lin(cv(e, "edge_color", cx));
-    let colored = matches!(kind, 1 | 5 | 7);
-    let a = alpha_of(img);
-    let depth = blur_plane(&a, img.w, img.h, border * 0.5);
-    let w = img.w;
-    img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-        for x in 0..w {
-            let i = y * w + x;
-            let p = &mut row[x * 4..x * 4 + 4];
-            if p[3] <= 1e-6 {
-                continue;
-            }
-            let (u, v) = ((x as f32 + off.x as f32) / (scale * stretch), (y as f32 + off.y as f32) * stretch / scale);
-            let mut n = fbm(u, v, evo, cplx, seed);
-            if kind == 3 {
-                n = 1.0 - 2.0 * n.abs();
-            }
-            let d = depth[i];
-            let mut k = ((d - 0.5 + n * infl * 0.5) * (1.0 + sharp * 4.0) + 0.5).clamp(0.0, 1.0);
-            if kind == 2 {
-                k = if k > 0.5 { 1.0 } else { 0.0 };
-            }
-            if matches!(kind, 4..=7) {
-                // rust / photocopy: holes eaten into the border region
-                let hole = fbm(u * 2.3 + 11.0, v * 2.3, evo, cplx, seed + 1);
-                if d < 0.97 && hole > 0.25 {
-                    k *= 1.0 - smoothstep(0.25, 0.4, hole) * (1.0 - d);
-                }
-            }
-            if colored && d < 0.97 {
-                let t = (1.0 - d) * 1.5;
-                let c = Image::unpremul([p[0], p[1], p[2], p[3]]);
-                let col = lerp3(c, ec, t.min(1.0));
-                for c in 0..3 {
-                    p[c] = col[c] * p[3];
-                }
-            }
-            if matches!(kind, 6 | 7) {
-                let c = Image::unpremul([p[0], p[1], p[2], p[3]]);
-                let l = if luma(enc(c)) > 0.5 { 1.0 } else { 0.0 };
-                if kind == 6 {
-                    for c in 0..3 {
-                        p[c] = l * p[3];
-                    }
-                }
-            }
-            for v in p.iter_mut() {
-                *v *= k;
-            }
-        }
-    });
-}
-
 /// Long Shadow: an extruded, optionally fading shadow behind the layer's alpha. The per-pixel
 /// step distance to the shape along the shadow direction is found by doubling (min-plus).
 pub fn long_shadow(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
@@ -299,41 +213,6 @@ pub fn stroke(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                 over(p, [col[0] * k, col[1] * k, col[2] * k, k]);
             }
         }
-    });
-}
-
-/// Gradient (26.2): linear / radial / reflected / diamond ramp with midpoint and scatter.
-pub fn gradient(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let s = pv(e, "start", cx, img);
-    let en = pv(e, "end", cx, img);
-    let sc = cv(e, "start_color", cx);
-    let ec = cv(e, "end_color", cx);
-    let shape = chv(e, "shape");
-    let scatter = fv(e, "scatter", cx) / 100.0;
-    let mid = (fv(e, "midpoint", cx) / 100.0).clamp(0.01, 0.99);
-    let gamma = (0.5f32).ln() / mid.ln();
-    let blend = fv(e, "blend", cx) / 100.0;
-    let (vx, vy) = ((en.x - s.x) as f32, (en.y - s.y) as f32);
-    let l2 = (vx * vx + vy * vy).max(1e-6);
-    let l = l2.sqrt();
-    generate(img, |x, y, p| {
-        let (dx, dy) = (x - s.x as f32, y - s.y as f32);
-        let along = (dx * vx + dy * vy) / l2;
-        let across = (-dx * vy + dy * vx) / l2;
-        let mut t = match shape {
-            1 => (dx * dx + dy * dy).sqrt() / l,
-            2 => along.abs(),
-            3 => along.abs() + across.abs(),
-            _ => along,
-        };
-        if scatter > 0.0 {
-            t += (hash01(x as i64, y as i64, 0, 13) - 0.5) * scatter * 0.1;
-        }
-        let t = t.clamp(0.0, 1.0).powf(gamma);
-        let c = dec(lerp3([sc[0], sc[1], sc[2]], [ec[0], ec[1], ec[2]], t));
-        let a = sc[3] + (ec[3] - sc[3]) * t;
-        let g = [c[0] * a, c[1] * a, c[2] * a, a];
-        [0, 1, 2, 3].map(|k| g[k] + (p[k] - g[k]) * blend)
     });
 }
 
