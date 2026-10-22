@@ -161,7 +161,13 @@ impl FilmcraftMcp {
                 let id = id.to_string();
                 tokio::task::spawn_blocking(move || {
                     let mut g = s.lock().map_err(|_| AutomationError::Other("session lock poisoned".into()))?;
-                    g.execute(&id, params).map_err(AutomationError::from)
+                    let v = g.execute(&id, params).map_err(AutomationError::from)?;
+                    // parameters the command does not take (ignored) come back as warnings
+                    Ok(if g.last_unknown_params.is_empty() {
+                        v
+                    } else {
+                        json!({"result": v, "warnings": [format!("ignored unknown parameter(s): {} (see the command's params in command_list)", g.last_unknown_params.join(", "))]})
+                    })
                 })
                 .await
                 .map_err(|e| AutomationError::Other(e.to_string()))?

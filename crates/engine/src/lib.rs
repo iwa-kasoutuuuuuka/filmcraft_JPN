@@ -379,6 +379,10 @@ pub struct Session {
     pub browser: media_browser::BrowserState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
+    /// Parameters the last top-level command was given that it does not take (ignored). Agents
+    /// get them back as `warnings` (a misspelt key, e.g. `volume` for `volumeDb`, used to be
+    /// ignored without a word).
+    pub last_unknown_params: Vec<String>,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -465,6 +469,7 @@ impl Session {
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
+            last_unknown_params: Vec::new(),
         }
     }
 
@@ -669,6 +674,9 @@ impl Session {
                 self.log.push(panels::Level::Warning, id, e.to_string());
             }
             return Err(e);
+        }
+        if self.exec_depth == 0 {
+            self.last_unknown_params = commands::unknown_params(spec, &params);
         }
         // One command is one undo step: the steps its nested commands push are folded into one,
         // and a command that fails leaves nothing behind (Undo used to step through a command's

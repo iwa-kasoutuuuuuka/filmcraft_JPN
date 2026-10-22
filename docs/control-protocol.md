@@ -15,7 +15,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 
 | Method | Params | |
 |---|---|---|
-| `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
+| `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id. Parameters the command does not take (by its `params` doc) are ignored and listed in the reply's `warnings` (`{"ok": true, "result": …, "warnings": ["ignored unknown parameter(s): volume …"]}`); MCP `command_run` and `filmcraft-cli exec` report them too |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
 | `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
 | `ui.elements` | `{prefix?}` | every on-screen interactive element: id, label, rect |

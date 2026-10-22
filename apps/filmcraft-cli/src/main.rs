@@ -106,7 +106,13 @@ impl Backend {
 
     async fn exec(&mut self, id: &str, params: Value) -> Result<Value, String> {
         match self {
-            Backend::Local(s) => s.execute(id, params).map_err(|e| e.to_string()),
+            Backend::Local(s) => {
+                let r = s.execute(id, params).map_err(|e| e.to_string());
+                if r.is_ok() && !s.last_unknown_params.is_empty() {
+                    eprintln!("warning: {id}: ignored unknown parameter(s): {}", s.last_unknown_params.join(", "));
+                }
+                r
+            }
             Backend::Bridge(b) => b.call("engine.execute", json!({"command": id, "params": params})).await.map_err(|e| e.to_string()),
         }
     }

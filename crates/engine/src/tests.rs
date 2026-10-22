@@ -491,3 +491,24 @@ fn timeline_move_defaults_the_track_and_names_bad_entries() {
     // hostile times are clamped, not overflowed
     let _ = s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "time": i64::MAX}]}));
 }
+
+/// Parameters a command does not take are reported (they are ignored): a misspelt key, e.g.
+/// `volume` for `volumeDb`, did nothing without a word. Time keys take their `seconds` /
+/// `frame` / `timecode` forms, and pass-through settings docs take anything.
+#[test]
+fn unknown_parameters_are_reported() {
+    let mut s = demo();
+    s.execute("mixer.setStrip", json!({"strip": "A1", "volume": -6.0})).unwrap();
+    assert_eq!(s.last_unknown_params, vec!["volume".to_string()]);
+    s.execute("mixer.setStrip", json!({"strip": "A1", "volumeDb": -6.0})).unwrap();
+    assert!(s.last_unknown_params.is_empty());
+    // `time` → `seconds`; `wait` is taken by every command
+    s.execute("playhead.set", json!({"seconds": 1.0, "wait": true})).unwrap();
+    assert!(s.last_unknown_params.is_empty(), "{:?}", s.last_unknown_params);
+    // nested commands do not overwrite the top-level report
+    s.execute("captions.add", json!({"text": "x", "colour": "red"})).unwrap();
+    assert_eq!(s.last_unknown_params, vec!["colour".to_string()]);
+    // pass-through settings ("…" in the doc) are not checked
+    let spec = crate::find_command("export.queue.add").unwrap();
+    assert!(crate::commands::unknown_params(spec, &json!({"anything": 1})).is_empty());
+}

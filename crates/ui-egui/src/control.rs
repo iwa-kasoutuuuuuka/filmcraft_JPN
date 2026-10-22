@@ -55,6 +55,11 @@ pub enum Outcome {
     },
 }
 
+/// The `warnings` of a reply for parameters a command ignored.
+fn unknown_warning(keys: &[String]) -> Vec<String> {
+    vec![format!("ignored unknown parameter(s): {} (see the command's params in command_list)", keys.join(", "))]
+}
+
 fn ok(v: Value) -> Outcome {
     Outcome::Done(json!({"ok": true, "result": v}))
 }
@@ -99,6 +104,10 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
             match crate::menus::invoke(app, ctx, id, params) {
+                // parameters the command does not take come back as warnings (they are ignored)
+                Ok(v) if !app.session.last_unknown_params.is_empty() => {
+                    Outcome::Done(json!({"ok": true, "result": v, "warnings": unknown_warning(&app.session.last_unknown_params)}))
+                }
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }

@@ -334,3 +334,15 @@ fn dropped_folders_media_and_project_files() {
     assert!(bins.contains("From the other project"), "{bins}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `engine.execute` replies list the parameters a command ignored, so an agent sees a misspelt
+/// key instead of a silent no-op.
+#[test]
+fn ignored_parameters_come_back_as_warnings() {
+    let mut d = Driver::demo();
+    let v = d.call("engine.execute", json!({"command": "mixer.setStrip", "params": {"strip": "A1", "volume": -6.0}}));
+    assert_eq!(v["ok"], json!(true), "{v}");
+    assert!(v["warnings"][0].as_str().is_some_and(|w| w.contains("volume")), "{v}");
+    let v = d.call("engine.execute", json!({"command": "mixer.setStrip", "params": {"strip": "A1", "volumeDb": -6.0}}));
+    assert!(v.get("warnings").is_none(), "{v}");
+}

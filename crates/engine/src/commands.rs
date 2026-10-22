@@ -51,6 +51,53 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(build)
 }
 
+/// Parameter names in `params` that `spec` does not take, by its parameter doc. Time parameters
+/// take their `frame` / `seconds` / `timecode` forms too; a doc with "…" (pass-through
+/// settings) takes anything.
+pub fn unknown_params(spec: &CommandSpec, params: &Value) -> Vec<String> {
+    let Some(given) = params.as_object() else { return Vec::new() };
+    if spec.params.contains('…') {
+        return Vec::new();
+    }
+    let mut known: Vec<String> = doc_keys(spec.params);
+    let mut extra = Vec::new();
+    for k in &known {
+        // `time` → `frame`, `seconds`, `timecode`; `startTime` → `startFrame`, …
+        let prefix = if k == "time" { Some("") } else { k.strip_suffix("Time") };
+        if let Some(prefix) = prefix {
+            for alt in ["frame", "seconds", "timecode"] {
+                extra.push(if prefix.is_empty() { alt.to_string() } else { format!("{prefix}{}{}", alt[..1].to_uppercase(), &alt[1..]) });
+            }
+        }
+    }
+    known.extend(extra);
+    // taken by every command (the UI's routing, waiting for jobs)
+    known.extend(["force", "wait"].map(str::to_string));
+    let mut out: Vec<String> = given.keys().filter(|k| !known.iter().any(|x| x == *k)).cloned().collect();
+    out.sort();
+    out
+}
+
+/// The `"key":` names of a parameter doc.
+fn doc_keys(doc: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = doc;
+    while let Some(i) = rest.find('"') {
+        let after = &rest[i + 1..];
+        let Some(j) = after.find('"') else { break };
+        let k = &after[..j];
+        if after[j + 1..].trim_start().starts_with(':')
+            && !k.is_empty()
+            && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !out.iter().any(|x| x == k)
+        {
+            out.push(k.to_string());
+        }
+        rest = &after[j + 1..];
+    }
+    out
+}
+
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
     command_specs().iter().find(|c| c.id == id)
 }
@@ -996,7 +1043,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq"?,"dnxProfile":"lb|sq|hq|hqx"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"maxBitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"keyframeDistance":u32?,"sdr":bool?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq"?,"dnxProfile":"lb|sq|hq|hqx"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),

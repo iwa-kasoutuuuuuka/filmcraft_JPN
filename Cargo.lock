@@ -2270,6 +2270,7 @@ dependencies = [
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-media",
+ "filmcraft-platform",
  "filmcraft-project",
  "filmcraft-text",
  "filmcraft-time",
