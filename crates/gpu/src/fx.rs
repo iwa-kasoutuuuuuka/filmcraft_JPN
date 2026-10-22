@@ -22,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 
 use filmcraft_render::gpufx::{FxOp, LumetriHdr, luma2020};
 use filmcraft_render::gpufx_ext::{ExtOp, Generator, Warp};
+use filmcraft_render::gpufx_more::MoreOp;
 use filmcraft_render::mask::FlatMask;
 use filmcraft_render::plan::LayerFx;
 
@@ -81,12 +82,34 @@ const OP_STROBE: u32 = 50;
 const OP_SHADOW: u32 = 51;
 const OP_SHADOW_OVER: u32 = 52;
 const OP_GENERATE: u32 = 53;
+const OP_LENS_FLARE: u32 = 54;
+const OP_RGB_SPLIT: u32 = 55;
+const OP_LIGHTING: u32 = 56;
+const OP_COLOR_EMBOSS: u32 = 57;
+const OP_ROUNDED_CROP: u32 = 58;
+const OP_GRADIENT: u32 = 59;
+const OP_LIGHT_LEAKS: u32 = 60;
+const OP_TURBULENT: u32 = 61;
+const OP_MEDIAN: u32 = 62;
+const OP_ALPHA_GLOW: u32 = 63;
+const OP_EDGE_GLOW_EDGES: u32 = 64;
+const OP_EDGE_GLOW_X3: u32 = 65;
+const OP_EDGE_GLOW_ADD: u32 = 66;
+const OP_ROUGHEN: u32 = 67;
+
+/// Box-pass channel masks (`i1.w`; 0 = every channel).
+const CH_R: u32 = 1;
+const CH_G: u32 = 2;
+const CH_A: u32 = 8;
 
 type Target = (wgpu::Texture, wgpu::TextureView);
 
 pub(crate) struct FxStage {
     px: wgpu::ComputePipeline,
     run: wgpu::ComputePipeline,
+    /// GPU4 passes (`fx_more`) and Median (`fx_median`): entry points of their own.
+    more: wgpu::ComputePipeline,
+    median: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
     source: wgpu::RenderPipeline,
@@ -98,9 +121,18 @@ pub(crate) struct FxStage {
     used_uniforms: Vec<wgpu::Buffer>,
 }
 
+/// The entry point a pass runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pipe {
+    Px,
+    Run,
+    More,
+    Median,
+}
+
 /// One compute pass of a job.
 struct Dispatch {
-    run: bool,
+    pipe: Pipe,
     bg: wgpu::BindGroup,
     groups: (u32, u32),
 }
@@ -172,10 +204,11 @@ fn all_steps(fx: &LayerFx) -> Vec<Step> {
     all
 }
 
-/// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
-fn boxes(radii: &[u32], vertical: bool, repeat: bool, out: &mut Vec<Step>) {
+/// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU), on
+/// the channels of `mask` (bit k: channel k; 0: all; the others are copied).
+fn boxes(radii: &[u32], vertical: bool, repeat: bool, mask: u32, out: &mut Vec<Step>) {
     for &r in radii.iter().filter(|r| **r > 0) {
-        let mut s = step(OP_BOX, [r, repeat as u32, vertical as u32, 0], &[]);
+        let mut s = step(OP_BOX, [r, repeat as u32, vertical as u32, mask], &[]);
         s.run = r > BOX_PER_PIXEL_MAX;
         out.push(s);
     }
@@ -204,8 +237,8 @@ fn steps(op: &FxOp) -> Vec<Step> {
         FxOp::Invert { channel, blend } => out.push(step(OP_INVERT, [*channel, 0, 0, 0], &[*blend])),
         FxOp::Posterize { n } => out.push(step(OP_POSTERIZE, [0; 4], &[*n])),
         FxOp::Gaussian { rx, ry, repeat } => {
-            boxes(rx, false, *repeat, &mut out);
-            boxes(ry, true, *repeat, &mut out);
+            boxes(rx, false, *repeat, 0, &mut out);
+            boxes(ry, true, *repeat, 0, &mut out);
         }
         FxOp::DirectionalBlur { dx, dy, steps } => {
             if *steps >= 2 {
@@ -213,8 +246,8 @@ fn steps(op: &FxOp) -> Vec<Step> {
             }
         }
         FxOp::Unsharp { rx, ry, amount, threshold } => {
-            boxes(rx, false, true, &mut out);
-            boxes(ry, true, true, &mut out);
+            boxes(rx, false, true, 0, &mut out);
+            boxes(ry, true, true, 0, &mut out);
             for s in &mut out {
                 s.unsharp_blur = true;
             }
@@ -291,8 +324,8 @@ fn steps(op: &FxOp) -> Vec<Step> {
                 key.push(step(OP_HSL_MEDIAN, [h.median_r as u32, 0, 0, 0], &[h.denoise.min(1.0)]));
             }
             let radii: Vec<u32> = h.blur_radii.iter().map(|r| *r as u32).collect();
-            boxes(&radii, false, true, &mut key);
-            boxes(&radii, true, true, &mut key);
+            boxes(&radii, false, true, 0, &mut key);
+            boxes(&radii, true, true, 0, &mut key);
             for s in &mut key {
                 s.unsharp_blur = true;
             }
@@ -306,16 +339,16 @@ fn steps(op: &FxOp) -> Vec<Step> {
             let m = [k.k[0], k.k[1], k.k[2], k.tol, k.gain, k.highlight, k.shadow, k.pedestal];
             let mut key = vec![step(OP_UKEY_MATTE, [0; 4], &m)];
             if k.choke > 0.0 {
-                boxes(&k.choke_boxes.0, false, false, &mut key);
-                boxes(&k.choke_boxes.1, true, false, &mut key);
+                boxes(&k.choke_boxes.0, false, false, 0, &mut key);
+                boxes(&k.choke_boxes.1, true, false, 0, &mut key);
                 let mut p = m.to_vec();
                 p.push(k.choke);
                 let mut choke = step(OP_UKEY_CHOKE, [0; 4], &p);
                 choke.aux_orig = true;
                 key.push(choke);
             }
-            boxes(&k.soften_boxes.0, false, false, &mut key);
-            boxes(&k.soften_boxes.1, true, false, &mut key);
+            boxes(&k.soften_boxes.0, false, false, 0, &mut key);
+            boxes(&k.soften_boxes.1, true, false, 0, &mut key);
             for s in &mut key {
                 s.unsharp_blur = true;
             }
@@ -335,6 +368,7 @@ fn steps(op: &FxOp) -> Vec<Step> {
             }
         }
         FxOp::Ext(x) => ext_steps(x, &mut out),
+        FxOp::More(m) => more_steps(m, &mut out),
     }
     out
 }
@@ -373,8 +407,8 @@ fn ext_steps(x: &ExtOp, out: &mut Vec<Step>) {
         ExtOp::DropShadow(d) => {
             let c = d.color;
             let mut shadow = vec![step(OP_SHADOW, d.rect, &[(-d.dx) as f32, (-d.dy) as f32, d.opacity, 0.0, c[0], c[1], c[2]])];
-            boxes(&d.boxes.0, false, false, &mut shadow);
-            boxes(&d.boxes.1, true, false, &mut shadow);
+            boxes(&d.boxes.0, false, false, 0, &mut shadow);
+            boxes(&d.boxes.1, true, false, 0, &mut shadow);
             for s in &mut shadow {
                 s.unsharp_blur = true;
             }
@@ -401,6 +435,131 @@ fn ext_steps(x: &ExtOp, out: &mut Vec<Step>) {
                 Generator::Grid { size, border, color: c, opacity } => step(OP_GENERATE, [4, 0, 0, 0], &[*size, *border, *opacity, 0.0, c[0], c[1], c[2]]),
             };
             out.push(s);
+        }
+    }
+}
+
+/// Gaussian box passes (both axes) on the channels of `mask`.
+fn side_boxes(b: &(Vec<u32>, Vec<u32>), mask: u32, repeat: bool, out: &mut Vec<Step>) {
+    boxes(&b.0, false, repeat, mask, out);
+    boxes(&b.1, true, repeat, mask, out);
+}
+
+/// Low and high halves of a 64-bit seed (the shader's 64-bit hash arithmetic).
+fn split64(v: u64) -> (u32, u32) {
+    (v as u32, (v >> 32) as u32)
+}
+
+/// Mark passes as made beside the layer (kept until the combining pass, as Unsharp's blur).
+fn beside(mut key: Vec<Step>, out: &mut Vec<Step>) {
+    for s in &mut key {
+        s.unsharp_blur = true;
+    }
+    out.append(&mut key);
+}
+
+/// The passes of a GPU4 op (`gpufx_more`): one per pixel, but the glows and Roughen Edges, whose
+/// planes (edge mask, blurred alpha) are made beside the layer, which the last pass reads back
+/// (as Unsharp keeps its original), and Channel Blur's per-channel box passes.
+fn more_steps(m: &MoreOp, out: &mut Vec<Step>) {
+    match m {
+        MoreOp::Nop => {}
+        MoreOp::LensFlare(l) => {
+            let ghosts: Vec<f32> = l.ghosts.iter().take(8).flat_map(|g| [g.0 as f32, g.1 as f32, g.2 as f32, g.3[0], g.3[1], g.3[2]]).collect();
+            let n = (ghosts.len() / 6) as u32;
+            let mut s =
+                step(OP_LENS_FLARE, [l.lens, n, 0, 0], &[l.cx as f32, l.cy as f32, l.scale as f32, l.k, l.tint[0], l.tint[1], l.tint[2], l.core_k as f32]);
+            // (no table without ghosts: a storage binding cannot be empty)
+            s.data = (n > 0).then_some(ghosts);
+            out.push(s);
+        }
+        MoreOp::RgbSplit { radial, ox, oy, cx, cy, maxd, amt, blend } => {
+            out.push(step(OP_RGB_SPLIT, [u32::from(*radial), 0, 0, 0], &[*ox, *oy, *cx, *cy, *maxd, *amt, *blend]));
+        }
+        MoreOp::Lighting(l) => {
+            let lights: Vec<f32> = l
+                .lights
+                .iter()
+                .take(5)
+                .flat_map(|li| {
+                    [
+                        li.kind.min(3) as f32,
+                        li.cx as f32,
+                        li.cy as f32,
+                        li.major as f32,
+                        li.minor as f32,
+                        li.rot.0 as f32,
+                        li.rot.1 as f32,
+                        li.intensity,
+                        li.focus,
+                        li.color[0],
+                        li.color[1],
+                        li.color[2],
+                    ]
+                })
+                .collect();
+            let n = (lights.len() / 12) as u32;
+            let mut s = step(OP_LIGHTING, [u32::from(l.white_high), n, 0, 0], &[l.amb[0], l.amb[1], l.amb[2], l.gloss, l.material, l.exposure, l.bump]);
+            s.data = (n > 0).then_some(lights);
+            out.push(s);
+        }
+        MoreOp::ColorEmboss { dx, dy, contrast, blend } => out.push(step(OP_COLOR_EMBOSS, [0; 4], &[*dx, *dy, *contrast, *blend])),
+        MoreOp::RoundedCrop { l, t, r, b, rad, fe, border, bc } => {
+            out.push(step(OP_ROUNDED_CROP, [0; 4], &[*l, *t, *r, *b, *rad, *fe, *border, 0.0, bc[0], bc[1], bc[2]]));
+        }
+        MoreOp::Gradient { sx, sy, vx, vy, sc, ec, shape, scatter, gamma, blend } => out.push(step(
+            OP_GRADIENT,
+            [*shape, 0, 0, 0],
+            &[*sx, *sy, *vx, *vy, sc[0], sc[1], sc[2], sc[3], ec[0], ec[1], ec[2], ec[3], *scatter, *gamma, *blend],
+        )),
+        MoreOp::LightLeaks { c1, c2, inten, scale, dx, dy, t, seed, mode } => {
+            let (lo, hi) = split64(*seed);
+            out.push(step(OP_LIGHT_LEAKS, [*mode, lo, hi, 0], &[c1[0], c1[1], c1[2], *inten, c2[0], c2[1], c2[2], *scale, *dx, *dy, *t]));
+        }
+        MoreOp::Turbulent { kind, amount, size, ox, oy, cplx, seed, ex, ey, ez, pin } => {
+            let (lo, hi) = split64(*seed);
+            out.push(step(OP_TURBULENT, [*kind, lo, hi, *pin], &[*amount, *size, *ox, *oy, *cplx, *ex, *ey, *ez]));
+        }
+        MoreOp::Median { r } => out.push(step(OP_MEDIAN, [(*r).clamp(1, 4), 0, 0, 0], &[])),
+        MoreOp::ChannelBlur { boxes: per, repeat } => {
+            // channels with the same blur share their passes
+            for (ch, b) in per.iter().enumerate() {
+                if per.iter().take(ch).any(|o| o == b) {
+                    continue;
+                }
+                let mask = per.iter().enumerate().filter(|(_, o)| *o == b).fold(0, |m, (k, _)| m | (1 << k));
+                side_boxes(b, mask, *repeat, out);
+            }
+        }
+        MoreOp::AlphaGlow { boxes: b, bright, sc, ec, use_end, fade } => {
+            let mut key = Vec::new();
+            side_boxes(b, CH_A, false, &mut key);
+            beside(key, out);
+            let mut glow = step(OP_ALPHA_GLOW, [u32::from(*use_end), u32::from(*fade), 0, 0], &[sc[0], sc[1], sc[2], *bright, ec[0], ec[1], ec[2]]);
+            glow.combine = true;
+            out.push(glow);
+        }
+        MoreOp::EdgeGlow { th, width, halo, inten, col, only } => {
+            // the edge mask in R (becomes the halo) and G (the core)
+            let mut key = vec![step(OP_EDGE_GLOW_EDGES, [0; 4], &[*th])];
+            if let Some(wb) = width {
+                side_boxes(wb, CH_R | CH_G, false, &mut key);
+                key.push(step(OP_EDGE_GLOW_X3, [0; 4], &[]));
+            }
+            side_boxes(halo, CH_R, false, &mut key);
+            beside(key, out);
+            let mut add = step(OP_EDGE_GLOW_ADD, [u32::from(*only), 0, 0, 0], &[col[0], col[1], col[2], *inten]);
+            add.combine = true;
+            out.push(add);
+        }
+        MoreOp::Roughen { kind, depth, sharp, infl, scale, stretch, offx, offy, cplx, evo, seed, ec } => {
+            let mut key = Vec::new();
+            side_boxes(depth, CH_A, false, &mut key);
+            beside(key, out);
+            let (lo, hi) = split64(*seed);
+            let mut r = step(OP_ROUGHEN, [*kind, lo, hi, 0], &[*sharp, *infl, *scale, *stretch, *offx, *offy, *cplx, *evo, ec[0], ec[1], ec[2]]);
+            r.combine = true;
+            out.push(r);
         }
     }
 }
@@ -506,6 +665,8 @@ impl FxStage {
         Self {
             px: compute("fx_px"),
             run: compute("fx_run"),
+            more: compute("fx_more"),
+            median: compute("fx_median"),
             bgl,
             source,
             no_masks,
@@ -662,7 +823,13 @@ impl FxStage {
             } else {
                 (w.div_ceil(16), h.div_ceil(16))
             };
-            dispatches.push(Dispatch { run: s.run, bg, groups });
+            let pipe = match s.code {
+                _ if s.run => Pipe::Run,
+                OP_MEDIAN => Pipe::Median,
+                c if c >= OP_LENS_FLARE => Pipe::More,
+                _ => Pipe::Px,
+            };
+            dispatches.push(Dispatch { pipe, bg, groups });
             cur = dst;
             if s.combine {
                 orig = None;
@@ -705,7 +872,12 @@ impl FxStage {
         }
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fx"), timestamp_writes: None });
         for d in &job.dispatches {
-            pass.set_pipeline(if d.run { &self.run } else { &self.px });
+            pass.set_pipeline(match d.pipe {
+                Pipe::Px => &self.px,
+                Pipe::Run => &self.run,
+                Pipe::More => &self.more,
+                Pipe::Median => &self.median,
+            });
             pass.set_bind_group(0, &d.bg, &[]);
             pass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }

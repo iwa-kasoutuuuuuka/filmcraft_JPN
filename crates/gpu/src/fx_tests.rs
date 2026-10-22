@@ -46,8 +46,19 @@ const TRANSCENDENTAL_EFFECTS: &[&str] = &[
 ];
 const FLIPS: f64 = 0.01;
 
+/// Turbulent Displace: fractal noise at positions `x / size`, where the GPU's f32 division (2.5
+/// ULP in WGSL) moves the noise by a few 1e-7, which the displacement (× Amount, × 3 through
+/// Bulge's derivative) and a picture with one-pixel stripes turn into up to ~1e-4.
+const NOISE_WARP: f32 = 5e-4;
+
 fn tolerance(id: &str) -> f32 {
-    if TRANSCENDENTAL_EFFECTS.contains(&id) { TRANSCENDENTAL } else { EXACT }
+    if id == "turbulent_displace" {
+        NOISE_WARP
+    } else if TRANSCENDENTAL_EFFECTS.contains(&id) {
+        TRANSCENDENTAL
+    } else {
+        EXACT
+    }
 }
 
 fn cx(t: Tick, px_scale: f32) -> FxCtx<'static> {
@@ -67,6 +78,9 @@ fn fl(v: f64) -> ParamValue {
 }
 fn col(r: f32, g: f32, b: f32) -> ParamValue {
     ParamValue::Color([r, g, b, 1.0])
+}
+fn ch(v: u32) -> ParamValue {
+    ParamValue::Choice(v)
 }
 fn pt(x: f64, y: f64) -> ParamValue {
     ParamValue::Vec2(Vec2::new(x, y))
@@ -385,6 +399,76 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
         ("circle", vec![("radius", fl(15.0)), ("opacity", fl(60.0)), ("color", col(0.1, 0.7, 0.3))], false),
         ("grid", vec![], false),
         ("grid", vec![("size", fl(7.0)), ("border", fl(2.5)), ("opacity", fl(80.0))], false),
+        // GPU4 (`gpufx_more`; Lens Flare's ghost discs and Roughen Edges' Cut / Photocopy have
+        // hard edges a pixel may flip on)
+        ("lens_flare", vec![], true),
+        ("lens_flare", vec![("lens_type", ch(1)), ("center", pt(20.0, 12.0)), ("ghosts", fl(8.0)), ("brightness", fl(150.0))], true),
+        ("lens_flare", vec![("lens_type", ch(3)), ("size", fl(40.0)), ("color", col(0.4, 0.7, 1.0)), ("ghosts", fl(0.0))], true),
+        ("rgb_split", vec![], false),
+        ("rgb_split", vec![("mode", ch(1)), ("amount", fl(25.0)), ("blend", fl(20.0)), ("center", pt(30.0, 15.0))], false),
+        ("rgb_split", vec![("amount", fl(7.3)), ("angle", fl(130.0))], false),
+        ("lighting_effects", vec![], false),
+        (
+            "lighting_effects",
+            vec![
+                ("l1_type", ch(2)),
+                ("l2_type", ch(1)),
+                ("l2_angle", fl(60.0)),
+                ("l2_color", col(0.9, 0.5, 0.2)),
+                ("bump_height", fl(40.0)),
+                ("gloss", fl(50.0)),
+                ("material", fl(30.0)),
+                ("exposure", fl(20.0)),
+            ],
+            false,
+        ),
+        (
+            "lighting_effects",
+            vec![
+                ("l1_center", pt(10.0, 30.0)),
+                ("l1_focus", fl(80.0)),
+                ("l1_angle", fl(35.0)),
+                ("l1_minor", fl(45.0)),
+                ("l3_type", ch(3)),
+                ("l3_center", pt(50.0, 10.0)),
+                ("white_high", ParamValue::Bool(false)),
+                ("bump_height", fl(-70.0)),
+            ],
+            false,
+        ),
+        ("color_emboss", vec![], false),
+        ("color_emboss", vec![("direction", fl(200.0)), ("relief", fl(3.5)), ("contrast", fl(250.0)), ("blend", fl(30.0))], false),
+        ("rounded_crop", vec![("left", fl(10.0)), ("top", fl(15.0)), ("right", fl(5.0)), ("bottom", fl(20.0)), ("radius", fl(9.0))], false),
+        ("rounded_crop", vec![("left", fl(5.0)), ("radius", fl(14.0)), ("feather", fl(4.0)), ("border", fl(3.0)), ("border_color", col(0.9, 0.2, 0.3))], false),
+        ("gradient", vec![], false),
+        ("gradient", vec![("shape", ch(1)), ("midpoint", fl(30.0)), ("blend", fl(25.0)), ("start", pt(10.0, 10.0)), ("end", pt(50.0, 35.0))], false),
+        ("gradient", vec![("shape", ch(3)), ("scatter", fl(60.0))], false),
+        ("gradient", vec![("shape", ch(2)), ("start_color", ParamValue::Color([0.9, 0.3, 0.1, 0.5]))], false),
+        ("light_leaks", vec![], false),
+        ("light_leaks", vec![("mode", ch(1)), ("scale", fl(40.0)), ("seed", fl(7.0))], false),
+        ("light_leaks", vec![("mode", ch(2)), ("direction", fl(250.0)), ("intensity", fl(100.0))], false),
+        ("turbulent_displace", vec![("size", fl(20.0)), ("amount", fl(30.0)), ("pinning", ch(0))], false),
+        ("turbulent_displace", vec![("displacement", ch(1)), ("size", fl(15.0)), ("complexity", fl(3.5))], false),
+        ("turbulent_displace", vec![("displacement", ch(5)), ("evolution", fl(200.0)), ("seed", fl(3.0)), ("pinning", ch(2))], false),
+        ("turbulent_displace", vec![("displacement", ch(8)), ("cycle", ParamValue::Bool(true)), ("evolution", fl(500.0)), ("pinning", ch(3))], false),
+        ("turbulent_displace", vec![("displacement", ch(6)), ("amount", fl(-80.0)), ("offset", pt(5.0, 9.0)), ("complexity", fl(10.0))], false),
+        ("median", vec![("radius", fl(1.0))], false),
+        ("median", vec![("radius", fl(4.0))], false),
+        ("channel_blur", vec![("red", fl(6.0)), ("blue", fl(40.0)), ("alpha", fl(6.0))], false),
+        ("channel_blur", vec![("green", fl(150.0)), ("repeat_edge", ParamValue::Bool(true)), ("dimensions", ch(1))], false),
+        ("alpha_glow", vec![], false),
+        (
+            "alpha_glow",
+            vec![("glow", fl(60.0)), ("use_end", ParamValue::Bool(true)), ("end_color", col(0.9, 0.2, 0.1)), ("fade_out", ParamValue::Bool(false))],
+            false,
+        ),
+        ("edge_glow", vec![], false),
+        ("edge_glow", vec![("width", fl(0.5)), ("radius", fl(30.0)), ("only", ParamValue::Bool(true)), ("threshold", fl(5.0))], false),
+        ("roughen_edges", vec![], true),
+        ("roughen_edges", vec![("edge_type", ch(5)), ("border", fl(12.0)), ("complexity", fl(4.0)), ("stretch", fl(1.0))], true),
+        ("roughen_edges", vec![("edge_type", ch(6)), ("evolution", fl(90.0)), ("offset", pt(13.0, -7.0))], true),
+        ("roughen_edges", vec![("edge_type", ch(2)), ("scale", fl(40.0))], true),
+        ("reduce_interlace_flicker", vec![("softness", fl(3.0))], false),
     ]
 }
 
@@ -1085,6 +1169,168 @@ fn gpu3_speed() {
         effect("wave_warp", &[]),
         effect("find_edges", &[]),
         effect("ramp", &[("blend", fl(50.0))]),
+    ];
+    let time = |f: &mut dyn FnMut()| {
+        f();
+        let t0 = std::time::Instant::now();
+        for _ in 0..5 {
+            f();
+        }
+        t0.elapsed().as_secs_f64() * 1000.0 / 5.0
+    };
+    let base = LayerFx { size: (w, h), decimation: 1, ops: Vec::new(), ..Default::default() };
+    let io_ms = time(&mut || {
+        let _ = c.effect_image(&frame, &base);
+    });
+    eprintln!("no effect (upload + source draw + readback): {io_ms:.1} ms");
+    for e in &cases {
+        let op = FxOp::eval(e, &cx(Tick::ZERO, 1.0), w as usize, h as usize).expect("op");
+        let cpu_ms = time(&mut || {
+            let mut img = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+            op.apply(&mut img);
+        });
+        let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![op.clone()], ..Default::default() };
+        let gpu_ms = time(&mut || {
+            let _ = c.effect_image(&frame, &fx);
+        });
+        eprintln!("{}: CPU {cpu_ms:.1} ms, GPU {gpu_ms:.1} ms ({:.1} ms over no effect)", e.effect, gpu_ms - io_ms);
+    }
+}
+
+/// GPU4 effects in chains (the glows' and Roughen Edges' planes kept beside the layer between
+/// other effects' passes, Channel Blur's masked box passes), with effect masks, and Light Leaks
+/// over time.
+#[test]
+fn gpu4_effects_in_chains_masks_and_over_time() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (96u32, 54u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let chains: Vec<Vec<EffectInstance>> = vec![
+        vec![effect("light_leaks", &[("speed", fl(2.5))])],
+        vec![
+            effect("edge_glow", &[("width", fl(4.0)), ("radius", fl(12.0))]),
+            effect("unsharp_mask", &[("amount", fl(80.0)), ("radius", fl(3.0))]),
+            effect("alpha_glow", &[("glow", fl(20.0))]),
+            effect("channel_blur", &[("red", fl(10.0)), ("alpha", fl(4.0)), ("dimensions", ch(2))]),
+            effect("roughen_edges", &[("border", fl(6.0))]),
+            effect("drop_shadow", &[("distance", fl(4.0)), ("softness", fl(6.0))]),
+            effect("median", &[("radius", fl(2.0))]),
+        ],
+        vec![
+            effect("rounded_crop", &[("left", fl(8.0)), ("radius", fl(10.0))]),
+            effect("turbulent_displace", &[("size", fl(25.0)), ("amount", fl(20.0))]),
+            effect("lens_flare", &[("ghosts", fl(5.0))]),
+            effect("rgb_split", &[("amount", fl(4.0))]),
+            effect("lighting_effects", &[("bump_height", fl(30.0))]),
+            effect("gradient", &[("blend", fl(70.0))]),
+            effect("color_emboss", &[]),
+            effect("reduce_interlace_flicker", &[("softness", fl(2.0))]),
+        ],
+    ];
+    let all = crate::tests::test_masks(96.0 / 320.0);
+    let mut failures = Vec::new();
+    for seconds in [0.0, 0.4, 37.5, 3600.0] {
+        let cx = FxCtx { seconds, ..cx(Tick::ZERO, 1.0) };
+        for (k, chain) in chains.iter().enumerate() {
+            let ops: Vec<FxOp> = chain.iter().filter_map(|e| FxOp::eval(e, &cx, w as usize, h as usize)).collect();
+            assert_eq!(ops.len(), chain.len());
+            assert!(ops.iter().all(FxOp::gpu_ok), "{seconds} s: chain {k} not GPU-capable");
+            let names: Vec<&str> = chain.iter().map(|e| e.effect.as_str()).collect();
+            // unmasked, then every other effect masked
+            let masks: Vec<Vec<_>> = (0..ops.len()).map(|i| if i % 2 == 0 { all.clone() } else { Vec::new() }).collect();
+            for (label, fx) in [
+                ("plain", LayerFx { size: (w, h), decimation: 1, ops: ops.clone(), ..Default::default() }),
+                ("masked", LayerFx { size: (w, h), decimation: 1, ops: ops.clone(), masks, ..Default::default() }),
+            ] {
+                let mut cpu = filmcraft_render::Image { w: w as usize, h: h as usize, px: px.clone() };
+                fx.apply(&mut cpu);
+                let (_, _, gpu) = c.effect_image(&frame, &fx).expect("effect image");
+                let (worst, flips) = compare(&cpu.px, &gpu);
+                eprintln!("{names:?} {label} at {seconds} s: max rel diff {worst:.2e}, {:.3}% flipped", flips * 100.0);
+                if worst > TRANSCENDENTAL || flips > 0.002 {
+                    failures.push(format!("{names:?} {label} at {seconds} s: {worst:.2e}, flips {flips:.4}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "GPU4 effects differ from the CPU:\n{}", failures.join("\n"));
+}
+
+/// The GPU4 references (`MoreOp::apply`, and Reduce Interlace Flicker's `FxOp::Gaussian`) are
+/// what the CPU renderer draws for the effect (`filmcraft_render::effects::apply`), value for
+/// value, and hostile values are declined by `gpu_ok` rather than drawn wrongly.
+#[test]
+fn gpu4_references_are_the_cpu_effects() {
+    let (w, h) = (67usize, 41usize);
+    let px = picture(w as u32, h as u32);
+    let ids = filmcraft_render::gpufx_more::MORE_EFFECTS.iter().copied().chain(["reduce_interlace_flicker"]).collect::<Vec<_>>();
+    let mut n = 0;
+    for (id, params, _) in cases().into_iter().filter(|c| ids.contains(&c.0)) {
+        let e = effect(id, &params);
+        let c = cx(Tick::ZERO, 1.0);
+        let op = FxOp::eval(&e, &c, w, h).unwrap_or_else(|| panic!("{id} has no GPU op"));
+        let mut reference = filmcraft_render::Image { w, h, px: px.clone() };
+        op.apply(&mut reference);
+        let mut real = filmcraft_render::Image { w, h, px: px.clone() };
+        filmcraft_render::effects::apply(&mut real, &e, &c);
+        assert_eq!(reference.px, real.px, "{id} {params:?}");
+        assert_ne!(real.px, px, "{id} {params:?} changes the picture");
+        n += 1;
+    }
+    assert!(n >= 38, "{n} cases");
+    for id in &ids {
+        assert!(cases().iter().any(|c| c.0 == *id), "{id}: no parity case");
+    }
+    // non-finite or out-of-range values stay on the CPU
+    let declined = [
+        effect("lens_flare", &[("size", fl(f64::NAN)), ("center", pt(f64::INFINITY, 3.0))]),
+        effect("rgb_split", &[("amount", fl(f64::INFINITY))]),
+        effect("turbulent_displace", &[("evolution", fl(1e12))]),
+        effect("turbulent_displace", &[("offset", pt(1e12, 0.0))]),
+        effect("light_leaks", &[("speed", fl(1e9))]),
+        effect("roughen_edges", &[("stretch", fl(-300.0))]),
+        effect("gradient", &[("start", pt(f64::NAN, 1e30))]),
+        effect("lighting_effects", &[("l1_center", pt(1e30, 0.0))]),
+    ];
+    for e in &declined {
+        let c = FxCtx { seconds: 10.0, ..cx(Tick::ZERO, 1.0) };
+        let op = FxOp::eval(e, &c, w, h).unwrap_or_else(|| panic!("{} has no GPU op", e.effect));
+        assert!(!op.gpu_ok(), "{}: hostile values must stay on the CPU", e.effect);
+    }
+}
+
+/// One 1080p frame through GPU4 effects: the CPU reference against the GPU effect stage (upload,
+/// passes and readback included). Informational; run with
+/// `cargo test -p filmcraft-gpu --release gpu4_speed -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn gpu4_speed() {
+    let Some((dev, q)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (1920u32, 1080u32);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let cases = [
+        effect("lens_flare", &[]),
+        effect("rgb_split", &[("amount", fl(20.0))]),
+        effect("lighting_effects", &[("bump_height", fl(30.0))]),
+        effect("turbulent_displace", &[]),
+        effect("median", &[("radius", fl(2.0))]),
+        effect("median", &[("radius", fl(4.0))]),
+        effect("channel_blur", &[("red", fl(20.0)), ("blue", fl(60.0))]),
+        effect("alpha_glow", &[]),
+        effect("edge_glow", &[]),
+        effect("roughen_edges", &[]),
+        effect("light_leaks", &[]),
+        effect("gradient", &[("blend", fl(50.0))]),
     ];
     let time = |f: &mut dyn FnMut()| {
         f();

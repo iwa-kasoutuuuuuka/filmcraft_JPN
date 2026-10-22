@@ -213,6 +213,8 @@ pub enum FxOp {
     Chain(Vec<FxOp>),
     /// Noise, Drop Shadow, the warps, stylize and Generate effects ([`crate::gpufx_ext`]).
     Ext(crate::gpufx_ext::ExtOp),
+    /// Lights & Glows, Turbulent Displace, Median, Channel Blur, Roughen Edges… ([`crate::gpufx_more`]).
+    More(Box<crate::gpufx_more::MoreOp>),
 }
 
 /// Samples of each curve table in [`LumetriExtra`] (as the CPU grade samples them).
@@ -507,6 +509,21 @@ pub const GPU_EFFECTS: &[&str] = &[
     "four_color_gradient",
     "circle",
     "grid",
+    // GPU4: `gpufx_more::MORE_EFFECTS`, and Reduce Interlace Flicker (a vertical Gaussian)
+    "lens_flare",
+    "rgb_split",
+    "lighting_effects",
+    "color_emboss",
+    "rounded_crop",
+    "gradient",
+    "light_leaks",
+    "turbulent_displace",
+    "median",
+    "channel_blur",
+    "alpha_glow",
+    "edge_glow",
+    "roughen_edges",
+    "reduce_interlace_flicker",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
@@ -605,6 +622,12 @@ impl FxOp {
                 let dims = choice(e, "dimensions");
                 let (rx, ry) = gaussian_boxes(w, h, if dims == 2 { 0.0 } else { r }, if dims == 1 { 0.0 } else { r });
                 FxOp::Gaussian { rx, ry, repeat: b(e, "repeat_edge") }
+            }
+            "reduce_interlace_flicker" => {
+                // a vertical-only softening across fields (`effects::gaussian(img, 0, s, true)`)
+                let s = crate::vfx::fv(e, "softness", cx) * cx.px_scale.max(0.25);
+                let (rx, ry) = gaussian_boxes(w, h, 0.0, s);
+                FxOp::Gaussian { rx, ry, repeat: true }
             }
             "camera_blur" => {
                 let r = f(e, "percent", cx) * cx.px_scale * 0.3;
@@ -837,7 +860,12 @@ impl FxOp {
                     target: if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] },
                 }
             }
-            _ => return crate::gpufx_ext::ExtOp::eval(e, cx, w, h).map(FxOp::Ext),
+            _ => {
+                if let Some(x) = crate::gpufx_ext::ExtOp::eval(e, cx, w, h) {
+                    return Some(FxOp::Ext(x));
+                }
+                return crate::gpufx_more::MoreOp::eval(e, cx, w, h).map(|m| FxOp::More(Box::new(m)));
+            }
         })
     }
 
@@ -907,6 +935,7 @@ impl FxOp {
             }
             FxOp::Chain(ops) => ops.iter().all(FxOp::gpu_ok),
             FxOp::Ext(x) => x.gpu_ok(),
+            FxOp::More(m) => m.gpu_ok(),
         }
     }
 
@@ -1243,6 +1272,7 @@ impl FxOp {
                 }
             }
             FxOp::Ext(x) => x.apply(img),
+            FxOp::More(m) => m.apply(img),
         }
     }
 }

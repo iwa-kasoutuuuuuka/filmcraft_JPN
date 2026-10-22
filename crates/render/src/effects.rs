@@ -102,12 +102,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     }
     match e.effect.as_str() {
         "lumetri" => lumetri(img, e, cx),
-        "median" => {
-            let r = (f(e, "radius", cx) * cx.px_scale).round().clamp(0.0, 4.0) as isize;
-            if r > 0 {
-                median(img, r);
-            }
-        }
         "mosaic" => {
             let bx = f(e, "horizontal", cx).max(1.0) as usize;
             let by = f(e, "vertical", cx).max(1.0) as usize;
@@ -115,37 +109,6 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         }
         "color_key" => key(img, e, cx),
         "luma_key" => luma_key(img, f(e, "threshold", cx) / 100.0, f(e, "cutoff", cx) / 100.0),
-        "lens_flare" => {
-            let c = point(e, "center", cx, img);
-            let br = f(e, "brightness", cx) / 100.0;
-            let blend = f(e, "blend", cx) / 100.0;
-            let (w, h) = (img.w as f64, img.h as f64);
-            let (mx, my) = (w / 2.0, h / 2.0);
-            let scale = w.max(h);
-            let wi = img.w;
-            img.px.par_chunks_mut(wi * 4).enumerate().for_each(|(y, row)| {
-                for x in 0..wi {
-                    let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
-                    let d = (px - c.x).hypot(py - c.y) / scale;
-                    let mut add = [1.0f32, 0.9, 0.7].map(|k| k * (0.35 * (-d * 18.0).exp() + 0.08 * (-d * 3.0).exp()) as f32);
-                    for (i, (t, rad, tint)) in [(0.5, 0.05, [0.4f32, 0.6, 1.0]), (1.3, 0.03, [1.0, 0.5, 0.3]), (1.7, 0.08, [0.4, 1.0, 0.5])].iter().enumerate()
-                    {
-                        let gx = c.x + (mx - c.x) * 2.0 * t / 2.0 * 2.0;
-                        let gy = c.y + (my - c.y) * 2.0 * t / 2.0 * 2.0;
-                        let dd = (px - gx).hypot(py - gy) / scale;
-                        let ring = (1.0 - ((dd - rad) / 0.01).abs()).max(0.0) as f32 * 0.15 + if dd < *rad { 0.06 } else { 0.0 };
-                        let _ = i;
-                        for k in 0..3 {
-                            add[k] += tint[k] * ring;
-                        }
-                    }
-                    let p = &mut row[x * 4..x * 4 + 4];
-                    for k in 0..3 {
-                        p[k] += add[k] * br * (1.0 - blend) * p[3].max(0.0);
-                    }
-                }
-            });
-        }
         "timecode" | "clip_name" => {
             let (text, family) = if e.effect == "timecode" { (cx.timecode.to_string(), "JetBrains Mono") } else { (cx.clip_name.to_string(), "Inter") };
             let pos = point(e, "position", cx, img);
