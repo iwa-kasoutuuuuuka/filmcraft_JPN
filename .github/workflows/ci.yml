@@ -35,6 +35,9 @@ jobs:
   gates:
     name: gates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # A full run takes well under an hour; a hang (a deadlocked test) fails here instead of
+    # holding the runner for GitHub's 6 h limit.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:

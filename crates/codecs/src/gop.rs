@@ -532,10 +532,23 @@ impl GopCache {
             Some(d) => d,
             None => s.make_decoder()?,
         };
-        let res = s.read(i).and_then(|data| {
-            DECODED.fetch_add(1, Ordering::Relaxed);
-            timed(|| dec.decode(&data, want_pts))
-        });
+        // On [`decode_pool`] like the work under the lock: this runs on a thread a rayon worker is
+        // waiting for, and a decoder's parallel work queued on the global pool could find every
+        // worker waiting (a deadlock with fewer workers than frames being requested).
+        let ctx = filmcraft_media::cancel::Context::capture();
+        let d = &mut dec;
+        let work = move || {
+            ctx.run(move || {
+                s.read(i).and_then(|data| {
+                    DECODED.fetch_add(1, Ordering::Relaxed);
+                    timed(|| d.decode(&data, want_pts))
+                })
+            })
+        };
+        let res = match decode_pool() {
+            Some(pool) => pool.install(work),
+            None => work(),
+        };
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.spare.len() < 16 {
             st.spare.push(dec);
@@ -732,8 +745,12 @@ mod tests {
                 });
             }
         });
-        // a frame two threads miss at the same moment may decode twice; nothing more
-        assert!(s.decodes.load(Ordering::Relaxed) <= 64 + 4 * 4);
+        // Each thread asks for each frame once. A frame that several threads miss at the same
+        // moment decodes once per thread (how often depends on scheduling); otherwise the cache
+        // answers, so most frames decode once.
+        let decodes = s.decodes.load(Ordering::Relaxed);
+        assert!(decodes <= 64 * 4, "{decodes} decodes: a thread decoded a frame twice");
+        assert!(decodes < 64 * 2, "{decodes} decodes: the cache is not shared between threads");
         assert_eq!(s.resets.load(Ordering::Relaxed), 0);
     }
 
