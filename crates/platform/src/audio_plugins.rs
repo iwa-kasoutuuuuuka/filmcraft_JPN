@@ -217,12 +217,16 @@ fn take_part(b: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 /// A NUL-terminated byte string from a fixed-size C buffer (lossy UTF-8; no NUL = whole buffer).
+// Used by the Windows-only VST3 host (`vst3host`); unit-tested on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn c_string(buf: &[u8]) -> String {
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(buf.get(..end).unwrap_or_default()).trim().to_string()
 }
 
 /// A NUL-terminated UTF-16 string from a fixed-size buffer.
+// Used by the Windows-only VST3 host (`vst3host`); unit-tested on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn wide_string(buf: &[u16]) -> String {
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(buf.get(..end).unwrap_or_default()).trim().to_string()
@@ -230,6 +234,8 @@ pub(crate) fn wide_string(buf: &[u16]) -> String {
 
 /// Whether a VST3 class with these sub-categories is an effect (not an instrument): `Fx…`, or
 /// no sub-categories at all; an `Instrument` without `Fx` is left out.
+// Used by the Windows-only VST3 host (`vst3host`); unit-tested on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn is_effect_category(sub_categories: &str) -> bool {
     let parts: Vec<&str> = sub_categories.split('|').map(str::trim).collect();
     parts.iter().any(|p| p.eq_ignore_ascii_case("Fx")) || !parts.iter().any(|p| p.eq_ignore_ascii_case("Instrument"))
