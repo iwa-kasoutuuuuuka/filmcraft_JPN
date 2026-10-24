@@ -20,7 +20,9 @@ mod vfx;
 
 pub mod plugin;
 pub use plugin::{PluginEffectSpec, PluginParamSpec, PluginRef, plugin_effect_defs, register_plugin_effect};
-pub use vfx::{EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, SIMPLE_BLEND, TRACK_CHOICES, auto_point};
+pub use vfx::{
+    EASINGS, ECHO_OPERATORS, FRAME_LAYOUTS, LIGHT_IDS, PREMIERE_26_LEGACY_VIDEO_EFFECTS, PREMIERE_26_VIDEO_EFFECTS, SIMPLE_BLEND, TRACK_CHOICES, auto_point,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {

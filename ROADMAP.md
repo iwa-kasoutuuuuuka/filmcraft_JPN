@@ -20,8 +20,9 @@ before choosing work.
   tests against Premiere's Effects panel tree (`premiere_26_video_effects_catalogue`,
   `premiere_audio_set_is_complete_and_foldered`, `premiere_26_transition_tree`).
 - **Partly agent-reported.** The other areas' percentages are written by the agents doing the work.
-  No automated parity check runs in CI (PhotoCraft has `cargo xtask parity`; we don't yet), so
-  nothing stops a number drifting upward.
+  `cargo xtask parity` (2026-10-24, run in CI) now measures effects, transitions and audio effects
+  (presence, GPU, fidelity) and counts commands; menus, panels, preferences and formats are not in
+  it yet, so those numbers can still drift upward.
 - **Presence, not quality.** An item counts once it exists. An effect described as an
   "approximation" counts the same as an exact one. Nothing compares our rendering with
   Premiere's.
@@ -53,9 +54,12 @@ In priority order. Agents should prefer this work over adding more checklist ite
    - HDR and wide-gamut sequences on the GPU: landed for BT.709 / sRGB media (gamut matrix after the decode, effects in the working space, tone mapping and gamut mapping in the final pass); PQ / HLG media in HDR sequences decoded on the GPU too; next: log and other-gamut media, tone mapping on input (HDR media in SDR sequences), and blend modes and captions in HDR sequences;
    - the remaining effects on the GPU (74 effect ids are done: the 31 common ones, all of Lumetri, Ultra / Color / Luma Key, Video Limiter, Mosaic (and Mosaic (Legacy)) without Softness, Vignette, and GPU3: Noise (whole-pixel grain), Drop Shadow, Corner Pin, Lens Distortion, Twirl, Wave Warp, Spherize, Basic 3D, Magnify, Find Edges, Emboss, Bevel Alpha, Replicate, Strobe Light, Ramp, 4-Color Gradient, Circle, Grid, with their legacy aliases, and GPU4: Lens Flare, RGB Split, Light Leaks, Edge Glow, Alpha Glow, Lighting Effects, Turbulent Displace, Median, Channel Blur, Reduce Interlace Flicker, Roughen Edges, Color Emboss, Rounded Crop, Gradient; effect masks and a clip's Opacity masks run on the GPU as well); next: the multi-scale glows (Wonder Glow, Echo Glow, Glint: several blurred copies summed, which needs more working textures per effect), Volumetric Rays and Bokeh Blur (they run on a downsampled image), Compound / Focus Blur (a stack of five blurs, Compound Blur another track), Stroke (an exact Euclidean distance transform), Long Shadow and Brush Strokes, and the animated Transform presets (Grow, Move, Spin, Wiggle, Camera Shake: they read the clip's duration and frame rate, which the GPU plan does not carry yet);
    - hardware encode: H.264 and HEVC on Windows (Media Foundation: NVENC / Quick Sync / AMF) landed, with render and encode overlapped: 1080p H.264 exports 4.8 → 2.0 s; HDR sequences export HEVC Main 10 (HLG / PQ); exports render on the GPU compositor (graded 1080p H.264 6.9 → 1.0 s); next VideoToolbox on macOS, GPU rendering for HDR exports and overlays.
-2. **A measured parity number.** Add `cargo xtask parity`, run in CI. It should cover menus,
-   commands, effects, transitions, panels, preferences and formats against the Premiere snapshot in
-   `plan/premiere/`. It should report presence and fidelity separately (exact, approximate, stub).
+2. **A measured parity number.** Started: `cargo xtask parity` (run in CI with `--check`) reports
+   presence, GPU and fidelity (exact / approximate / stub / unclassified) for Premiere 26's video
+   effects, legacy effects, audio effects and transitions, and counts commands; it compares menus
+   when given a Premiere menu listing. Next: fidelity classified for every effect (all but the
+   Immersive Video transitions are unclassified today), a committed menu listing so CI compares
+   menus, then panels, preferences and formats. See [docs/testing.md](docs/testing.md) §6.
 3. **Real-world media corpus.** Phone, camera and screen recordings, variable frame rate, damaged
    files, long GOPs, odd containers. Each gets an import → edit → export round-trip test with an
    ffprobe / ffmpeg oracle. Started (`engine/tests/real_media_roundtrip.rs`: portrait VFR phone

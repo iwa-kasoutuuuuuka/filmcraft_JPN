@@ -4,7 +4,8 @@
 cargo test --workspace                          # everything; oracle tests skip without ffmpeg
 cargo test -p filmcraft-h264                    # one crate
 cargo test --release -p filmcraft-hevc          # codec tests are much faster in release
-cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, wasm)
+cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, parity, wasm)
+cargo xtask parity [--commands]                 # parity report against Premiere 26 → target/parity/
 cargo xtask fixtures                            # pre-generate the ffmpeg fixture matrix
 FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails instead of skipping
 ```
@@ -312,3 +313,25 @@ At load ~25–60 the same final build plays h264-1080, stack3 and h264-2160 at F
 in 3 of 3 runs (192/0) and render previews 192/0. The 4K fixture needs ~4 cores of decode per
 real-time second (≈160 ms CPU per frame at 170 Mbit/s); the demo project's procedural footage
 ~190 ms per Full-resolution frame.
+
+## 6. Parity report
+
+`cargo xtask parity` measures what can be measured from the repository against Premiere 26 and
+writes `target/parity/parity.{md,json}`:
+
+- **Presence:** every item of Premiere's Video Effects bin (and its Legacy folder), Audio Effects
+  and Video Transitions bin, looked up in the effect registry. The reference lists live next to the
+  registry (`PREMIERE_26_VIDEO_EFFECTS`, `PREMIERE_26_LEGACY_VIDEO_EFFECTS`,
+  `PREMIERE_AUDIO_EFFECTS`, `PREMIERE_26_TRANSITION_COUNTS` in `crates/project`).
+- **GPU:** which present video effects run on the GPU effect stage (`filmcraft_render::gpufx::GPU_EFFECTS`).
+- **Fidelity:** exact / approximate / stub, from `xtask/parity/fidelity.txt`. Anything not listed
+  there is reported as unclassified, so the number never claims more than someone wrote down with
+  its evidence. When you learn that an effect is approximate (or verify one exact), add a line.
+- **Commands** (`--commands`, builds the CLI in release): how many engine commands exist, sit in a
+  menu, have a default shortcut. With a Premiere menu listing (`plan/premiere/menus.txt`,
+  maintainer-local, or `--menus PATH`; one `File > New > Project…` path per line) it also lists
+  which of Premiere's menu items have no command.
+
+`cargo xtask ci` runs `cargo xtask parity --check`, which fails when a Premiere item goes missing
+or the fidelity file names an unknown id, an unknown level, has a duplicate or a line without a
+reason.

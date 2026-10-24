@@ -1,0 +1,19 @@
+# How faithful each effect / transition is to Premiere's, for `cargo xtask parity`.
+#
+# One entry per line: `<effect id> <level> <reason>`. Levels:
+#   exact        matches Premiere's output (checked against a reference, say how in the reason)
+#   approximate  same purpose and controls, visibly different result
+#   stub         listed and accepted, but does little or nothing yet
+# Ids not listed here are reported as "unclassified". Add an entry when you know, with where the
+# evidence is; `cargo xtask parity --check` rejects unknown ids, unknown levels and duplicates.
+
+# Immersive Video transitions: flat effects on the equirectangular frame, not on the sphere
+# (crates/render/src/transitions/special.rs, crates/project/src/vtransition.rs).
+vr_chroma_leaks    approximate  flat on the equirectangular frame, not spherical
+vr_gradient_wipe   approximate  flat on the equirectangular frame, not spherical
+vr_iris_wipe       approximate  flat on the equirectangular frame, not spherical
+vr_light_leaks     approximate  flat on the equirectangular frame, not spherical
+vr_light_rays      approximate  flat on the equirectangular frame, not spherical
+vr_mobius_zoom     approximate  flat on the equirectangular frame, not spherical
+vr_random_blocks   approximate  flat on the equirectangular frame, not spherical
+vr_spherical_blur  approximate  flat on the equirectangular frame, not spherical

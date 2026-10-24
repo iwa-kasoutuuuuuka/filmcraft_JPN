@@ -15,6 +15,7 @@
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
 mod ico;
+mod parity;
 mod version;
 
 use std::process::{Command, ExitCode};
@@ -446,6 +447,7 @@ fn ci() -> Result<(), String> {
     run(Command::new(cargo).args(["test", "--workspace", "--release"]))?;
     layers()?;
     assets()?;
+    parity::run(&root(), &["--check"])?;
     wasm()
 }
 
@@ -484,12 +486,16 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             version::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
+        "parity" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            parity::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
         "ico" => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
         _ => Err(
-            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
+            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|version [set X.Y.Z]|parity [--check] [--commands] [--menus PATH]|ci|bench [args]|bench-playback [args]>"
                 .into(),
         ),
     };

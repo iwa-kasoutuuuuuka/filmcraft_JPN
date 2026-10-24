@@ -1106,97 +1106,98 @@ pub(super) fn apply_badges(v: &mut [EffectDef]) {
     }
 }
 
+/// Premiere 26's Video Effects bin: every effect, in its folder (names are functional facts).
+pub const PREMIERE_26_VIDEO_EFFECTS: &[(&str, &[&str])] = &[
+    ("Adjust", &["Extract", "Levels", "Lighting Effects", "ProcAmp"]),
+    (
+        "Blur & Sharpen",
+        &[
+            "Bokeh Blur",
+            "Channel Blur",
+            "Compound Blur",
+            "Directional Blur",
+            "Focus Blur",
+            "Gaussian Blur",
+            "Reduce Interlace Flicker",
+            "Sharpen",
+            "Unsharp Mask",
+        ],
+    ),
+    ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Lumetri Color", "Tint", "Video Limiter", "Vignette"]),
+    ("Distort", &["Corner Pin", "Lens Distortion", "Magnify", "Mirror", "Spherize", "Turbulent Displace", "Twirl", "Warp Stabilizer", "Wave Warp"]),
+    ("Generate", &["4-Color Gradient", "Gradient"]),
+    ("Image Control", &["Black & White", "Channel Mix", "Color Pass", "Color Replace", "Gamma Correction", "Invert", "Rounded Crop"]),
+    (
+        "Immersive Video",
+        &[
+            "VR Blur",
+            "VR Chromatic Aberrations",
+            "VR Color Gradients",
+            "VR De-Noise",
+            "VR Digital Glitch",
+            "VR Fractal Noise",
+            "VR Glow",
+            "VR Plane to Sphere",
+            "VR Projection",
+            "VR Rotate Sphere",
+            "VR Sharpen",
+        ],
+    ),
+    ("Keying", &["Alpha Adjust", "Color Key", "Logo Cutout", "Luma Key", "Track Matte Key", "Ultra Key"]),
+    ("Lights & Glows", &["Echo Glow", "Edge Glow", "Glint", "Lens Flare", "Light Leaks", "RGB Split", "Volumetric Rays", "Wonder Glow"]),
+    ("Noise & Grain", &["Noise"]),
+    ("Perspective", &["Basic 3D", "Drop Shadow", "Long Shadow"]),
+    ("Stylize", &["Brush Strokes", "Color Emboss", "Find Edges", "Mosaic", "Posterize", "Roughen Edges", "Strobe Light"]),
+    ("Time", &["Posterize Time"]),
+    (
+        "Transform",
+        &[
+            "3D Rotate",
+            "Auto Reframe",
+            "Camera Shake",
+            "Grow",
+            "Horizontal Flip",
+            "Move",
+            "Offset",
+            "Shrink",
+            "Spacer",
+            "Spin",
+            "Transform",
+            "Vertical Flip",
+            "Wiggle",
+        ],
+    ),
+    ("Utility", &["Auto Align", "Cineon Converter", "Clone", "Simple Text", "Stroke"]),
+    ("Video", &["Metadata & Timecode Burn-in"]),
+];
+
+/// Premiere 26's `Legacy > Video Effects` folder (names only).
+pub const PREMIERE_26_LEGACY_VIDEO_EFFECTS: &[&str] = &[
+    "Alpha Glow",
+    "Block Dissolve",
+    "Camera Blur",
+    "Crop",
+    "Directional Blur (Legacy)",
+    "Edge Feather",
+    "Gaussian Blur (Legacy)",
+    "Gradient Wipe (Legacy)",
+    "Linear Wipe (Legacy)",
+    "Magnify (Legacy)",
+    "Mosaic (Legacy)",
+    "Noise (Legacy)",
+    "Ramp",
+    "Replicate",
+    "Twirl (Legacy)",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Premiere 26's Video Effects bin: every effect, in its folder (names are functional facts).
-    const CATALOGUE: &[(&str, &[&str])] = &[
-        ("Adjust", &["Extract", "Levels", "Lighting Effects", "ProcAmp"]),
-        (
-            "Blur & Sharpen",
-            &[
-                "Bokeh Blur",
-                "Channel Blur",
-                "Compound Blur",
-                "Directional Blur",
-                "Focus Blur",
-                "Gaussian Blur",
-                "Reduce Interlace Flicker",
-                "Sharpen",
-                "Unsharp Mask",
-            ],
-        ),
-        ("Color Correction", &["ASC CDL", "Brightness & Contrast", "Lumetri Color", "Tint", "Video Limiter", "Vignette"]),
-        ("Distort", &["Corner Pin", "Lens Distortion", "Magnify", "Mirror", "Spherize", "Turbulent Displace", "Twirl", "Warp Stabilizer", "Wave Warp"]),
-        ("Generate", &["4-Color Gradient", "Gradient"]),
-        ("Image Control", &["Black & White", "Channel Mix", "Color Pass", "Color Replace", "Gamma Correction", "Invert", "Rounded Crop"]),
-        (
-            "Immersive Video",
-            &[
-                "VR Blur",
-                "VR Chromatic Aberrations",
-                "VR Color Gradients",
-                "VR De-Noise",
-                "VR Digital Glitch",
-                "VR Fractal Noise",
-                "VR Glow",
-                "VR Plane to Sphere",
-                "VR Projection",
-                "VR Rotate Sphere",
-                "VR Sharpen",
-            ],
-        ),
-        ("Keying", &["Alpha Adjust", "Color Key", "Logo Cutout", "Luma Key", "Track Matte Key", "Ultra Key"]),
-        ("Lights & Glows", &["Echo Glow", "Edge Glow", "Glint", "Lens Flare", "Light Leaks", "RGB Split", "Volumetric Rays", "Wonder Glow"]),
-        ("Noise & Grain", &["Noise"]),
-        ("Perspective", &["Basic 3D", "Drop Shadow", "Long Shadow"]),
-        ("Stylize", &["Brush Strokes", "Color Emboss", "Find Edges", "Mosaic", "Posterize", "Roughen Edges", "Strobe Light"]),
-        ("Time", &["Posterize Time"]),
-        (
-            "Transform",
-            &[
-                "3D Rotate",
-                "Auto Reframe",
-                "Camera Shake",
-                "Grow",
-                "Horizontal Flip",
-                "Move",
-                "Offset",
-                "Shrink",
-                "Spacer",
-                "Spin",
-                "Transform",
-                "Vertical Flip",
-                "Wiggle",
-            ],
-        ),
-        ("Utility", &["Auto Align", "Cineon Converter", "Clone", "Simple Text", "Stroke"]),
-        ("Video", &["Metadata & Timecode Burn-in"]),
-    ];
-
-    const LEGACY_NAMES: &[&str] = &[
-        "Alpha Glow",
-        "Block Dissolve",
-        "Camera Blur",
-        "Crop",
-        "Directional Blur (Legacy)",
-        "Edge Feather",
-        "Gaussian Blur (Legacy)",
-        "Gradient Wipe (Legacy)",
-        "Linear Wipe (Legacy)",
-        "Magnify (Legacy)",
-        "Mosaic (Legacy)",
-        "Noise (Legacy)",
-        "Ramp",
-        "Replicate",
-        "Twirl (Legacy)",
-    ];
-
     #[test]
     fn premiere_26_video_effects_catalogue() {
         let mut n = 0;
-        for (folder, names) in CATALOGUE {
+        for (folder, names) in PREMIERE_26_VIDEO_EFFECTS {
             for name in *names {
                 let d = find_effect_by_name(name).unwrap_or_else(|| panic!("missing {name}"));
                 assert_eq!(d.kind, EffectKind::Video, "{name}");
@@ -1206,17 +1207,17 @@ mod tests {
             }
         }
         assert_eq!(n, 93);
-        assert_eq!(CATALOGUE.len(), 16);
+        assert_eq!(PREMIERE_26_VIDEO_EFFECTS.len(), 16);
         // nothing else sits in the current folders
         for d in effect_defs().iter().filter(|d| d.kind == EffectKind::Video && d.category.first() == Some(&"Video Effects")) {
             let f = d.category[1];
             if f == "Obsolete" {
                 continue;
             }
-            let listed = CATALOGUE.iter().any(|(cf, names)| *cf == f && names.contains(&d.name));
+            let listed = PREMIERE_26_VIDEO_EFFECTS.iter().any(|(cf, names)| *cf == f && names.contains(&d.name));
             assert!(listed, "{} in {f} is not in Premiere's list", d.name);
         }
-        for name in LEGACY_NAMES {
+        for name in PREMIERE_26_LEGACY_VIDEO_EFFECTS {
             let d = find_effect_by_name(name).unwrap_or_else(|| panic!("missing legacy {name}"));
             assert_eq!(d.category, LEGACY, "{name}");
         }

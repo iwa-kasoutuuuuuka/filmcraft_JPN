@@ -16,6 +16,22 @@ pub const EFFECT_TOP_FOLDERS: &[&str] = &["Presets", "Lumetri Presets", "Audio E
 pub const VIDEO_TRANSITION_FOLDERS: &[&str] =
     &["Animation", "Dissolve", "Grunge & Distort", "Immersive Video", "Lights & Blurs", "Slide", "Smart Tools", "Text", "Transformers", "Wipe"];
 
+/// How many transitions Premiere 26 has in each folder of its Video Transitions bin (folders as
+/// [`VIDEO_TRANSITION_FOLDERS`], then `Legacy/Video Transitions`), in [`video_transition_tree`] order.
+pub const PREMIERE_26_TRANSITION_COUNTS: &[(&str, usize)] = &[
+    ("Video Transitions/Animation", 8),
+    ("Video Transitions/Dissolve", 11),
+    ("Video Transitions/Grunge & Distort", 10),
+    ("Video Transitions/Immersive Video", 8),
+    ("Video Transitions/Lights & Blurs", 16),
+    ("Video Transitions/Slide", 8),
+    ("Video Transitions/Smart Tools", 4),
+    ("Video Transitions/Text", 2),
+    ("Video Transitions/Transformers", 8),
+    ("Video Transitions/Wipe", 9),
+    ("Legacy/Video Transitions", 21),
+];
+
 /// Category of the legacy transitions (`Legacy > Video Transitions`).
 pub const LEGACY_VIDEO_TRANSITIONS: &[&str] = &["Legacy", "Video Transitions"];
 /// Category of transitions Premiere no longer lists (kept so old projects still render; not shown
@@ -412,8 +428,9 @@ mod tests {
     #[test]
     fn premiere_26_transition_tree() {
         let tree = video_transition_tree();
-        let counts: Vec<usize> = tree.iter().map(|(_, v)| v.len()).collect();
-        assert_eq!(counts, vec![8, 11, 10, 8, 16, 8, 4, 2, 8, 9, 21], "{tree:?}");
+        let counts: Vec<(&str, usize)> = tree.iter().map(|(f, v)| (f.as_str(), v.len())).collect();
+        assert_eq!(counts, PREMIERE_26_TRANSITION_COUNTS, "{tree:?}");
+        let counts: Vec<usize> = counts.iter().map(|(_, n)| *n).collect();
         assert_eq!(counts[..10].iter().sum::<usize>(), 84);
         // every transition is in a known folder, ids and names are unique per kind
         let mut names = std::collections::HashSet::new();
