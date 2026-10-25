@@ -578,21 +578,27 @@ fn lumetri_rgb(off: u32) -> vec3<f32> {
 }
 
 // `Lut1d::apply`: per-channel linear interpolation over the shaper of the LUT described at `at`.
+// (One channel per call, no dynamically indexed vector write: FXC, the DX12 compiler without
+// dxcompiler.dll, aborts on `o[k] = …` in a loop.)
 fn lumetri_lut1d(at: u32, c: vec3<f32>) -> vec3<f32> {
     let n = u32(lumetri_data(at + 1u)) - 1u;
     let off = u32(lumetri_data(at + 2u));
     let lo = lumetri_rgb(at + 3u);
     let hi = lumetri_rgb(at + 6u);
-    var o = vec3<f32>(0.0);
-    for (var k = 0u; k < 3u; k = k + 1u) {
-        let t = clamp((c[k] - lo[k]) / (hi[k] - lo[k]), 0.0, 1.0) * f32(n);
-        let i = min(u32(t), max(n, 1u) - 1u);
-        let f = t - f32(i);
-        let a = lumetri_data(off + i * 3u + k);
-        let b = lumetri_data(off + min(i + 1u, n) * 3u + k);
-        o[k] = a + (b - a) * f;
-    }
-    return o;
+    return vec3(
+        lumetri_lut1d_channel(n, off, 0u, c.x, lo.x, hi.x),
+        lumetri_lut1d_channel(n, off, 1u, c.y, lo.y, hi.y),
+        lumetri_lut1d_channel(n, off, 2u, c.z, lo.z, hi.z),
+    );
+}
+
+fn lumetri_lut1d_channel(n: u32, off: u32, k: u32, c: f32, lo: f32, hi: f32) -> f32 {
+    let t = clamp((c - lo) / (hi - lo), 0.0, 1.0) * f32(n);
+    let i = min(u32(t), max(n, 1u) - 1u);
+    let f = t - f32(i);
+    let a = lumetri_data(off + i * 3u + k);
+    let b = lumetri_data(off + min(i + 1u, n) * 3u + k);
+    return a + (b - a) * f;
 }
 
 // `Lut3d::apply`: tetrahedral interpolation in the cube of the LUT described at `at`.
@@ -957,7 +963,8 @@ fn ukey_finish(o: vec4<f32>, a0: f32) -> vec4<f32> {
     let excess = max(v[dom] - limit, 0.0);
     if excess > 0.0 && u.p0.z > 0.0 {
         let l0 = luma709(v);
-        v[dom] = v[dom] - excess * u.p0.z;
+        // (a mask, not `v[dom] = …`: FXC aborts on a dynamically indexed vector write)
+        v = v - select(vec3(0.0), vec3(excess * u.p0.z), vec3(0u, 1u, 2u) == vec3(dom));
         let l1 = luma709(v);
         v = vec3<f32>(l1) + (v - vec3<f32>(l1)) * (1.0 - u.p0.w * min(excess * 4.0, 1.0));
         v = v + vec3<f32>((l0 - l1) * u.p1.y);
@@ -1050,16 +1057,14 @@ fn pixel(op: u32, p: vec2<i32>) -> vec4<f32> {
         }
         case OP_UNSHARP: {
             // src: the blurred image, aux: the original
-            var o = textureLoad(aux, p, 0);
+            // per channel without a dynamically indexed vector write: FXC (DX12 without
+            // dxcompiler.dll) aborts on `o[k] = …` in a loop
+            let o = textureLoad(aux, p, 0);
             let bq = ld(p);
             let amount = u.p0.x; let th = u.p0.y;
-            for (var k = 0; k < 3; k++) {
-                let d = o[k] - bq[k];
-                if abs(d) >= th * o.a {
-                    o[k] = max(o[k] + d * amount, 0.0);
-                }
-            }
-            return o;
+            let d = o.rgb - bq.rgb;
+            let sharpened = max(o.rgb + d * amount, vec3(0.0));
+            return vec4(select(o.rgb, sharpened, abs(d) >= vec3(th * o.a)), o.a);
         }
         case OP_CROP: {
             let x0 = u.p0.x; let x1 = u.p0.y; let y0 = u.p0.z; let y1 = u.p0.w; let fe = u.p1.x;

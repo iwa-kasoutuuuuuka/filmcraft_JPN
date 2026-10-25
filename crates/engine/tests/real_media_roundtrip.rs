@@ -225,7 +225,9 @@ fn iphone_style_hdr_hevc_mov_exports() {
     for (name, extra, transfer) in [("as the sequence.mp4", json!({}), "arib-std-b67"), ("SDR.mp4", json!({"settings": {"sdr": true}}), "bt709")] {
         let out = d.join(name);
         let r = export(&mut s, &out, extra);
-        assert!(r["result"]["frames"].as_u64().is_some_and(|f| f == 60), "2 s at 30 fps: {r}");
+        // 60, or 61 where this ffmpeg's AAC runs a few ms past the video (no edit list) and the
+        // clip, like the sequence made from it, lasts as long as its longest stream
+        assert!(r["result"]["frames"].as_u64().is_some_and(|f| f == 60 || f == 61), "2 s at 30 fps: {r}");
         let p = probe(&fp, &out);
         assert!((duration(&p) - 2.0).abs() < 0.1, "{name}: {p}");
         decodes_cleanly(&ff, &out);

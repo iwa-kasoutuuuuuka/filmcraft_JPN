@@ -19,6 +19,11 @@ pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         .get_or_init(|| {
             let instance = wgpu::Instance::default();
             let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+            // software adapters (CI runners) are skipped, as in the golden GPU parity tests
+            if adapter.get_info().device_type == wgpu::DeviceType::Cpu && std::env::var_os("FILMCRAFT_GPU_TESTS_ON_CPU").is_none() {
+                eprintln!("SKIPPED (gpu): software adapter {} (FILMCRAFT_GPU_TESTS_ON_CPU=1 runs these anyway)", adapter.get_info().name);
+                return None;
+            }
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
         })
         .clone()

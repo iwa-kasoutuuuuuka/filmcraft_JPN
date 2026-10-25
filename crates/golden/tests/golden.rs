@@ -738,10 +738,39 @@ fn scenes_are_distinct() {
 
 // ---- GPU parity ----
 
+/// A GPU for the parity tests. Software adapters (WARP, llvmpipe: CI runners) are skipped: the
+/// effect scenes take far longer than a CI job there. `gpu_compositor_builds_on_any_adapter`
+/// still compiles every pipeline on them.
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    if adapter.get_info().device_type == wgpu::DeviceType::Cpu && std::env::var_os("FILMCRAFT_GPU_TESTS_ON_CPU").is_none() {
+        eprintln!("SKIPPED (gpu): software adapter {} (FILMCRAFT_GPU_TESTS_ON_CPU=1 runs these anyway)", adapter.get_info().name);
+        return None;
+    }
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+}
+
+/// Every compositor pipeline compiles without a validation error on whatever adapter there is,
+/// software ones included. On Windows without dxcompiler.dll that is DX12's FXC, which aborted on
+/// dynamically indexed vector writes in fx.wgsl (the app then fell back to CPU compositing).
+#[test]
+fn gpu_compositor_builds_on_any_adapter() {
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+        eprintln!("SKIPPED (gpu compositor): no GPU adapter");
+        return;
+    };
+    let Ok((dev, q)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) else {
+        eprintln!("SKIPPED (gpu compositor): no device");
+        return;
+    };
+    let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = errors.clone();
+    dev.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(e.to_string())));
+    let _c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+    let errors = errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(errors.is_empty(), "{:?}: {errors:#?}", adapter.get_info());
 }
 
 #[test]
