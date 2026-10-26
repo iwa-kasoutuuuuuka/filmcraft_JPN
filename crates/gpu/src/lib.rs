@@ -377,7 +377,7 @@ impl GpuCompositor {
             view_formats: &[],
         });
         let dummy = dummy_tex.create_view(&Default::default());
-        let fx = fx::FxStage::supported(device).then(|| fx::FxStage::new(device, &shader, &layer_bgl));
+        let fx = fx::FxStage::supported(device).then(|| fx::FxStage::try_new(device, &shader, &layer_bgl)).flatten();
         Self {
             device: device.clone(),
             queue: queue.clone(),

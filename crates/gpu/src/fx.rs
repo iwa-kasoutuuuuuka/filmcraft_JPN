@@ -578,7 +578,26 @@ impl FxStage {
             && l.max_compute_workgroups_per_dimension >= 1
     }
 
-    pub(crate) fn new(device: &wgpu::Device, composite: &wgpu::ShaderModule, layer_bgl: &wgpu::BindGroupLayout) -> Self {
+    /// The stage, or `None` when this GPU can't build it: the working format (`Rgba32Float`) is
+    /// not renderable or not a storage texture everywhere (OpenGL / llvmpipe). Effects then run on
+    /// the CPU and the rest of the compositor stays on the GPU.
+    pub(crate) fn try_new(device: &wgpu::Device, composite: &wgpu::ShaderModule, layer_bgl: &wgpu::BindGroupLayout) -> Option<Self> {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let stage = Self::new(device, composite, layer_bgl);
+        // native backends report at once; a scope still pending (web) counts as success, its
+        // error then reaches the device's uncaptured-error handler
+        let mut pop = std::pin::pin!(scope.pop());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::future::Future::poll(pop.as_mut(), &mut cx) {
+            std::task::Poll::Ready(Some(e)) => {
+                log::warn!("GPU effect stage unavailable on this GPU, effects run on the CPU: {e}");
+                None
+            }
+            _ => Some(stage),
+        }
+    }
+
+    fn new(device: &wgpu::Device, composite: &wgpu::ShaderModule, layer_bgl: &wgpu::BindGroupLayout) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("filmcraft-fx"),
             source: wgpu::ShaderSource::Wgsl(include_str!("fx.wgsl").into()),
