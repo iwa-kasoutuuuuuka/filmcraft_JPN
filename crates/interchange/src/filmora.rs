@@ -17,13 +17,14 @@
 //! Read: tracks, media clips (speed, reverse; fitted to the frame with Filmora's position, scale
 //! and rotation as Motion), compound clips as nested sequences, titles as text graphics (text,
 //! font, alignment, position, size, colour, background), drawn graphics as shape layers
-//! (rectangles, arrows and pen strokes with their stroke and fill, placed by their transform),
+//! (rectangles, arrows and pen strokes, curves flattened, with their stroke, fill and trim, placed
+//! by their transform),
 //! links between a file's video and audio.
 //! Clip settings: audio volume (Volume level) and fades (Constant Gain transitions from / to
 //! silence), the crop (a Crop effect that fills the frame).
 //! Reported, not read: volume keyframes and other effects that carry settings (Filmora writes no
-//! parameters for effects left at their defaults; those need nothing), pen curves (read as
-//! straight segments), speed ramps (read as the average speed over the same duration).
+//! parameters for effects left at their defaults; those need nothing), speed ramps (read as the
+//! average speed over the same duration).
 //!
 //! Media paths are kept as the project wrote them; the engine looks for missing files relative to
 //! the folder the `.wfp` was opened from ([`original_project_dir`]).
@@ -354,6 +355,9 @@ fn rgb_of(c: i64) -> [f32; 3] {
 /// Filmora's stroke width unit in sequence pixels (measured on its renders: a 4 is about 7 px at
 /// 1920 × 984, whatever the shape's scale).
 const STROKE_PX: f64 = 1.8;
+/// Filmora's stroke when left at its defaults (measured on its renders): 0xC3C9CF, about 3 px.
+const DEFAULT_STROKE_COLOR: i64 = 0x00c3_c9cf;
+const DEFAULT_STROKE_PX: f64 = 3.0;
 
 /// A drawn graphic's canvas (the frame) placed by its transform: canvas pixel `q` lands at
 /// `position + R(rotation) · ((q − anchor) ⊙ scale)`.
@@ -385,7 +389,7 @@ impl Placement {
 }
 
 /// The outlines of a drawn graphic in canvas pixels: (points, closed).
-fn outlines(c: &Value, (w, h): (f64, f64), report: &mut Report) -> Vec<(Vec<(f64, f64)>, bool)> {
+fn outlines(c: &Value, (w, h): (f64, f64)) -> Vec<(Vec<(f64, f64)>, bool)> {
     let mut out = Vec::new();
     for e in effects_of(c).into_iter().filter(|e| enabled(e)) {
         let bbox = || {
@@ -414,32 +418,86 @@ fn outlines(c: &Value, (w, h): (f64, f64), report: &mut Report) -> Vec<(Vec<(f64
                     if path.get("enable").and_then(Value::as_bool) == Some(false) {
                         continue;
                     }
-                    let pts: Vec<(f64, f64)> = path
-                        .get("points")
-                        .and_then(Value::as_array)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&[])
-                        .iter()
-                        .take(10_000)
-                        .filter_map(|q| {
-                            let (x, y) = (q.get("value_x")?.as_f64()?, q.get("value_y")?.as_f64()?);
-                            (x.is_finite() && y.is_finite()).then(|| (x.clamp(-10.0, 10.0) * w, y.clamp(-10.0, 10.0) * h))
-                        })
-                        .collect();
-                    if pts
-                        .iter()
-                        .zip(path.get("points").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]))
-                        .any(|(_, q)| q.get("type").and_then(Value::as_i64).is_some_and(|t| t != 0))
-                    {
-                        report.warn("curved pen strokes were read as straight segments");
-                    }
+                    let closed = path.get("is_closed").and_then(Value::as_bool).unwrap_or(false);
+                    let points = path.get("points").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+                    let pts = flatten(points.get(..points.len().min(10_000)).unwrap_or(&[]), closed, (w, h));
                     if pts.len() >= 2 {
-                        out.push((pts, path.get("is_closed").and_then(Value::as_bool).unwrap_or(false)));
+                        out.push((pts, closed));
                     }
                 }
             }
             _ => {}
         }
+    }
+    out
+}
+
+/// A pen path's points in canvas pixels, its curves flattened. A point may carry bezier handles
+/// (`left_ctrl_point` towards the previous point, `right_ctrl_point` towards the next, in canvas
+/// fractions like the point); a segment without handles is straight.
+fn flatten(points: &[Value], closed: bool, (w, h): (f64, f64)) -> Vec<(f64, f64)> {
+    let xy = |q: &Value| {
+        let (x, y) = (q.get("value_x")?.as_f64()?, q.get("value_y")?.as_f64()?);
+        (x.is_finite() && y.is_finite()).then(|| (x.clamp(-10.0, 10.0) * w, y.clamp(-10.0, 10.0) * h))
+    };
+    let nodes: Vec<((f64, f64), Option<(f64, f64)>, Option<(f64, f64)>)> =
+        points.iter().filter_map(|q| Some((xy(q)?, q.get("left_ctrl_point").and_then(xy), q.get("right_ctrl_point").and_then(xy)))).collect();
+    let Some(first) = nodes.first() else { return Vec::new() };
+    let mut out = vec![first.0];
+    let n = nodes.len();
+    let segments = if closed && n > 2 { n } else { n.saturating_sub(1) };
+    for i in 0..segments {
+        let (Some(a), Some(b)) = (nodes.get(i), nodes.get((i + 1) % n)) else { break };
+        let (p0, p3) = (a.0, b.0);
+        let (p1, p2) = (a.2.unwrap_or(p0), b.1.unwrap_or(p3));
+        let last = closed && n > 2 && i + 1 == n;
+        if p1 == p0 && p2 == p3 {
+            if !last {
+                out.push(p3);
+            }
+            continue;
+        }
+        // a cubic bezier, 16 steps (enough for a smooth stroke at full HD)
+        for k in 1..=16 {
+            if last && k == 16 {
+                break;
+            }
+            let t = f64::from(k) / 16.0;
+            let u = 1.0 - t;
+            let (c0, c1, c2, c3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+            out.push((c0 * p0.0 + c1 * p1.0 + c2 * p2.0 + c3 * p3.0, c0 * p0.1 + c1 * p1.1 + c2 * p2.1 + c3 * p3.1));
+        }
+    }
+    out
+}
+
+/// The part of a polyline (closed: back to its first point) from fraction `a` to `b` of its
+/// length, as an open polyline (Filmora's path trim).
+fn trim_path(pts: &[(f64, f64)], closed: bool, a: f64, b: f64) -> Vec<(f64, f64)> {
+    let mut ring: Vec<(f64, f64)> = pts.to_vec();
+    if closed && let Some(&f) = pts.first() {
+        ring.push(f);
+    }
+    let lens: Vec<f64> = ring.windows(2).map(|s| s.first().zip(s.get(1)).map_or(0.0, |(p, q)| (q.0 - p.0).hypot(q.1 - p.1))).collect();
+    let total: f64 = lens.iter().sum();
+    let (a, b) = (a.clamp(0.0, 1.0) * total, b.clamp(0.0, 1.0) * total);
+    if total.is_nan() || total <= 0.0 || b <= a {
+        return Vec::new();
+    }
+    let lerp = |p: (f64, f64), q: (f64, f64), t: f64| (p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t);
+    let mut out = Vec::new();
+    let mut at = 0.0;
+    for (s, len) in ring.windows(2).zip(&lens) {
+        let (Some(&p), Some(&q)) = (s.first(), s.get(1)) else { continue };
+        let (s0, s1) = (at, at + len);
+        at = s1;
+        if s1 < a || s0 > b || *len <= 0.0 {
+            continue;
+        }
+        if out.is_empty() {
+            out.push(lerp(p, q, ((a - s0) / len).clamp(0.0, 1.0)));
+        }
+        out.push(lerp(p, q, ((b - s0) / len).clamp(0.0, 1.0)));
     }
     out
 }
@@ -861,8 +919,10 @@ impl Importer<'_> {
         let effects = effects_of(c);
         let find = |id: &str| effects.iter().copied().find(|e| effect_id(e) == id && enabled(e));
         let stroke = find("graphic/effect/path_stroke").map(|e| {
-            let [r, g, b] = rgb_of(fx_param(e, "color").and_then(Value::as_i64).unwrap_or(0));
-            ([r, g, b, 1.0f32], (fx_f64(e, "lineSize").unwrap_or(4.0).clamp(0.0, 500.0) * STROKE_PX) as f32)
+            // a stroke left at Filmora's defaults has no parameters: light grey, about 3 px
+            let [r, g, b] = rgb_of(fx_param(e, "color").and_then(Value::as_i64).unwrap_or(DEFAULT_STROKE_COLOR));
+            let width = fx_f64(e, "lineSize").filter(|v| v.is_finite()).map_or(DEFAULT_STROKE_PX, |v| v.clamp(0.0, 500.0) * STROKE_PX);
+            ([r, g, b, 1.0f32], width as f32)
         });
         let fill = find("graphic/effect/path_fill").and_then(|e| {
             let alpha = fx_f64(e, "alpha").unwrap_or(255.0).clamp(0.0, 255.0) as f32 / 255.0;
@@ -874,13 +934,27 @@ impl Importer<'_> {
         let ends: [i64; 2] = find("graphic/effect/shape_render").map_or([0, 0], |e| {
             [fx_param(e, "end_shape").and_then(Value::as_i64).unwrap_or(0), fx_param(e, "start_shape").and_then(Value::as_i64).unwrap_or(0)]
         });
-        if find("graphic/effect/path_trim").is_some_and(|e| fx_f64(e, "start").unwrap_or(0.0) > 0.0 || fx_f64(e, "end").unwrap_or(100.0) < 100.0) {
-            self.report.warn("partly drawn pen strokes (trim) were imported whole");
-        }
+        // path_trim: only start..end (percent of the length) of the stroke is drawn
+        let trim = find("graphic/effect/path_trim")
+            .map(|e| {
+                let pct = |k: &str, d: f64| fx_f64(e, k).filter(|v| v.is_finite()).unwrap_or(d).clamp(0.0, 100.0) / 100.0;
+                (pct("start", 0.0), pct("end", 100.0))
+            })
+            .filter(|(a, b)| *a > 0.0 || *b < 1.0);
         let mut layers = Vec::new();
-        for (pts, closed) in outlines(c, (fw, fh), self.report) {
-            let mapped: Vec<[f32; 2]> = pts.iter().map(|q| place.map(*q)).collect();
+        for (pts, closed) in outlines(c, (fw, fh)) {
             let mut shapes: Vec<(Vec<[f32; 2]>, Option<[f32; 4]>, Option<([f32; 4], f32)>)> = Vec::new();
+            let (pts, closed) = match trim {
+                Some((a, b)) => {
+                    // the fill stays whole; the stroke becomes the open part that is drawn
+                    if closed && pts.len() >= 3 && fill.is_some() {
+                        shapes.push((pts.iter().map(|q| place.map(*q)).collect(), fill, None));
+                    }
+                    (trim_path(&pts, closed, a, b), false)
+                }
+                None => (pts, closed),
+            };
+            let mapped: Vec<[f32; 2]> = pts.iter().map(|q| place.map(*q)).collect();
             if closed && mapped.len() >= 3 {
                 shapes.push((mapped, fill, stroke));
             } else if let Some((color, width)) = stroke {
@@ -1181,6 +1255,37 @@ mod tests {
         assert_eq!(v[1].source_in, sec(2));
         let warnings: Vec<_> = report.entries.iter().map(|e| e.message.as_str()).collect();
         assert_eq!(warnings, ["speed ramps were read as the average speed (same duration, constant rate)"]);
+    }
+
+    /// A pen curve as Filmora 16 saved it: the middle point carries bezier handles.
+    #[test]
+    fn pen_curves_are_flattened_and_trimmed() {
+        let pts: Vec<Value> = serde_json::from_str(
+            r#"[{"type":0,"value_x":0.0,"value_y":1.0},
+                {"type":0,"value_x":0.5,"value_y":0.0,"left_ctrl_point":{"type":1,"value_x":0.25,"value_y":0.0},"right_ctrl_point":{"type":2,"value_x":0.75,"value_y":0.0}},
+                {"type":0,"value_x":1.0,"value_y":1.0}]"#,
+        )
+        .unwrap();
+        let line = flatten(&pts, false, (100.0, 100.0));
+        assert_eq!(line.len(), 33, "two curved segments of 16 steps after the first point");
+        assert_eq!(line.first(), Some(&(0.0, 100.0)));
+        assert_eq!(line.get(16), Some(&(50.0, 0.0)), "passes through the middle point");
+        assert_eq!(line.last(), Some(&(100.0, 100.0)));
+        // the curve bulges: half way along the first segment it is left of the chord (x 25)
+        let q = line.get(8).unwrap();
+        assert!(q.0 < 20.0 && (q.1 - 50.0).abs() < 1e-9, "{q:?}");
+        // without handles: straight
+        let straight: Vec<Value> =
+            serde_json::from_str(r#"[{"value_x":0.0,"value_y":0.0},{"value_x":1.0,"value_y":0.0},{"value_x":1.0,"value_y":1.0}]"#).unwrap();
+        assert_eq!(flatten(&straight, true, (10.0, 10.0)), vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]);
+        // trim: 25..75 % of a 20-long L is 5..15
+        let l = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        assert_eq!(trim_path(&l, false, 0.25, 0.75), vec![(5.0, 0.0), (10.0, 0.0), (10.0, 5.0)]);
+        // a closed square (perimeter 40): the closing side counts
+        let sq = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        assert_eq!(trim_path(&sq, true, 0.8, 1.0), vec![(0.0, 8.0), (0.0, 0.0)]);
+        assert!(trim_path(&l, false, 0.6, 0.6).is_empty());
+        assert!(trim_path(&[(1.0, 1.0)], false, 0.0, 1.0).is_empty(), "no length, no stroke");
     }
 
     #[test]
