@@ -19,9 +19,11 @@
 //! font, alignment, position, size, colour, background), drawn graphics as shape layers
 //! (rectangles, arrows and pen strokes with their stroke and fill, placed by their transform),
 //! links between a file's video and audio.
-//! Reported, not read: crop, volume keyframes and effects that carry settings (Filmora writes no
+//! Clip settings: audio volume (Volume level) and fades (Constant Gain transitions from / to
+//! silence), the crop (a Crop effect that fills the frame).
+//! Reported, not read: volume keyframes and other effects that carry settings (Filmora writes no
 //! parameters for effects left at their defaults; those need nothing), pen curves (read as
-//! straight segments), variable speed (read as the average speed).
+//! straight segments), speed ramps (read as the average speed over the same duration).
 //!
 //! Media paths are kept as the project wrote them; the engine looks for missing files relative to
 //! the folder the `.wfp` was opened from ([`original_project_dir`]).
@@ -225,9 +227,11 @@ fn spec_of(r: &Value, path: &str) -> MediaSpec {
     MediaSpec { duration: length, video: video.filter(|_| stream_type != 3), audio, start_tc: None, kind }
 }
 
-/// A clip's constant speed (the average when Filmora animates it) and reverse flag.
-fn speed_of(c: &Value, report: &mut Report) -> (f64, bool) {
-    let Some(sp) = c.get("speed") else { return (1.0, false) };
+/// A clip's constant speed and reverse flag. A speed ramp becomes the average speed that plays its
+/// source range (`speed.offset`..`offsetEnd`, seconds) in the clip's `dur`, with that range's start
+/// as the source in point (the third value).
+fn speed_of(c: &Value, dur: Tick, report: &mut Report) -> (f64, bool, Option<Tick>) {
+    let Some(sp) = c.get("speed") else { return (1.0, false, None) };
     let reverse = sp.get("reverse").and_then(Value::as_bool).unwrap_or(false);
     let keys: Vec<f64> = sp
         .get("speedParam")
@@ -239,18 +243,76 @@ fn speed_of(c: &Value, report: &mut Report) -> (f64, bool) {
         .filter_map(|k| k.get("_value").and_then(Value::as_f64))
         .filter(|v| v.is_finite() && *v > 0.0)
         .collect();
+    let secs = |k: &str| sp.get(k).and_then(Value::as_f64).filter(|v| v.is_finite() && *v >= 0.0 && *v < 1e7);
+    let mut src_in = None;
     let speed = match keys.as_slice() {
         [] => 1.0,
         [first, rest @ ..] => {
             if rest.iter().any(|v| (v - first).abs() > 1e-6) {
-                report.warn("variable speed (speed ramps) was read as the clip's average speed");
-                keys.iter().sum::<f64>() / keys.len() as f64
+                report.warn("speed ramps were read as the average speed (same duration, constant rate)");
+                let clip = dur.seconds();
+                match (secs("offset"), secs("offsetEnd")) {
+                    (Some(a), Some(b)) if b > a && clip > 0.0 => {
+                        src_in = Some(Tick::from_seconds_f64(a));
+                        (b - a) / clip
+                    }
+                    _ => keys.iter().sum::<f64>() / keys.len() as f64,
+                }
             } else {
                 *first
             }
         }
     };
-    (speed.clamp(0.01, 100.0), reverse)
+    (speed.clamp(0.01, 100.0), reverse, src_in)
+}
+
+/// Linear fades (seconds) at a clip's start and end.
+struct Fades {
+    fade_in: f64,
+    fade_out: f64,
+}
+
+/// Read the settings FilmCraft has a place for: audio volume (dB) and fades, the video crop (a
+/// Crop effect that fills the frame). Returns the audio fades to add as transitions.
+fn apply_settings(ti: &mut TrackItem, c: &Value, kind: TrackKind, report: &mut Report) -> Option<Fades> {
+    let effects = effects_of(c);
+    let find = |id: &str| effects.iter().copied().find(|e| effect_id(e) == id && enabled(e) && has_params(e));
+    if kind == TrackKind::Audio {
+        if let Some(db) = find("audio/effect/volume").and_then(|e| fx_f64(e, "VolumeGain")).filter(|v| v.is_finite()) {
+            crate::common::set_param(ti, "volume", "level", Param::new(ParamValue::Float(db.clamp(-287.5, 15.0))));
+        }
+        let fades = find("audio/effect/fade").map(|e| {
+            let s = |k: &str| fx_f64(e, k).filter(|v| v.is_finite()).unwrap_or(0.0).clamp(0.0, 3600.0);
+            Fades { fade_in: s("FadeInTime"), fade_out: s("FadeOutTime") }
+        });
+        return fades.filter(|f| f.fade_in > 0.0 || f.fade_out > 0.0);
+    }
+    if let Some(script) = find("video/effect/crop-pan-zoom").and_then(|e| fx_param(e, "SettingScript")).and_then(Value::as_str) {
+        let keys: Vec<Value> = serde_json::from_str::<Value>(script).ok().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+        if keys.len() > 1 {
+            report.warn("Filmora pan & zoom animations were read as their first crop");
+        }
+        let g = |k: &Value, n: &str| k.get(n).and_then(Value::as_f64).filter(|v| v.is_finite()).map(|v| v.clamp(0.0, 1.0));
+        if let Some(k) = keys.first()
+            && let (Some(x), Some(y), Some(w), Some(h)) = (g(k, "X"), g(k, "Y"), g(k, "Width"), g(k, "Height"))
+            && w > 1e-3
+            && h > 1e-3
+        {
+            let pct = |v: f64| Param::new(ParamValue::Float((v * 100.0).clamp(0.0, 100.0)));
+            crate::common::set_param(ti, "crop", "left", pct(x));
+            crate::common::set_param(ti, "crop", "top", pct(y));
+            crate::common::set_param(ti, "crop", "right", pct(1.0 - x - w));
+            crate::common::set_param(ti, "crop", "bottom", pct(1.0 - y - h));
+            // Filmora shows the cropped part full frame; Crop's zoom stretches each axis to the
+            // frame, so it only matches when the crop keeps the frame's shape
+            if (w - h).abs() < 0.01 {
+                crate::common::set_param(ti, "crop", "zoom", Param::new(ParamValue::Bool(true)));
+            } else {
+                report.warn("Filmora crops of another shape than the frame were not enlarged to fill it");
+            }
+        }
+    }
+    None
 }
 
 /// Every effect of a clip, in chain order.
@@ -642,7 +704,7 @@ impl Importer<'_> {
         self.b.ensure_tracks(&mut seq, TrackKind::Audio, ai);
         // (key, start, end) → link id: a file's (or compound clip's) video and audio at the same place
         let mut links: BTreeMap<(String, i64, i64), u64> = BTreeMap::new();
-        let mut placed: Vec<(TrackKind, usize, TrackItem)> = Vec::new();
+        let mut placed: Vec<(TrackKind, usize, TrackItem, Option<Fades>)> = Vec::new();
         let mut clips_seen = 0usize;
         for (tr, (kind, idx)) in tracks.iter().zip(slots) {
             for c in tr.get("clipList").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
@@ -656,9 +718,9 @@ impl Importer<'_> {
                 let start = rate.snap_nearest(tick(b.max(0)));
                 let end = rate.snap_nearest(tick(e.saturating_add(1).max(b)));
                 let dur = (end - start).max(rate.frame_duration());
-                let src_in = tick(int(c, "inPoint").unwrap_or(0).max(0));
                 let ty = int(c, "type").unwrap_or(0);
-                let (speed, reverse) = speed_of(c, self.report);
+                let (speed, reverse, ramp_in) = speed_of(c, dur, self.report);
+                let src_in = ramp_in.unwrap_or_else(|| tick(int(c, "inPoint").unwrap_or(0).max(0)));
                 let ti = match ty {
                     1 | 2 => {
                         let Some(reference) = c.get("filename").and_then(Value::as_str).filter(|f| !f.is_empty()) else {
@@ -699,6 +761,7 @@ impl Importer<'_> {
                     }
                 };
                 let Some((mut ti, key)) = ti else { continue };
+                let fades = if matches!(ty, 1 | 2 | 6 | 16) { apply_settings(&mut ti, c, kind, self.report) } else { None };
                 if let Some(key) = key {
                     let entry = links.entry((key, b, e)).or_insert(0);
                     if *entry == 0 {
@@ -707,21 +770,44 @@ impl Importer<'_> {
                     ti.link = Some(*entry);
                 }
                 self.report_settings(c);
-                placed.push((kind, idx, ti));
+                placed.push((kind, idx, ti, fades));
             }
         }
         // a link with only one side is no link
         let mut sides: HashMap<u64, u32> = HashMap::new();
-        for (_, _, ti) in &placed {
+        for (_, _, ti, _) in &placed {
             if let Some(l) = ti.link {
                 *sides.entry(l).or_default() += 1;
             }
         }
-        for (kind, idx, mut ti) in placed {
+        for (kind, idx, mut ti, fades) in placed {
             if ti.link.is_some_and(|l| sides.get(&l).copied().unwrap_or(0) < 2) {
                 ti.link = None;
             }
-            self.b.place(&mut seq, kind, idx, ti);
+            let (clip, start, dur) = (ti.id, ti.start, ti.duration);
+            let i = self.b.place(&mut seq, kind, idx, ti);
+            // audio fades: Constant Gain (linear) from / to silence at the clip's edges
+            let Some(f) = fades else { continue };
+            let secs = dur.seconds();
+            let total = f.fade_in + f.fade_out;
+            let k = if total > secs && total > 0.0 { secs / total } else { 1.0 };
+            for (len, at_start) in [(f.fade_in * k, true), (f.fade_out * k, false)] {
+                let len = rate.snap_nearest(Tick::from_seconds_f64(len)).min(dur);
+                if len <= Tick::ZERO {
+                    continue;
+                }
+                let Some(effect) = filmcraft_project::find_effect("constant_gain").map(|d| d.instance()) else { continue };
+                let id = filmcraft_project::TransitionId(self.b.alloc());
+                let (t_start, from, to, align) = if at_start {
+                    (start, None, Some(clip), filmcraft_project::TransitionAlign::StartAtCut)
+                } else {
+                    (start + dur - len, Some(clip), None, filmcraft_project::TransitionAlign::EndAtCut)
+                };
+                if let Some(track) = seq.tracks_mut(kind).get_mut(i) {
+                    track.transitions.push(filmcraft_project::Transition { id, effect, start: t_start, duration: len, from, to, align, reverse: false });
+                    track.sort();
+                }
+            }
         }
         // drop empty tracks (Filmora keeps many), keeping at least one of each kind
         for kind in [TrackKind::Video, TrackKind::Audio] {
@@ -749,8 +835,8 @@ impl Importer<'_> {
             match effect_id(e) {
                 "video/effect/transform" => {}
                 id if id.starts_with("graphic/effect/") => {}
-                "video/effect/crop-pan-zoom" => self.report.warn("Filmora crops were not carried over"),
-                id if id.starts_with("audio/effect/") => self.report.warn("Filmora audio settings (volume, fades, EQ) were not carried over"),
+                "video/effect/crop-pan-zoom" | "audio/effect/volume" | "audio/effect/fade" => {}
+                id if id.starts_with("audio/effect/") => self.report.warn("Filmora audio effects (EQ, denoise…) were not carried over"),
                 _ => self.report.warn("Filmora effects were not carried over"),
             }
         }
@@ -1046,6 +1132,55 @@ mod tests {
             tl2 = SECOND - 1,
             script = serde_json::to_string(script).unwrap(),
         )
+    }
+
+    /// Volume, fades, crop and a speed ramp as Filmora 16 saved them (values from a project made
+    /// in Filmora for this test).
+    #[test]
+    fn reads_volume_fades_crop_and_speed_ramps() {
+        let ramp = r#"{\"keyframeSets\": [{\"_time\": 0.0,\"Interpolation\": 9,\"_value\": 0.9},{\"_time\": 5.0,\"Interpolation\": 9,\"_value\": 6.8},{\"_time\": 10.0,\"Interpolation\": 9,\"_value\": 1.0}],\"_totalTime\": 10.0}"#;
+        let crop = r#"[{\"OriTime\": 0,\"Time\": 0.0,\"X\": 0.125,\"Y\": 0.1336,\"Width\": 0.5,\"Height\": 0.5}]"#;
+        let tl = format!(
+            r#"{{"currentTimelineId":1,"resources":[
+                {{"filename":"file:/E:/Old/a.mp4","streamType":2,"mediaLength":{len},"vidStreamInfo":[{{"width":1920,"height":1080,"frameRate":{{"num":30,"den":1}}}}],"audStreamInfo":[{{"sampleRate":48000,"channels":2}}]}}],
+              "timelineInfos":[{{"timelineId":1,"frameRate":{{"num":30,"den":1}},"resolutionWidth":1920,"resolutionHeight":1080,"trackInfos":[
+                {{"trackType":2,"clipList":[{{"type":2,"filename":"file:/E:/Old/a.mp4","tlBegin":0,"tlEnd":{ten},"inPoint":0,"outPoint":{ten},
+                    "effectChainList":[{{"name":"a","effectList":[
+                        {{"id":"audio/effect/volume","paramList":[{{"fxParam":{{"paramType":2,"unValue":-6.76}},"name":"VolumeGain"}}]}},
+                        {{"id":"audio/effect/fade","paramList":[{{"fxParam":{{"unValue":1.0}},"name":"FadeInTime"}},{{"fxParam":{{"unValue":2.0}},"name":"FadeOutTime"}}]}}]}}]}}]}},
+                {{"trackType":1,"clipList":[
+                    {{"type":1,"filename":"file:/E:/Old/a.mp4","tlBegin":0,"tlEnd":{ten},"inPoint":0,"outPoint":{ten},
+                      "effectChainList":[{{"name":"v","effectList":[{{"id":"video/effect/crop-pan-zoom","paramList":[{{"fxParam":{{"paramType":6,"unValue":"{crop}"}},"name":"SettingScript"}}]}}]}}]}},
+                    {{"type":1,"filename":"file:/E:/Old/a.mp4","tlBegin":{s20},"tlEnd":{ramp_end},"inPoint":0,"outPoint":{five},
+                      "speed":{{"offset":2.0,"offsetEnd":12.0,"reverse":false,"speedParam":"{ramp}"}},"effectChainList":[]}}]}}]}}]}}"#,
+            len = 20 * SECOND,
+            ten = 10 * SECOND - 1,
+            s20 = 20 * SECOND,
+            five = 5 * SECOND,
+            ramp_end = 25 * SECOND - 1,
+        );
+        let (imp, report) = import(&project(&tl), &ImportOptions::default()).unwrap();
+        let q = imp.project.sequence(imp.sequences[0]).unwrap();
+        // audio: -6.76 dB, 1 s fade-in and 2 s fade-out as Constant Gain transitions from / to silence
+        let a = &q.audio_tracks[0];
+        assert_eq!(a.items[0].effect("volume").unwrap().f64_at("level", Tick::ZERO), -6.76);
+        let fades: Vec<_> = a.transitions.iter().map(|t| (t.effect.effect.as_str(), t.start, t.duration, t.from.is_some(), t.to.is_some())).collect();
+        let sec = |s: i64| Tick(s * filmcraft_time::TICKS_PER_SECOND);
+        assert_eq!(fades, vec![("constant_gain", sec(0), sec(1), false, true), ("constant_gain", sec(8), sec(2), true, false)]);
+        // video: the crop (fractions → percent per side), enlarged to fill the frame
+        let v = &q.video_tracks[0].items;
+        let crop = v[0].effect("crop").unwrap();
+        let close = |id: &str, want: f64| assert!((crop.f64_at(id, Tick::ZERO) - want).abs() < 1e-9, "{id}: {}", crop.f64_at(id, Tick::ZERO));
+        close("left", 12.5);
+        close("top", 13.36);
+        close("right", 37.5);
+        close("bottom", 36.64);
+        assert_eq!(crop.param("zoom").unwrap().value, ParamValue::Bool(true));
+        // the ramp plays source 2..12 s in 5 s: twice the speed, from 2 s
+        assert!((v[1].speed - 2.0).abs() < 1e-9, "{}", v[1].speed);
+        assert_eq!(v[1].source_in, sec(2));
+        let warnings: Vec<_> = report.entries.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(warnings, ["speed ramps were read as the average speed (same duration, constant rate)"]);
     }
 
     #[test]
