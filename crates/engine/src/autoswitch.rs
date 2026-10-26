@@ -21,12 +21,20 @@
 //!
 //! Cuts land on frames of the sequence. Applying is one undo step ("Auto Switch by Speaker") and
 //! switches the linked audio too when audio follows video (and `videoOnly` is not set), like the
-//! keyboard cuts. `action: "detect"` changes nothing and returns the cuts. No transcript and no
-//! speech model are needed.
+//! keyboard cuts. No transcript and no speech model are needed.
+//!
+//! The analysis (mixing each camera's audio) runs as a background job so the UI keeps going:
+//! `jobs.list` shows "Camera 2 of 3: 40%", `jobs.cancel` stops it without changing anything, and
+//! when it finishes the cuts are applied from [`poll`]. If the clip was edited meanwhile (moved,
+//! trimmed, deleted), nothing is applied and a message says why. `wait: true` runs it in place and
+//! answers with the cuts (scripts, tests); `action: "detect"` does too and changes nothing.
 
 use filmcraft_edit as edit;
 use filmcraft_edit::multicam::Cut;
-use filmcraft_project::{Sequence, TrackId, TrackItem};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+
+use filmcraft_project::{ItemId, Project, Sequence, TrackId, TrackItem};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 use serde_json::{Value, json};
 
@@ -51,7 +59,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         label: "Auto Switch by Speaker…",
         menu: &["Clip", "Multi-Camera"],
         shortcut: None,
-        params: r#"{"clip":id?,"time":ticks?,"minShotSeconds":0..600=2,"marginDb":0..40=6,"silenceDb":-96..0=-45,"wideCamera":0..16 (0 = none)?,"bothDb":0..20=3,"videoOnly":bool?,"action":"apply|detect"="apply"}"#,
+        params: r#"{"clip":id?,"time":ticks?,"minShotSeconds":0..600=2,"marginDb":0..40=6,"silenceDb":-96..0=-45,"wideCamera":0..16 (0 = none)?,"bothDb":0..20=3,"videoOnly":bool?,"action":"apply|detect"="apply","wait":bool=false}"#,
         enabled: has_multicam_clip,
         run: auto_switch,
         journal: true,
@@ -183,9 +191,18 @@ fn run_of(q: &Sequence, track: TrackId, clip: &TrackItem) -> Vec<TrackItem> {
     items.get(lo..=hi).map(|v| v.iter().map(|i| (*i).clone()).collect()).unwrap_or_else(|| vec![clip.clone()])
 }
 
-/// Smoothed level (dB) per window of `camera`'s own audio in the source sequence, over source
-/// time `from` for `windows` windows.
-fn camera_levels(s: &Session, src: &Sequence, audio: &[TrackId], from: Tick, windows: usize) -> Vec<f32> {
+/// Smoothed level (dB) per window of a camera's own audio (`audio`, tracks of the source
+/// sequence `src`), over source time `from` for `windows` windows. `step(windows_done)` is called
+/// after each second of audio; it returns false to stop (None is returned then).
+fn camera_levels(
+    project: &Project,
+    provider: &dyn filmcraft_render::SourceProvider,
+    src: &Sequence,
+    audio: &[TrackId],
+    from: Tick,
+    windows: usize,
+    mut step: impl FnMut(u64) -> bool,
+) -> Option<Vec<f32>> {
     // the source with only this camera's audio left in it
     let mut solo = src.clone();
     for t in &mut solo.video_tracks {
@@ -202,13 +219,12 @@ fn camera_levels(s: &Session, src: &Sequence, audio: &[TrackId], from: Tick, win
     let sr = i64::from(src.settings.sample_rate.max(1));
     let first = from.to_units_floor(sr);
     let total = Tick::from_units(i64::try_from(windows).unwrap_or(0), WINDOWS_PER_SECOND).to_units_floor(sr);
-    let provider = s.media.full_res_provider(s.project.clone(), s.services.clone());
     let mut power = vec![0f64; windows];
     let mut count = vec![0u32; windows];
     let mut pos = 0i64;
     while pos < total {
         let n = (total - pos).min(sr);
-        let b = filmcraft_render::audio::mix_sequence(&s.project, &solo, first.saturating_add(pos), usize::try_from(n).unwrap_or(0), &provider);
+        let b = filmcraft_render::audio::mix_sequence(project, &solo, first.saturating_add(pos), usize::try_from(n).unwrap_or(0), provider);
         let chans = b.channels.len().max(1) as f64;
         for k in 0..usize::try_from(n).unwrap_or(0) {
             let sq: f64 = b.channels.iter().map(|c| c.get(k).map_or(0.0, |v| f64::from(*v) * f64::from(*v))).sum();
@@ -221,18 +237,136 @@ fn camera_levels(s: &Session, src: &Sequence, audio: &[TrackId], from: Tick, win
             }
         }
         pos += n;
+        let done = u64::try_from(pos.saturating_mul(WINDOWS_PER_SECOND) / sr).unwrap_or(0).min(windows as u64);
+        if !step(done) {
+            return None;
+        }
     }
     let mean: Vec<f64> = power.iter().zip(&count).map(|(p, c)| if *c == 0 { 0.0 } else { p / f64::from(*c) }).collect();
     // centred moving average of the power
     let half = SMOOTH_WINDOWS / 2;
-    (0..windows)
-        .map(|i| {
-            let (a, b) = (i.saturating_sub(half), (i + half + 1).min(windows));
-            let slice = mean.get(a..b).unwrap_or(&[]);
-            let p = slice.iter().sum::<f64>() / slice.len().max(1) as f64;
-            ((10.0 * (p + 1e-12).log10()) as f32).max(FLOOR_DB)
-        })
-        .collect()
+    Some(
+        (0..windows)
+            .map(|i| {
+                let (a, b) = (i.saturating_sub(half), (i + half + 1).min(windows));
+                let slice = mean.get(a..b).unwrap_or(&[]);
+                let p = slice.iter().sum::<f64>() / slice.len().max(1) as f64;
+                ((10.0 * (p + 1e-12).log10()) as f32).max(FLOOR_DB)
+            })
+            .collect(),
+    )
+}
+
+/// Everything the analysis needs, owned, so it can run on a worker thread.
+struct Analysis {
+    project: Arc<Project>,
+    provider: crate::media_pool::PoolProvider,
+    src: Sequence,
+    /// (angle, its audio tracks) of the cameras that vote.
+    voiced: Vec<(u32, Vec<TrackId>)>,
+    from: Tick,
+    windows: usize,
+    rules: SwitchRules,
+    wide: Option<u32>,
+    opening: u32,
+    start: Tick,
+    end: Tick,
+    rate: FrameRate,
+}
+
+impl Analysis {
+    /// The cuts, or None when `progress` asks to stop. Reports progress in windows (all cameras).
+    fn run(&self, progress: &filmcraft_export::Progress) -> Option<Vec<Cut>> {
+        let n = self.voiced.len();
+        let mut levels = Vec::with_capacity(n);
+        for (k, (_, audio)) in self.voiced.iter().enumerate() {
+            let base = (k * self.windows) as u64;
+            let l = camera_levels(&self.project, &self.provider, &self.src, audio, self.from, self.windows, |done| {
+                progress.done.store(base + done, Ordering::Relaxed);
+                let pct = done * 100 / (self.windows as u64).max(1);
+                *lock(&progress.status) = format!("Camera {} of {n}: {pct}%", k + 1);
+                !progress.cancel.load(Ordering::Relaxed)
+            })?;
+            levels.push(l);
+        }
+        let angles: Vec<u32> = self.voiced.iter().map(|(a, _)| *a).collect();
+        Some(frame_cuts(&speaker_cuts(&levels, &angles, self.wide, self.opening, &self.rules), self.start, self.end, self.rate))
+    }
+}
+
+/// Where the cuts go, and what the clip looked like when the analysis started.
+#[derive(Clone)]
+struct Target {
+    seq: ItemId,
+    track: TrackId,
+    /// Tracks the cuts switch (the video track, and the linked audio when it follows).
+    tracks: Vec<TrackId>,
+    source: ItemId,
+    start: Tick,
+    end: Tick,
+    source_in: Tick,
+}
+
+/// A running analysis; applied by [`poll`] when it finishes.
+pub struct PendingSwitch {
+    job: u64,
+    target: Target,
+    cuts: Arc<Mutex<Option<Vec<Cut>>>>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Apply finished analyses (one undo step each) and drop finished / cancelled ones. Called once
+/// per UI frame from [`Session::poll_persistence`].
+pub fn poll(s: &mut Session) {
+    let mut i = 0;
+    while i < s.autoswitch_jobs.len() {
+        let Some(pj) = s.autoswitch_jobs.get(i) else { break };
+        let job = s.jobs.iter().find(|j| j.id == pj.job);
+        let finished = job.is_none_or(|j| j.progress.finished.load(Ordering::Relaxed));
+        // cancelled before the cuts were applied: nothing changes
+        let cancelled = job.is_some_and(|j| j.progress.cancel.load(Ordering::Relaxed));
+        if !finished {
+            i += 1;
+            continue;
+        }
+        let pj = s.autoswitch_jobs.remove(i);
+        let Some(cuts) = lock(&pj.cuts).take().filter(|_| !cancelled) else { continue };
+        match apply(s, &pj.target, &cuts) {
+            Ok(_) => {
+                let n = cuts.len().saturating_sub(1);
+                s.toast(format!("Auto Switch by Speaker: {n} switch{}", if n == 1 { "" } else { "es" }));
+            }
+            Err(e) => s.error_toast(CMD, format!("Auto Switch by Speaker: {e}")),
+        }
+    }
+}
+
+/// The run of the multi-camera clip on the target track now: (start, end, source In of its first
+/// piece), or None when it is gone.
+fn run_now(s: &Session, t: &Target) -> Option<(Tick, Tick, Tick)> {
+    let q = s.project.sequence(t.seq)?;
+    let tr = q.track(t.track)?;
+    let clip = tr.items.iter().find(|i| i.item == t.source && i.multicam.is_some() && i.start <= t.start && t.start < i.end())?;
+    let run = run_of(q, t.track, clip);
+    Some((run.first()?.start, run.last()?.end(), run.first()?.source_in))
+}
+
+/// Switch the clip by `cuts` in one undo step, unless it changed since the analysis started.
+fn apply(s: &mut Session, t: &Target, cuts: &[Cut]) -> Result<usize> {
+    if run_now(s, t) != Some((t.start, t.end, t.source_in)) {
+        return Err(EngineError::Other("the multi-camera clip changed during the analysis; nothing was switched".into()));
+    }
+    if s.project.sequence(t.seq).and_then(|q| q.track(t.track)).is_some_and(|tr| tr.locked) {
+        return Err(bad(CMD, "the multi-camera clip's track is locked"));
+    }
+    let (seq, tracks, source, end) = (t.seq, t.tracks.clone(), t.source, t.end);
+    let media = s.media.clone();
+    s.edit("Auto Switch by Speaker", |pr, _| {
+        crate::multicam::seq_edit(pr, seq, &media, |q, ctx| Ok(edit::multicam::record(q, &tracks, source, cuts, end, ctx)))
+    })
 }
 
 fn seconds(t: Tick) -> f64 {
@@ -314,25 +448,86 @@ fn auto_switch(s: &mut Session, p: &Value) -> Result<Value> {
         silence_db: num(p, "silenceDb", -45.0, -96.0..=0.0) as f32,
         both_db: num(p, "bothDb", 3.0, 0.0..=20.0) as f32,
     };
-    let levels: Vec<Vec<f32>> = voiced.iter().map(|(_, audio)| camera_levels(s, src, audio, first.source_in, windows)).collect();
-    let angles: Vec<u32> = voiced.iter().map(|(a, _)| *a).collect();
-    let opening = clip.multicam.map(|m| m.angle).unwrap_or(0);
-    let cuts = frame_cuts(&speaker_cuts(&levels, &angles, wide, opening, &rules), start, end, rate);
-    let camera_of = |a: u32| shown.iter().position(|x| *x as u32 == a).map(|i| i + 1);
-    let listed: Vec<Value> =
-        cuts.iter().map(|c| json!({"time": c.time.0, "seconds": seconds(c.time), "angle": c.angle, "camera": camera_of(c.angle)})).collect();
-    let switches = cuts.len().saturating_sub(1);
-    if detect {
-        return Ok(json!({"applied": false, "cuts": listed, "switches": switches}));
-    }
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     // the clip's video track, and the linked audio when audio follows video
     let mut tracks = vec![track];
     if s.state.multicam_audio_follows_video && !bool_p(p, "videoOnly").unwrap_or(false) {
         let partners: Vec<_> = run.iter().flat_map(|i| crate::multicam::audio_partners(q, i)).collect();
         tracks.extend(q.audio_tracks.iter().filter(|t| t.items.iter().any(|i| partners.contains(&i.id))).map(|t| t.id));
     }
-    let points = s.edit_sequence("Auto Switch by Speaker", |seq, ctx, _| Ok(edit::multicam::record(seq, &tracks, source, &cuts, end, ctx)))?;
-    Ok(json!({"applied": true, "cuts": listed, "switches": switches, "editPoints": points}))
+    let target = Target { seq: seq_id, track, tracks, source, start, end, source_in: first.source_in };
+    let analysis = Analysis {
+        project: s.project.clone(),
+        provider: s.media.full_res_provider(s.project.clone(), s.services.clone()),
+        src: src.clone(),
+        voiced,
+        from: first.source_in,
+        windows,
+        rules,
+        wide,
+        opening: clip.multicam.map(|m| m.angle).unwrap_or(0),
+        start,
+        end,
+        rate,
+    };
+    let cameras = analysis.voiced.len();
+    let listed = |cuts: &[Cut]| -> Vec<Value> {
+        let camera_of = |a: u32| shown.iter().position(|x| *x as u32 == a).map(|i| i + 1);
+        cuts.iter().map(|c| json!({"time": c.time.0, "seconds": seconds(c.time), "angle": c.angle, "camera": camera_of(c.angle)})).collect()
+    };
+    // detect and `wait` answer with the cuts; otherwise the analysis runs as a background job
+    if detect || bool_p(p, "wait").unwrap_or(false) || cfg!(target_arch = "wasm32") {
+        let cuts = analysis.run(&filmcraft_export::Progress::default()).unwrap_or_default();
+        let switches = cuts.len().saturating_sub(1);
+        if detect {
+            return Ok(json!({"applied": false, "cuts": listed(&cuts), "switches": switches}));
+        }
+        let points = apply(s, &target, &cuts)?;
+        return Ok(json!({"applied": true, "cuts": listed(&cuts), "switches": switches, "editPoints": points}));
+    }
+    if s.autoswitch_jobs.iter().any(|j| j.target.seq == seq_id) {
+        return Err(EngineError::Other("Auto Switch by Speaker is already running on this sequence".into()));
+    }
+    let id = s.jobs.iter().map(|j| j.id).max().unwrap_or(0) + 1;
+    let job = crate::Job { id, label: "Auto Switch by Speaker".into(), progress: Default::default(), result: Default::default() };
+    job.progress.total.store((cameras * windows) as u64, Ordering::Relaxed);
+    let cuts: Arc<Mutex<Option<Vec<Cut>>>> = Arc::default();
+    let (prog, res, out) = (job.progress.clone(), job.result.clone(), cuts.clone());
+    let work = move || {
+        let t0 = web_time::Instant::now();
+        let found = analysis.run(&prog);
+        let secs = t0.elapsed().as_secs_f64();
+        *lock(&prog.status) = match &found {
+            None => "Stopped: nothing was changed".into(),
+            Some(c) => format!("Found {} switch(es) ({secs:.1}s)", c.len().saturating_sub(1)),
+        };
+        let r = match found {
+            None => Err("stopped".to_string()),
+            Some(c) => {
+                *lock(&out) = Some(c);
+                let windows = prog.total.load(Ordering::Relaxed);
+                Ok(filmcraft_export::Report {
+                    path: String::new(),
+                    frames: windows,
+                    seconds: secs,
+                    bytes: 0,
+                    render_fps: windows as f64 / secs.max(1e-6),
+                    extra_files: Vec::new(),
+                })
+            }
+        };
+        *lock(&res) = Some(r);
+        prog.finished.store(true, Ordering::Relaxed);
+    };
+    let work = crate::export_tools::guard_job(job.progress.clone(), job.result.clone(), work);
+    s.jobs.push(job);
+    s.autoswitch_jobs.push(PendingSwitch { job: id, target, cuts });
+    if let Err(e) = std::thread::Builder::new().name("filmcraft-autoswitch".into()).spawn(work) {
+        s.autoswitch_jobs.retain(|j| j.job != id);
+        s.jobs.retain(|j| j.id != id);
+        return Err(EngineError::Other(e.to_string()));
+    }
+    Ok(json!({"job": id, "cameras": cameras, "seconds": seconds(length)}))
 }
 
 #[cfg(test)]
