@@ -1,4 +1,4 @@
-//! Community and project links (Help menu, About dialog, header Discord button, Home screen).
+//! Community and project links (Help menu, About dialog, Home screen).
 //!
 //! FilmCraft is part of the ArtCraft family: the community lives on the ArtCraft Discord, every
 //! app has a page on the ArtCraft website and a public GitHub repository.
