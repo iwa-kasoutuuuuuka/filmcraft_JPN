@@ -16,9 +16,12 @@
 //!
 //! Read: tracks, media clips (speed, reverse; fitted to the frame with Filmora's position, scale
 //! and rotation as Motion), compound clips as nested sequences, titles as text graphics (text,
-//! font, alignment, position, size, colour), links between a file's video and audio.
-//! Reported and skipped: drawn graphics, Filmora's crop / volume / fade parameters and effects,
-//! variable speed (read as the average speed).
+//! font, alignment, position, size, colour, background), drawn graphics as shape layers
+//! (rectangles, arrows and pen strokes with their stroke and fill, placed by their transform),
+//! links between a file's video and audio.
+//! Reported, not read: crop, volume keyframes and effects that carry settings (Filmora writes no
+//! parameters for effects left at their defaults; those need nothing), pen curves (read as
+//! straight segments), variable speed (read as the average speed).
 //!
 //! Media paths are kept as the project wrote them; the engine looks for missing files relative to
 //! the folder the `.wfp` was opened from ([`original_project_dir`]).
@@ -248,6 +251,163 @@ fn speed_of(c: &Value, report: &mut Report) -> (f64, bool) {
         }
     };
     (speed.clamp(0.01, 100.0), reverse)
+}
+
+/// Every effect of a clip, in chain order.
+fn effects_of(c: &Value) -> Vec<&Value> {
+    c.get("effectChainList")
+        .and_then(Value::as_array)
+        .map(|chains| chains.iter().flat_map(|ch| ch.get("effectList").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])).collect())
+        .unwrap_or_default()
+}
+
+fn effect_id(e: &Value) -> &str {
+    e.get("id").and_then(Value::as_str).unwrap_or("")
+}
+
+/// `paramList[name].fxParam.unValue` of an effect.
+fn fx_param<'v>(e: &'v Value, name: &str) -> Option<&'v Value> {
+    e.get("paramList")?.as_array()?.iter().find(|p| p.get("name").and_then(Value::as_str) == Some(name))?.get("fxParam")?.get("unValue")
+}
+
+fn fx_f64(e: &Value, name: &str) -> Option<f64> {
+    fx_param(e, name).and_then(Value::as_f64).filter(|v| v.is_finite())
+}
+
+fn has_params(e: &Value) -> bool {
+    e.get("paramList").and_then(Value::as_array).is_some_and(|l| !l.is_empty())
+}
+
+/// Effects can be switched off (`"enable": false`); absent means on.
+fn enabled(e: &Value) -> bool {
+    e.get("enable").and_then(Value::as_bool) != Some(false)
+}
+
+/// A drawn graphic's colour: 0xRRGGBB.
+fn rgb_of(c: i64) -> [f32; 3] {
+    let c = (c as u32) & 0x00ff_ffff;
+    [((c >> 16) & 0xff) as f32 / 255.0, ((c >> 8) & 0xff) as f32 / 255.0, (c & 0xff) as f32 / 255.0]
+}
+
+/// Filmora's stroke width unit in sequence pixels (measured on its renders: a 4 is about 7 px at
+/// 1920 × 984, whatever the shape's scale).
+const STROKE_PX: f64 = 1.8;
+
+/// A drawn graphic's canvas (the frame) placed by its transform: canvas pixel `q` lands at
+/// `position + R(rotation) · ((q − anchor) ⊙ scale)`.
+struct Placement {
+    position: (f64, f64),
+    anchor: (f64, f64),
+    scale: (f64, f64),
+    /// Radians, clockwise (y down).
+    rotation: f64,
+}
+
+impl Placement {
+    fn of(c: &Value, (w, h): (f64, f64)) -> Self {
+        let t = effects_of(c).into_iter().find(|e| effect_id(e) == "video/effect/transform");
+        let get = |k: &str, d: f64| t.and_then(|e| fx_f64(e, k)).unwrap_or(d);
+        Placement {
+            position: (get("Position_x", 0.5).clamp(-10.0, 10.0) * w, get("Position_y", 0.5).clamp(-10.0, 10.0) * h),
+            anchor: (get("_Anchor_x", 0.5).clamp(-10.0, 10.0) * w, get("_Anchor_y", 0.5).clamp(-10.0, 10.0) * h),
+            scale: (get("Scale_x", 100.0).clamp(0.0, 10_000.0) / 100.0, get("Scale_y", 100.0).clamp(0.0, 10_000.0) / 100.0),
+            rotation: get("Rotation", 0.0).clamp(-36_000.0, 36_000.0).to_radians(),
+        }
+    }
+
+    fn map(&self, (x, y): (f64, f64)) -> [f32; 2] {
+        let (dx, dy) = ((x - self.anchor.0) * self.scale.0, (y - self.anchor.1) * self.scale.1);
+        let (sin, cos) = self.rotation.sin_cos();
+        [(self.position.0 + dx * cos - dy * sin) as f32, (self.position.1 + dx * sin + dy * cos) as f32]
+    }
+}
+
+/// The outlines of a drawn graphic in canvas pixels: (points, closed).
+fn outlines(c: &Value, (w, h): (f64, f64), report: &mut Report) -> Vec<(Vec<(f64, f64)>, bool)> {
+    let mut out = Vec::new();
+    for e in effects_of(c).into_iter().filter(|e| enabled(e)) {
+        let bbox = || {
+            let g = |k: &str| fx_f64(e, k).unwrap_or(0.0).clamp(-10.0, 10.0);
+            (g("start_x") * w, g("start_y") * h, g("width") * w, g("height") * h)
+        };
+        match effect_id(e) {
+            "graphic/effect/path_graphic_rect" => {
+                let (x, y, bw, bh) = bbox();
+                out.push((vec![(x, y), (x + bw, y), (x + bw, y + bh), (x, y + bh)], true));
+            }
+            "graphic/effect/path_graphic_arrow" => {
+                // a right-pointing block arrow filling the box: shaft 40 % of its height, head 35 %
+                // of its length (Filmora's arrow, measured on its renders)
+                let (x, y, bw, bh) = bbox();
+                let (cy, head) = (y + bh / 2.0, x + bw - 0.35 * bw.abs().min(bh.abs() * 2.5));
+                let (shaft, half) = (0.2 * bh, 0.5 * bh);
+                out.push((
+                    vec![(x, cy - shaft), (head, cy - shaft), (head, cy - half), (x + bw, cy), (head, cy + half), (head, cy + shaft), (x, cy + shaft)],
+                    true,
+                ));
+            }
+            "graphic/effect/path" => {
+                let mask = e.get("effectMask").and_then(|m| m.get("custom_mask")).and_then(Value::as_str).and_then(|m| serde_json::from_str::<Value>(m).ok());
+                for path in mask.as_ref().and_then(|m| m.get("paths")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+                    if path.get("enable").and_then(Value::as_bool) == Some(false) {
+                        continue;
+                    }
+                    let pts: Vec<(f64, f64)> = path
+                        .get("points")
+                        .and_then(Value::as_array)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                        .iter()
+                        .take(10_000)
+                        .filter_map(|q| {
+                            let (x, y) = (q.get("value_x")?.as_f64()?, q.get("value_y")?.as_f64()?);
+                            (x.is_finite() && y.is_finite()).then(|| (x.clamp(-10.0, 10.0) * w, y.clamp(-10.0, 10.0) * h))
+                        })
+                        .collect();
+                    if pts
+                        .iter()
+                        .zip(path.get("points").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]))
+                        .any(|(_, q)| q.get("type").and_then(Value::as_i64).is_some_and(|t| t != 0))
+                    {
+                        report.warn("curved pen strokes were read as straight segments");
+                    }
+                    if pts.len() >= 2 {
+                        out.push((pts, path.get("is_closed").and_then(Value::as_bool).unwrap_or(false)));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A thick segment `a`–`b` (`width` px, ends extended by half the width so joints close) as a
+/// quadrilateral.
+fn segment(a: [f32; 2], b: [f32; 2], width: f32) -> Vec<[f32; 2]> {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len.is_nan() || len <= 1e-3 {
+        return Vec::new();
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let (hx, hy) = (-uy * width / 2.0, ux * width / 2.0);
+    let (a, b) = ([a[0] - ux * width / 2.0, a[1] - uy * width / 2.0], [b[0] + ux * width / 2.0, b[1] + uy * width / 2.0]);
+    vec![[a[0] + hx, a[1] + hy], [b[0] + hx, b[1] + hy], [b[0] - hx, b[1] - hy], [a[0] - hx, a[1] - hy]]
+}
+
+/// An arrowhead at `tip` pointing away from `from` for a `width` px stroke (about 7 widths long and
+/// 5 wide, measured on Filmora's renders): the triangle, and where the line should stop.
+fn arrowhead(from: [f32; 2], tip: [f32; 2], width: f32) -> Option<(Vec<[f32; 2]>, [f32; 2])> {
+    let (dx, dy) = (tip[0] - from[0], tip[1] - from[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len.is_nan() || len <= 1e-3 {
+        return None;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let (head, half) = ((7.0 * width).min(len), 2.6 * width);
+    let base = [tip[0] - ux * head, tip[1] - uy * head];
+    Some((vec![tip, [base[0] - uy * half, base[1] + ux * half], [base[0] + uy * half, base[1] - ux * half]], base))
 }
 
 /// Filmora's transform of a clip (`video/effect/transform`): centre position as fractions of the
@@ -532,10 +692,7 @@ impl Importer<'_> {
                         None => None,
                     },
                     7 => self.title_clip(c, start, dur, (w, h, rate)).map(|ti| (ti, None)),
-                    26 => {
-                        self.report.warn("drawn graphics (shapes, arrows, pen strokes) are not supported and were skipped");
-                        None
-                    }
+                    26 => self.drawing_clip(c, start, dur, (w, h, rate)).map(|ti| (ti, None)),
                     other => {
                         self.report.warn(format!("clips of Filmora type {other} are not supported and were skipped"));
                         None
@@ -549,18 +706,7 @@ impl Importer<'_> {
                     }
                     ti.link = Some(*entry);
                 }
-                if c.get("effectChainList").and_then(Value::as_array).is_some_and(|chains| {
-                    chains.iter().any(|ch| {
-                        ch.get("effectList").and_then(Value::as_array).is_some_and(|l| {
-                            l.iter().any(|e| {
-                                !matches!(e.get("id").and_then(Value::as_str), Some("video/effect/crop-pan-zoom" | "video/effect/transform") | None)
-                                    && e.get("id").and_then(Value::as_str).is_some_and(|i| !i.starts_with("audio/effect/") || i == "audio/effect/equalizer")
-                            })
-                        })
-                    })
-                }) {
-                    self.report.warn("Filmora effects were not carried over");
-                }
+                self.report_settings(c);
                 placed.push((kind, idx, ti));
             }
         }
@@ -594,6 +740,118 @@ impl Importer<'_> {
             }
         }
         seq
+    }
+
+    /// Report what a clip sets that is not read. Filmora writes no parameters for effects left at
+    /// their defaults (volume 0 dB, no fade, flat EQ, no crop), so only effects with parameters count.
+    fn report_settings(&mut self, c: &Value) {
+        for e in effects_of(c).into_iter().filter(|e| enabled(e) && has_params(e)) {
+            match effect_id(e) {
+                "video/effect/transform" => {}
+                id if id.starts_with("graphic/effect/") => {}
+                "video/effect/crop-pan-zoom" => self.report.warn("Filmora crops were not carried over"),
+                id if id.starts_with("audio/effect/") => self.report.warn("Filmora audio settings (volume, fades, EQ) were not carried over"),
+                _ => self.report.warn("Filmora effects were not carried over"),
+            }
+        }
+        let keyed = |k: &str| {
+            c.get(k)
+                .and_then(|v| v.get("parameter"))
+                .and_then(Value::as_str)
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .and_then(|v| v.get("keyframeSets").and_then(Value::as_array).map(|a| !a.is_empty()))
+                .unwrap_or(false)
+        };
+        if keyed("volumeKeyframe") || keyed("audioDuckingframe") {
+            self.report.warn("Filmora volume keyframes were not carried over");
+        }
+    }
+
+    /// A drawn graphic (`type` 26): a graphic clip with one shape layer per outline (pen strokes:
+    /// one per segment), in sequence pixels.
+    fn drawing_clip(&mut self, c: &Value, start: Tick, dur: Tick, (w, h, rate): (u32, u32, FrameRate)) -> Option<TrackItem> {
+        let (fw, fh) = (f64::from(w.max(1)), f64::from(h.max(1)));
+        let place = Placement::of(c, (fw, fh));
+        let effects = effects_of(c);
+        let find = |id: &str| effects.iter().copied().find(|e| effect_id(e) == id && enabled(e));
+        let stroke = find("graphic/effect/path_stroke").map(|e| {
+            let [r, g, b] = rgb_of(fx_param(e, "color").and_then(Value::as_i64).unwrap_or(0));
+            ([r, g, b, 1.0f32], (fx_f64(e, "lineSize").unwrap_or(4.0).clamp(0.0, 500.0) * STROKE_PX) as f32)
+        });
+        let fill = find("graphic/effect/path_fill").and_then(|e| {
+            let alpha = fx_f64(e, "alpha").unwrap_or(255.0).clamp(0.0, 255.0) as f32 / 255.0;
+            let color = fx_param(e, "color").and_then(Value::as_i64)?;
+            let [r, g, b] = rgb_of(color);
+            (alpha > 0.0).then_some([r, g, b, alpha])
+        });
+        // shape_render: end_shape / start_shape 2 = arrowhead
+        let ends: [i64; 2] = find("graphic/effect/shape_render").map_or([0, 0], |e| {
+            [fx_param(e, "end_shape").and_then(Value::as_i64).unwrap_or(0), fx_param(e, "start_shape").and_then(Value::as_i64).unwrap_or(0)]
+        });
+        if find("graphic/effect/path_trim").is_some_and(|e| fx_f64(e, "start").unwrap_or(0.0) > 0.0 || fx_f64(e, "end").unwrap_or(100.0) < 100.0) {
+            self.report.warn("partly drawn pen strokes (trim) were imported whole");
+        }
+        let mut layers = Vec::new();
+        for (pts, closed) in outlines(c, (fw, fh), self.report) {
+            let mapped: Vec<[f32; 2]> = pts.iter().map(|q| place.map(*q)).collect();
+            let mut shapes: Vec<(Vec<[f32; 2]>, Option<[f32; 4]>, Option<([f32; 4], f32)>)> = Vec::new();
+            if closed && mapped.len() >= 3 {
+                shapes.push((mapped, fill, stroke));
+            } else if let Some((color, width)) = stroke {
+                // an open stroke: each segment filled with the stroke colour, arrowheads at the
+                // ends Filmora's shape_render asks for (the line stops at the head's base)
+                let width = width.max(1.0);
+                let mut mapped = mapped;
+                for at_end in [true, false] {
+                    if ends.get(usize::from(!at_end)).copied() != Some(2) || mapped.len() < 2 {
+                        continue;
+                    }
+                    let n = mapped.len();
+                    let (tip_i, from_i) = if at_end { (n - 1, n - 2) } else { (0, 1) };
+                    let (Some(tip), Some(from)) = (mapped.get(tip_i).copied(), mapped.get(from_i).copied()) else { continue };
+                    if let Some((head, base)) = arrowhead(from, tip, width) {
+                        shapes.push((head, Some(color), None));
+                        if let Some(p) = mapped.get_mut(tip_i) {
+                            *p = base;
+                        }
+                    }
+                }
+                for pair in mapped.windows(2) {
+                    if let (Some(a), Some(b)) = (pair.first(), pair.get(1)) {
+                        let quad = segment(*a, *b, width);
+                        if !quad.is_empty() {
+                            shapes.push((quad, Some(color), None));
+                        }
+                    }
+                }
+            }
+            for (points, fill, stroke) in shapes {
+                let mut layer = filmcraft_project::graphic::new_shape_layer(3, Vec2::new(0.0, 0.0), Vec2::new(fw, fh), points);
+                let mut set = |k: &str, v: ParamValue| {
+                    layer.params.insert(k.to_string(), Param::new(v));
+                };
+                match fill {
+                    Some(c) => set("fill_color", ParamValue::Color(c)),
+                    None => set("fill", ParamValue::Bool(false)),
+                }
+                if let Some((color, width)) = stroke {
+                    set("stroke", ParamValue::Bool(true));
+                    set("stroke_color", ParamValue::Color(color));
+                    set("stroke_width", ParamValue::Float(f64::from(width)));
+                    set("stroke_type", ParamValue::Choice(1));
+                }
+                layers.push(layer);
+            }
+        }
+        if layers.is_empty() {
+            self.report.warn("drawn graphics without a readable outline were skipped");
+            return None;
+        }
+        let item = self.graphic_item(w, h, rate);
+        let mut ti = self.b.clip(item, TrackKind::Video, "Drawing", start, dur, Tick::ZERO);
+        ti.effects.extend(layers);
+        self.report.info("drawn graphics were imported as shape layers");
+        Some(ti)
     }
 
     /// A title (`type` 7): a graphic clip with one text layer.
@@ -686,7 +944,6 @@ pub(crate) fn import(bytes: &[u8], opts: &ImportOptions) -> Result<(Imported, Re
     };
     let main = imp.timeline(current, &name, 0).ok_or_else(|| Error::Other("Filmora project: the main timeline could not be read".into()))?;
     imp.b.top.push(main);
-    imp.report.info("Filmora's crop, volume and fade settings were not carried over (position, scale and rotation were)");
     let imported = imp.b.finish();
     Ok((imported, report))
 }
@@ -750,7 +1007,16 @@ mod tests {
             )
         };
         let title = format!(r#"{{"type":7,"timelineId":2,"tlBegin":{},"tlEnd":{},"inPoint":0,"outPoint":{}}}"#, 2 * SECOND, 3 * SECOND - 1, SECOND);
-        let graphic = format!(r#"{{"type":26,"tlBegin":0,"tlEnd":{}}}"#, SECOND - 1);
+        // a red-stroked rectangle in the middle of its canvas, moved to the top-left quarter at half size
+        let graphic = format!(
+            r#"{{"type":26,"tlBegin":0,"tlEnd":{},"effectChainList":[
+                {{"name":"Basic","effectList":[{{"id":"video/effect/transform","paramList":[{{"name":"Position_x","fxParam":{{"unValue":0.25}}}},{{"name":"Position_y","fxParam":{{"unValue":0.25}}}},{{"name":"Scale_x","fxParam":{{"unValue":50.0}}}},{{"name":"Scale_y","fxParam":{{"unValue":50.0}}}}]}}]}},
+                {{"name":"graphic","effectList":[
+                    {{"id":"graphic/effect/path_graphic_rect","paramList":[{{"name":"start_x","fxParam":{{"unValue":0.4}}}},{{"name":"start_y","fxParam":{{"unValue":0.4}}}},{{"name":"width","fxParam":{{"unValue":0.2}}}},{{"name":"height","fxParam":{{"unValue":0.2}}}}]}},
+                    {{"id":"graphic/effect/path_stroke","paramList":[{{"name":"lineSize","fxParam":{{"unValue":4}}}},{{"name":"color","fxParam":{{"unValue":16711680}}}}]}},
+                    {{"id":"graphic/effect/path_fill","paramList":[{{"name":"alpha","fxParam":{{"unValue":0}}}}]}}]}}]}}"#,
+            SECOND - 1
+        );
         let script = r#"{"Text":"Hello\rWorld","PosX":0.5,"PosY":0.9,"ScaleY":0.2,"Layout":{"TextAlign":"center"},"Background":{"Enable":1,"Color":-1027028792,"Alpha":194,"Left":2.0},"TextData":[{"Basic":{"FontName":"Meiryo UI","FontBold":1,"TextColor":[{"Color":-16776961}],"TextAlpha":255}}]}"#;
         format!(
             r#"{{"currentTimelineId":1,"resources":[
@@ -791,8 +1057,19 @@ mod tests {
         let p = &imp.project;
         let q = p.sequence(imp.sequences[0]).unwrap();
         assert_eq!((q.settings.width, q.settings.height, q.settings.frame_rate), (1920, 1080, FrameRate::FPS_30));
-        // empty tracks dropped; bottom to top: still, movie + title, (graphic skipped)
-        assert_eq!(q.video_tracks.len(), 2, "{:?}", q.video_tracks.iter().map(|t| t.items.len()).collect::<Vec<_>>());
+        // empty tracks dropped; bottom to top: still, movie + title, drawing
+        assert_eq!(q.video_tracks.len(), 3, "{:?}", q.video_tracks.iter().map(|t| t.items.len()).collect::<Vec<_>>());
+        // the drawing: one rectangle outline, centred at (480, 270), 192 × 108, red, 7.2 px centre stroke
+        let d = &q.video_tracks[2].items[0];
+        let shape = d.effects.last().unwrap();
+        let pts = match &shape.param("points").unwrap().value {
+            ParamValue::Curve(p) => p.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(pts, vec![[384.0, 216.0], [576.0, 216.0], [576.0, 324.0], [384.0, 324.0]]);
+        assert_eq!(shape.param("fill").unwrap().value, ParamValue::Bool(false));
+        assert_eq!(shape.param("stroke_color").unwrap().value, ParamValue::Color([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(shape.param("stroke_type").unwrap().value, ParamValue::Choice(1));
         let still = &q.video_tracks[0].items[0];
         assert_eq!(p.item(still.item).unwrap().as_media().unwrap().info.kind, MediaKind::Still);
         assert_eq!(still.duration, Tick::from_units(4, 1));
@@ -817,9 +1094,34 @@ mod tests {
         assert_eq!(layer.param("background").unwrap().value, ParamValue::Bool(true));
         let grey = 200.0 / 255.0;
         assert_eq!(layer.param("background_color").unwrap().value, ParamValue::Color([grey, grey, grey, 1.0]));
-        assert!(report.mentions("drawn graphics"), "{report}");
+        assert!(!report.has_warnings(), "nothing set is dropped: {report}");
         // media paths as written
         assert_eq!(crate::common::item_path(p, v.item), Some("E:/Old/a.mp4"));
+    }
+
+    #[test]
+    fn placement_scales_and_rotates_about_the_anchor() {
+        let c: Value = serde_json::from_str(
+            r#"{"effectChainList":[{"effectList":[{"id":"video/effect/transform","paramList":[
+                {"name":"Position_x","fxParam":{"unValue":0.5}},{"name":"Position_y","fxParam":{"unValue":0.5}},
+                {"name":"_Anchor_x","fxParam":{"unValue":0.0}},{"name":"_Anchor_y","fxParam":{"unValue":0.0}},
+                {"name":"Rotation","fxParam":{"unValue":90.0}}]}]}]}"#,
+        )
+        .unwrap();
+        let p = Placement::of(&c, (100.0, 50.0));
+        // the anchor (canvas origin) lands at the centre; +x turns to +y (clockwise on screen)
+        let near = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3;
+        assert!(near(p.map((0.0, 0.0)), [50.0, 25.0]));
+        assert!(near(p.map((10.0, 0.0)), [50.0, 35.0]), "{:?}", p.map((10.0, 0.0)));
+        // a thick segment and a degenerate one
+        assert_eq!(segment([0.0, 0.0], [10.0, 0.0], 2.0), vec![[-1.0, 1.0], [11.0, 1.0], [11.0, -1.0], [-1.0, -1.0]]);
+        assert!(segment([3.0, 3.0], [3.0, 3.0], 2.0).is_empty());
+        // an arrowhead pointing +x: tip, then the two base corners; the line stops 7 widths back
+        let (head, base) = arrowhead([0.0, 0.0], [100.0, 0.0], 5.0).unwrap();
+        assert_eq!(base, [65.0, 0.0]);
+        assert_eq!(head, vec![[100.0, 0.0], [65.0, 13.0], [65.0, -13.0]]);
+        assert!(arrowhead([1.0, 1.0], [1.0, 1.0], 5.0).is_none());
+        assert_eq!(rgb_of(0xff2f00), [1.0, 47.0 / 255.0, 0.0]);
     }
 
     #[test]
