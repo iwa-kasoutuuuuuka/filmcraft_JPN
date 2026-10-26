@@ -11,6 +11,8 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
+# Inflate for Filmora projects (.wfp are ZIP archives); pure Rust, MIT / Apache-2.0 / Zlib.
+miniz_oxide = "0.8"
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }

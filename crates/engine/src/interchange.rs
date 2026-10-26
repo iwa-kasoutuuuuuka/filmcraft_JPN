@@ -1,4 +1,5 @@
-//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF) ↔ the session's project.
+//! Interchange documents (CMX 3600 EDL, FCP7 XML, FCPXML, OTIO, AAF, OMF; Filmora projects import
+//! only) ↔ the session's project.
 
 use serde_json::{Value, json};
 
@@ -10,7 +11,7 @@ use crate::{EngineError, Result, Session};
 /// The interchange format of a file, if it is one (by content, with the extension as a hint).
 pub fn detect(path: &str, bytes: &[u8]) -> Option<Format> {
     let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi")) {
+    if !matches!(ext.as_deref(), Some("edl" | "xml" | "fcpxml" | "otio" | "aaf" | "omf" | "omfi" | "wfp")) {
         return None;
     }
     filmcraft_interchange::detect(bytes, ext.as_deref())
@@ -63,7 +64,21 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
         .collect();
     let mut linked = 0;
     let mut offline = Vec::new();
-    for (id, mpath) in new_media {
+    let moved = (format == Format::Filmora).then(|| filmcraft_interchange::filmora::original_project_dir(bytes)).flatten().zip(opts.base_dir.clone());
+    for (id, mut mpath) in new_media {
+        if let Some((from, to)) = &moved
+            && s.services.read_file(&mpath).is_err()
+            && let Some(here) = relocated(&mpath, from, to).filter(|p| s.services.read_file(p).is_ok())
+        {
+            let path = here.clone();
+            s.edit("Link Media", |proj, _| {
+                if let Some(ItemKind::Media(m)) = proj.items.get_mut(&id).map(|i| &mut i.kind) {
+                    m.media = MediaRef::File { path };
+                }
+                Ok(())
+            })?;
+            mpath = here;
+        }
         let opened = s.services.read_file(&mpath).ok().and_then(|b| {
             let fname = std::path::Path::new(&mpath).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             s.media.open_bytes(&fname, b.into()).ok()
@@ -108,6 +123,14 @@ pub fn import(s: &mut Session, path: &str, bytes: &[u8], format: Format) -> Resu
     }))
 }
 
+/// `path` under `from` (case-insensitive, either slash) as the same relative path under `to`.
+fn relocated(path: &str, from: &str, to: &str) -> Option<String> {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let (p, f) = (norm(path), norm(from));
+    let rest = p.get(f.len()..).filter(|r| r.starts_with('/') && p.get(..f.len()).is_some_and(|h| h.eq_ignore_ascii_case(&f)))?;
+    Some(format!("{}{rest}", norm(to)))
+}
+
 /// `file.exportInterchange {format: "edl"|"xml"|"fcpxml"|"otio", path, sequence?}`
 pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let format = match p.get("format").and_then(Value::as_str).unwrap_or("xml") {
@@ -128,4 +151,18 @@ pub fn export(s: &mut Session, p: &Value) -> Result<Value> {
     let (bytes, report) = filmcraft_interchange::export(&s.project, seq, format, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     s.services.write_file(&path, &bytes).map_err(|e| EngineError::Other(e.to_string()))?;
     Ok(json!({"path": path, "bytes": bytes.len(), "report": report_json(&report)}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relocated;
+
+    #[test]
+    fn media_under_the_old_project_folder_move_with_it() {
+        assert_eq!(relocated("E:/Old/clips/a.mp4", "E:/Old", "D:/New").as_deref(), Some("D:/New/clips/a.mp4"));
+        assert_eq!(relocated(r"e:\old\a.wav", "E:/Old/", r"D:\New").as_deref(), Some("D:/New/a.wav"), "case and slashes");
+        assert_eq!(relocated("E:/Older/a.mp4", "E:/Old", "D:/New"), None, "a sibling folder is not inside");
+        assert_eq!(relocated("C:/other/a.mp4", "E:/Old", "D:/New"), None);
+        assert_eq!(relocated("E:/Old", "E:/Old", "D:/New"), None, "the folder itself is no media");
+    }
 }
