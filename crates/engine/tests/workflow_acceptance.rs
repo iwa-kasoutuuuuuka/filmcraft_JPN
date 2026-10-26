@@ -146,7 +146,9 @@ fn interview_cut_broll_colour_captions_and_delivery() {
         "file.exportMedia",
         json!({"path": mp4, "format": "h264", "wait": true, "settings": {"effects": {"loudness": {"enabled": true, "target_lufs": -16.0, "true_peak_dbtp": -1.0}}}}),
     );
-    assert!(r["result"]["frames"].as_u64().is_some_and(|f| f == 125), "5 s at 25 fps: {r}");
+    // 125, or 126 where this ffmpeg's AAC runs a few ms past the video (no edit list): the
+    // sequence lasts as long as its longest track
+    assert!(r["result"]["frames"].as_u64().is_some_and(|f| f == 125 || f == 126), "5 s at 25 fps: {r}");
     let probe =
         Command::new(&fp).args(["-v", "error", "-show_entries", "stream=codec_name,width,height:format=duration", "-of", "json"]).arg(&mp4).output().unwrap();
     let pj: Value = serde_json::from_slice(&probe.stdout).unwrap();
