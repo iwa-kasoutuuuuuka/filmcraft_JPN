@@ -2,7 +2,7 @@
 //! Scratch Disks / Ingest Settings), Get Media File Properties, Edit Offline, Source Settings,
 //! Update Metadata, Automate to Sequence, Scene Edit Detection, Normalize Mix Track, Simplify
 //! Sequence, Transcribe Sequence, Save as Template, Add Flash Cue Marker and the System
-//! Compatibility Report; plus the frontend side of Edit Original / Reveal Log Files (the OS
+//! Compatibility Report, Auto Switch by Speaker; plus the frontend side of Edit Original / Reveal Log Files (the OS
 //! opener), Generate Audio Waveform (the timeline's peak cache), Import from Media Browser (the
 //! Media Browser selection) and View ▸ Dynamic Audio Waveforms.
 //!
@@ -63,6 +63,7 @@ fn meta(command: &str) -> Option<(&'static str, &'static str, &'static str)> {
         "clip.sceneEditDetection" => ("Scene Edit Detection", "sceneDetect", "Analyze"),
         "sequence.normalizeMixTrack" => ("Normalize Mix Track", "normalizeMix", "OK"),
         "sequence.removeSilence" => ("Remove Silence", "removeSilence", "Remove"),
+        "multicam.autoSwitch" => ("Auto Switch by Speaker", "autoSwitch", "Switch"),
         "sequence.makeVertical" => ("Make Vertical Version", "makeVertical", "Create"),
         "sequence.makeShort" => ("Make Short Video", "makeShort", "Create"),
         "clip.censor" => ("Censor Area", "censor", "OK"),
@@ -94,6 +95,7 @@ fn dialog_command(id: &str) -> Option<&'static str> {
         "clip.sceneEditDetection" => "clip.sceneEditDetection",
         "sequence.normalizeMixTrack" => "sequence.normalizeMixTrack",
         "sequence.removeSilence" => "sequence.removeSilence",
+        "multicam.autoSwitch" => "multicam.autoSwitch",
         "sequence.makeVertical" => "sequence.makeVertical",
         "sequence.makeShort" => "sequence.makeShort",
         "clip.censor" => "clip.censor",
@@ -352,6 +354,7 @@ fn defaults(app: &mut FilmcraftApp, cmd: &str, id: &str) -> Result<(Value, Value
         "clip.sceneEditDetection" => (json!({"applyCuts": true, "createSubclips": false, "generateMarkers": false, "sensitivity": 50.0}), Value::Null),
         "sequence.normalizeMixTrack" => (json!({"db": 0.0}), Value::Null),
         "sequence.removeSilence" => (json!({"thresholdDb": -40.0, "minSeconds": 0.5, "keepSeconds": 0.1}), Value::Null),
+        "multicam.autoSwitch" => (json!({"minShotSeconds": 2.0, "marginDb": 6.0, "silenceDb": -45.0, "wideCamera": 0, "videoOnly": false}), Value::Null),
         "sequence.makeVertical" => (json!({"aspect": "9:16", "mode": "follow"}), Value::Null),
         "sequence.makeShort" => (json!({"aspect": "9:16", "mode": "follow", "removeSilence": true, "captions": true}), Value::Null),
         "clip.censor" => (json!({"style": "mosaic", "shape": "ellipse", "strength": 50.0, "track": "none"}), Value::Null),
@@ -744,6 +747,17 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     number(ui, &mut elems, pre, p, "minSeconds", "Lasting at least:", 0.05..=600.0, " s");
                     number(ui, &mut elems, pre, p, "keepSeconds", "Keep around sound:", 0.0..=60.0, " s");
                     ui.label(RichText::new(crate::i18n::tr_ui("Silent stretches of the mix are removed on every unlocked track.")).weak());
+                }
+                "multicam.autoSwitch" => {
+                    number(ui, &mut elems, pre, p, "minShotSeconds", "Shortest shot:", 0.0..=600.0, " s");
+                    number(ui, &mut elems, pre, p, "marginDb", "Switch when louder by:", 0.0..=40.0, " dB");
+                    number(ui, &mut elems, pre, p, "silenceDb", "Nobody talks below:", -96.0..=0.0, " dB");
+                    number(ui, &mut elems, pre, p, "wideCamera", "Wide shot camera (0 = none):", 0.0..=16.0, "");
+                    check(ui, &mut elems, pre, p, "videoOnly", "Switch the video only");
+                    ui.label(
+                        RichText::new(crate::i18n::tr_ui("Each camera's own microphone decides who is talking. The wide shot covers silence and crosstalk."))
+                            .weak(),
+                    );
                 }
                 "sequence.makeVertical" => {
                     radios(ui, &mut elems, pre, p, "aspect", "Aspect:", &[("9:16", "Vertical 9:16"), ("1:1", "Square 1:1"), ("4:5", "Vertical 4:5")]);

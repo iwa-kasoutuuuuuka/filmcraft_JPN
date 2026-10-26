@@ -334,6 +334,8 @@ fn tr_ja(s: &str) -> &str {
         "Normalize Mix Track…" => "ミックストラックをノーマライズ…",
         "Remove Silence…" => "無音部分を削除…",
         "Remove Silence" => "無音部分を削除",
+        "Auto Switch by Speaker…" => "話者に合わせて自動切り替え…",
+        "Auto Switch by Speaker" => "話者に合わせて自動切り替え",
         "Make Vertical Version…" => "縦型バージョンを作成…",
         "Make Vertical Version" => "縦型バージョンを作成",
         "Make Short Video…" => "ショート動画を作成…",
@@ -1707,6 +1709,15 @@ fn tr_ui_ja(s: &str) -> &str {
         }
         "Create" => "作成",
         "Quieter than:" => "次より小さい音量:",
+        "Shortest shot:" => "最短のカット:",
+        "Switch when louder by:" => "次の差で大きいと切り替え:",
+        "Nobody talks below:" => "次より小さいと無音:",
+        "Wide shot camera (0 = none):" => "引きのカメラ（0 = なし）:",
+        "Switch the video only" => "映像だけを切り替える",
+        "Each camera's own microphone decides who is talking. The wide shot covers silence and crosstalk." => {
+            "各カメラのマイクの音量で話している人を判断します。無音や同時に話している間は引きのカメラにします。"
+        }
+        "Switch" => "切り替え",
         "Lasting at least:" => "次の長さ以上続く:",
         "Keep around sound:" => "音の前後に残す:",
         "Silent stretches of the mix are removed on every unlocked track." => "ミックスの無音区間を、ロックされていない全トラックから削除します。",

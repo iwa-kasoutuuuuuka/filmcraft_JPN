@@ -710,7 +710,7 @@ fn angle_p(s: &Session, p: &Value, source: ItemId, cmd: &str) -> Result<u32> {
 }
 
 /// Linked audio clips of `video` that are multi-camera clips.
-fn audio_partners(q: &Sequence, video: &TrackItem) -> Vec<ClipId> {
+pub(crate) fn audio_partners(q: &Sequence, video: &TrackItem) -> Vec<ClipId> {
     let Some(l) = video.link else { return Vec::new() };
     q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|i| i.link == Some(l) && i.multicam.is_some()).map(|i| i.id).collect()
 }

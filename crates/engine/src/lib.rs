@@ -13,6 +13,7 @@
 pub mod aaf_omf;
 pub mod audio_plugins;
 pub mod autosave;
+pub mod autoswitch;
 pub mod captions;
 pub mod censor;
 pub mod clip_ops;
@@ -969,6 +970,8 @@ mod audio_effects_tests;
 mod audio_plugins_tests;
 #[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod autoswitch_tests;
 #[cfg(test)]
 mod censor_tests;
 #[cfg(test)]
