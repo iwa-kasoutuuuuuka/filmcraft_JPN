@@ -35,6 +35,7 @@ filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
 filmcraft-opus = { path = "crates/opus" }
+filmcraft-flac = { path = "crates/flac" }
 filmcraft-h264enc = { path = "crates/h264enc" }
 filmcraft-av1enc = { path = "crates/av1enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }

@@ -313,7 +313,9 @@ fn with_extension(path: &str, settings: &ExportSettings) -> String {
     let ext = settings.extension();
     match Path::new(path).extension().and_then(|e| e.to_str()) {
         Some(e) if e.eq_ignore_ascii_case(ext) || (settings.format == Format::TiffSequence && e.eq_ignore_ascii_case("tiff")) => path.to_string(),
-        Some(_) if settings.is_image_sequence() || matches!(settings.format, Format::Aiff) => format!("{}.{ext}", path.rsplit_once('.').map_or(path, |x| x.0)),
+        Some(_) if settings.is_image_sequence() || matches!(settings.format, Format::Aiff | Format::Flac) => {
+            format!("{}.{ext}", path.rsplit_once('.').map_or(path, |x| x.0))
+        }
         _ => format!("{path}.{ext}"),
     }
 }

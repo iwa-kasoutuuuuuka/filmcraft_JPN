@@ -1,5 +1,7 @@
-//! Audio-only files: WAV (RIFF, little-endian PCM) and AIFF (big-endian PCM), 16 or 24 bit, plus
-//! image-sequence file naming.
+//! Audio-only files: WAV (RIFF, little-endian PCM), AIFF (big-endian PCM) and FLAC (lossless,
+//! `filmcraft-flac`), 16 or 24 bit, plus image-sequence file naming.
+
+use crate::ExportError;
 
 /// Quantise one sample to a signed integer of `bits` (16 or 24).
 fn quantise(s: f32, bits: u16) -> i32 {
@@ -89,6 +91,37 @@ pub fn write_aiff(interleaved: &[f32], channels: u16, sample_rate: u32, bits: u1
     v
 }
 
+/// A FLAC file (RFC 9639: `fLaC`, STREAMINFO with the MD5 of the audio, a VORBIS_COMMENT naming
+/// the encoder, then 4096-sample frames) of planar samples quantised to 16 or 24 bit. 1 to 8
+/// channels (FLAC order: L R C LFE Ls Rs for 5.1, as exported).
+pub fn write_flac(planar: &[Vec<f32>], sample_rate: u32, bits: u16) -> crate::Result<Vec<u8>> {
+    let bits: u16 = if bits >= 24 { 24 } else { 16 };
+    let channels = u8::try_from(planar.len())
+        .ok()
+        .filter(|c| (1..=8).contains(c))
+        .ok_or_else(|| ExportError::Unsupported(format!("FLAC: {} audio channels (1 to 8 supported)", planar.len())))?;
+    let flac_err = |e: filmcraft_flac::Error| ExportError::Encode(format!("FLAC: {e}"));
+    let mut enc = filmcraft_flac::Encoder::new(filmcraft_flac::EncoderConfig::new(sample_rate, channels, bits as u8)).map_err(flac_err)?;
+    let mut out = enc.header();
+    let n = planar.iter().map(Vec::len).min().unwrap_or(0);
+    const CHUNK: usize = 1 << 16;
+    let mut at = 0;
+    while at < n {
+        let end = at.saturating_add(CHUNK).min(n);
+        let block: Vec<Vec<i32>> = planar.iter().map(|c| c.get(at..end).unwrap_or_default().iter().map(|&s| quantise(s, bits)).collect()).collect();
+        let refs: Vec<&[i32]> = block.iter().map(Vec::as_slice).collect();
+        out.extend(enc.encode(&refs).map_err(flac_err)?);
+        at = end;
+    }
+    out.extend(enc.finish());
+    // frame sizes, sample count and MD5 are only known now
+    let si = filmcraft_flac::STREAMINFO_OFFSET as usize;
+    if let Some(dst) = out.get_mut(si..si + 34) {
+        dst.copy_from_slice(&enc.streaminfo());
+    }
+    Ok(out)
+}
+
 /// File name of frame `index` of an image sequence of `count` frames exported to `path`:
 /// the file name's stem followed directly by the zero-padded frame number (at least three
 /// digits, more when the count needs them), starting at 000, like Premiere's numbered stills:
@@ -133,5 +166,21 @@ mod tests {
         assert_eq!(&a[..4], b"FORM");
         assert_eq!(u32::from_be_bytes(a[4..8].try_into().unwrap()) as usize, a.len() - 8);
         assert_eq!(&a[a.len() - 2..], &(-32767i16).to_be_bytes());
+    }
+
+    #[test]
+    fn flac_layout_and_hostile_channel_counts() {
+        let tone: Vec<f32> = (0..10_000).map(|i| (i as f32 * 0.03).sin() * 0.5).collect();
+        let f = write_flac(&[tone.clone(), tone], 48_000, 24).unwrap();
+        assert_eq!(&f[..4], b"fLaC");
+        // STREAMINFO: 24-bit stereo, 10 000 samples
+        assert_eq!((f[20] >> 1) & 7, 1, "channels - 1");
+        assert_eq!(((f[20] & 1) << 4 | f[21] >> 4) + 1, 24, "bits per sample");
+        assert_eq!(u32::from_be_bytes([f[22], f[23], f[24], f[25]]), 10_000);
+        assert!(write_flac(&[], 48_000, 16).is_err());
+        assert!(write_flac(&vec![vec![0.0; 4]; 9], 48_000, 16).is_err());
+        assert!(write_flac(&[vec![0.0; 4]], 0, 16).is_err());
+        // empty audio is still a valid (empty) stream
+        assert_eq!(&write_flac(&[Vec::new()], 48_000, 16).unwrap()[..4], b"fLaC");
     }
 }

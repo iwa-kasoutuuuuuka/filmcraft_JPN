@@ -118,6 +118,17 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert!((num(&j["format"]["duration"]) - 0.25).abs() < 0.01, "{name}: {}", j["format"]["duration"]);
                 continue;
             }
+            "flac" => {
+                assert_eq!(fmt_name, "flac", "{name}");
+                let a = stream(&j, "audio").unwrap();
+                assert_eq!(a["codec_name"], "flac", "{name}");
+                let bits = settings["audio"]["bits"].as_u64().unwrap();
+                assert_eq!(a["bits_per_raw_sample"], bits.to_string(), "{name}");
+                assert_eq!(a["sample_rate"], "48000", "{name}");
+                assert_eq!(a["channels"], 2, "{name}");
+                assert!((num(&a["duration"]) - 0.25).abs() < 0.01, "{name}: {}", a["duration"]);
+                continue;
+            }
             "gif" => {
                 let v = stream(&j, "video").unwrap();
                 assert_eq!(v["codec_name"], "gif");

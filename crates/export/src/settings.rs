@@ -129,7 +129,7 @@ impl MxfVideoCodec {
     }
 }
 
-/// Audio codec. `Auto` = AAC in MP4, PCM in QuickTime / WAV / AIFF.
+/// Audio codec. `Auto` = AAC in MP4, PCM in QuickTime / WAV / AIFF, FLAC in `.flac`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AudioCodec {
@@ -137,6 +137,8 @@ pub enum AudioCodec {
     Auto,
     Aac,
     Pcm,
+    /// FLAC (lossless): the `.flac` audio-only format only.
+    Flac,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -149,7 +151,7 @@ pub struct AudioSettings {
     pub channels: u32,
     /// AAC bitrate.
     pub bitrate_kbps: u32,
-    /// PCM sample size: 16 or 24.
+    /// PCM / FLAC sample size: 16 or 24.
     pub bits: u16,
 }
 
@@ -394,6 +396,10 @@ impl ExportSettings {
     /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
+            (Format::Flac, _) => AudioCodec::Flac,
+            // FLAC is only written as a .flac file
+            (_, AudioCodec::Flac) if self.format.is_delivery() || self.format == Format::Av1 => AudioCodec::Aac,
+            (_, AudioCodec::Flac) => AudioCodec::Pcm,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
             (Format::H264 | Format::Hevc, _) if self.multiplexer == Multiplexer::Mp4 => AudioCodec::Aac,
             // AV1 goes in MP4 only, with AAC (no PCM in MP4)
@@ -411,7 +417,7 @@ impl ExportSettings {
 
     /// Whether the format carries video.
     pub fn has_video(&self) -> bool {
-        !matches!(self.format, Format::Wav | Format::Aiff)
+        !self.format.is_audio_only()
     }
 
     /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): ProRes 4444 /
@@ -453,11 +459,13 @@ impl ExportSettings {
             Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
             Format::TiffSequence | Format::BmpSequence => px * if self.format == Format::BmpSequence { 3.0 } else { 4.0 } * 8.0 * fps,
             Format::Gif => px * 0.6 * 8.0 * fps,
-            Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
+            Format::Wav | Format::Aiff | Format::Flac | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
         };
-        let audio_bps = if self.has_audio() || matches!(self.format, Format::Wav | Format::Aiff) {
+        let audio_bps = if self.has_audio() || self.format.is_audio_only() {
             match self.audio_codec() {
                 AudioCodec::Aac => self.audio.bitrate_kbps as f64 * 1000.0,
+                // lossless compression of mixed programme material: roughly 60% of PCM
+                AudioCodec::Flac => r.sample_rate as f64 * r.channels as f64 * if self.audio.bits >= 24 { 24.0 } else { 16.0 } * 0.6,
                 _ => r.sample_rate as f64 * r.channels as f64 * if self.audio.bits >= 24 { 24.0 } else { 16.0 },
             }
         } else {
@@ -536,7 +544,7 @@ impl ExportSettings {
             }
             v
         };
-        let audio = if self.has_audio() || matches!(self.format, Format::Wav | Format::Aiff) {
+        let audio = if self.has_audio() || self.format.is_audio_only() {
             let ch = match r.channels {
                 1 => "Mono",
                 6 => "5.1",
@@ -544,6 +552,7 @@ impl ExportSettings {
             };
             match self.audio_codec() {
                 AudioCodec::Aac => format!("AAC, {} kbps, {} Hz, {ch}", self.audio.bitrate_kbps, r.sample_rate),
+                AudioCodec::Flac => format!("FLAC (lossless) {}-bit, {} Hz, {ch}", if self.audio.bits >= 24 { 24 } else { 16 }, r.sample_rate),
                 _ => format!("Uncompressed {}-bit PCM, {} Hz, {ch}", if self.audio.bits >= 24 { 24 } else { 16 }, r.sample_rate),
             }
         } else {

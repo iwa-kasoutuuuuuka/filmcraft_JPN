@@ -153,6 +153,7 @@ fn format_for(path: &str) -> Option<&'static str> {
         "tif" | "tiff" => "tiff",
         "bmp" => "bmp",
         "aif" | "aiff" => "aiff",
+        "flac" => "flac",
         _ => return None,
     })
 }

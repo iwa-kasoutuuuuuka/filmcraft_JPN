@@ -2008,6 +2008,7 @@ dependencies = [
  "filmcraft-codecs",
  "filmcraft-color",
  "filmcraft-dnx",
+ "filmcraft-flac",
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-h264enc",
@@ -2027,6 +2028,16 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "web-time",
+]
+
+[[package]]
+name = "filmcraft-flac"
+version = "0.2.0"
+dependencies = [
+ "filmcraft-bitstream",
+ "filmcraft-testkit",
+ "symphonia",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

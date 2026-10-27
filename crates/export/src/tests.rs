@@ -115,6 +115,54 @@ fn prores_export_roundtrip() {
     assert!(f[0] > 240 && f[1] < 15 && f[2] < 15, "{:?}", &f[..4]);
 }
 
+/// FLAC export: the same samples as a WAV export of the range (both quantised to 24 bit), decoded
+/// by the import path (symphonia), which also finds the stream by its `fLaC` signature under any
+/// file name; and well below the size of the PCM.
+#[test]
+fn flac_export_matches_wav() {
+    let (p, seq, m) = project();
+    let decode = |path: &str, name: &str| {
+        let bytes: Arc<[u8]> = std::fs::read(path).unwrap().into();
+        let src = filmcraft_codecs::open_bytes(name, bytes).unwrap();
+        let info = src.info().clone();
+        (info, src.audio(0, 48_000, 48_000).unwrap())
+    };
+    for bits in [16u16, 24] {
+        let mut s = ExportSettings { format: Format::Flac, path: tmp(&format!("a{bits}.flac")), ..Default::default() };
+        s.audio.bits = bits;
+        let flac = export(&p, seq, &s, &m, &Progress::default()).unwrap();
+        let wav = export(&p, seq, &ExportSettings { format: Format::Wav, path: tmp(&format!("a{bits}.wav")), ..s.clone() }, &m, &Progress::default()).unwrap();
+        assert!(flac.bytes * 100 < wav.bytes * 60, "{bits}-bit tone: {} vs {} bytes", flac.bytes, wav.bytes);
+        let (fi, fa) = decode(&s.path, "a.flac");
+        let (_, wa) = decode(&tmp(&format!("a{bits}.wav")), "a.wav");
+        let ai = fi.audio.as_ref().unwrap();
+        assert_eq!((ai.sample_rate, ai.channels, ai.bits_per_sample), (48_000, 2, Some(u32::from(bits))), "{bits}");
+        assert_eq!(fa.channels.len(), wa.channels.len());
+        for (c, (f, w)) in fa.channels.iter().zip(&wa.channels).enumerate() {
+            let diff = f.iter().zip(w).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(diff < 1e-6, "{bits}-bit channel {c}: max difference {diff}");
+        }
+        let pk = fa.peaks()[0];
+        assert!((pk - 0.5).abs() < 0.05, "tone at -6 dB: {pk}");
+        // found by its signature whatever the file is called
+        let (renamed, _) = decode(&s.path, "clip.bin");
+        assert_eq!(renamed.audio.as_ref().map(|a| a.channels), Some(2));
+        assert_eq!(renamed.container, "FLAC");
+        if let Some(ffmpeg) = filmcraft_testkit::ffmpeg_or_skip("flac export decode") {
+            let out = std::process::Command::new(ffmpeg).args(["-v", "error", "-i", &s.path, "-f", "null", "-"]).output().unwrap();
+            assert!(out.status.success() && out.stderr.is_empty(), "ffmpeg: {}", String::from_utf8_lossy(&out.stderr));
+        }
+    }
+    // presets and naming
+    assert_eq!(Format::from_name("FLAC"), Some(Format::Flac));
+    assert_eq!(Format::Flac.extension(), "flac");
+    assert!(Format::ALL.contains(&Format::Flac));
+    let s = ExportSettings { format: Format::Flac, ..Default::default() };
+    assert!(!s.has_video());
+    assert_eq!(s.audio_codec(), crate::settings::AudioCodec::Flac);
+    assert!(s.summary(1920, 1080, FrameRate::FPS_24, 48_000, Tick(TICKS_PER_SECOND)).audio.starts_with("FLAC"));
+}
+
 #[test]
 fn prores_profiles_by_name() {
     use filmcraft_prores::Profile;

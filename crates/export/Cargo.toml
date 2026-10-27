@@ -21,6 +21,7 @@ filmcraft-geom = { workspace = true }
 filmcraft-text = { workspace = true }
 filmcraft-isobmff = { workspace = true }
 filmcraft-prores = { workspace = true }
+filmcraft-flac = { workspace = true }
 filmcraft-dnx = { workspace = true }
 filmcraft-mxf = { workspace = true }
 filmcraft-aac = { workspace = true }

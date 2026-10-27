@@ -189,6 +189,8 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
         p("Waveform Audio 48 kHz 16-bit", "Audio Only", "WAV, stereo 48 kHz 16-bit PCM", audio_only(Format::Wav, 16)),
         p("Waveform Audio 48 kHz 24-bit", "Audio Only", "WAV, stereo 48 kHz 24-bit PCM", audio_only(Format::Wav, 24)),
         p("AIFF 48 kHz 16-bit", "Audio Only", "AIFF, stereo 48 kHz 16-bit PCM", audio_only(Format::Aiff, 16)),
+        p("FLAC 16-bit", "Audio Only", "FLAC (lossless), stereo 48 kHz 16-bit", audio_only(Format::Flac, 16)),
+        p("FLAC 24-bit", "Audio Only", "FLAC (lossless), stereo 48 kHz 24-bit", audio_only(Format::Flac, 24)),
     ]
 }
 

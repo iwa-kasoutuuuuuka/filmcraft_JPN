@@ -96,6 +96,9 @@ pub enum Format {
     Wav,
     #[serde(rename = "aiff", alias = "Aiff")]
     Aiff,
+    /// Audio-only FLAC (lossless, RFC 9639; our `filmcraft-flac` encoder), 16 or 24 bit.
+    #[serde(rename = "flac", alias = "Flac", alias = "FLAC")]
+    Flac,
     /// MXF OP1a (SMPTE ST 378): frame-wrapped DNxHR, ProRes or H.264 ([`MxfVideoCodec`]) + PCM.
     #[serde(rename = "mxf-op1a", alias = "MxfOp1a")]
     MxfOp1a,
@@ -122,6 +125,7 @@ impl Format {
             "gif" | "animatedgif" => Format::Gif,
             "wav" | "waveform" | "waveformaudio" => Format::Wav,
             "aif" | "aiff" | "aifc" => Format::Aiff,
+            "flac" | "freelosslessaudiocodec" => Format::Flac,
             _ => return None,
         })
     }
@@ -140,6 +144,7 @@ impl Format {
             Format::Gif => "gif",
             Format::Wav => "wav",
             Format::Aiff => "aiff",
+            Format::Flac => "flac",
             Format::MxfOp1a => "mxf-op1a",
             Format::MxfOpAtom => "mxf-opatom",
         }
@@ -154,6 +159,7 @@ impl Format {
             Format::Gif => "gif",
             Format::Wav => "wav",
             Format::Aiff => "aif",
+            Format::Flac => "flac",
             Format::MxfOp1a | Format::MxfOpAtom => "mxf",
         }
     }
@@ -171,9 +177,14 @@ impl Format {
             Format::Gif => "Animated GIF",
             Format::Wav => "Waveform Audio",
             Format::Aiff => "AIFF",
+            Format::Flac => "FLAC",
             Format::MxfOp1a => "MXF OP1a",
             Format::MxfOpAtom => "MXF OP-Atom",
         }
+    }
+    /// An audio-only file format (WAV, AIFF, FLAC).
+    pub fn is_audio_only(self) -> bool {
+        matches!(self, Format::Wav | Format::Aiff | Format::Flac)
     }
     /// An MXF container format.
     pub fn is_mxf(self) -> bool {
@@ -188,7 +199,7 @@ impl Format {
     pub fn is_bitrate_driven(self) -> bool {
         matches!(self, Format::H264 | Format::Hevc | Format::Av1)
     }
-    pub const ALL: [Format; 14] = [
+    pub const ALL: [Format; 15] = [
         Format::H264,
         Format::Hevc,
         Format::Av1,
@@ -201,6 +212,7 @@ impl Format {
         Format::Gif,
         Format::Wav,
         Format::Aiff,
+        Format::Flac,
         Format::MxfOp1a,
         Format::MxfOpAtom,
     ];
@@ -1337,7 +1349,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
     let cancelled = || progress.cancel.load(Ordering::Relaxed);
     let batch = rayon::current_num_threads().clamp(2, 16) as i64;
     let (bytes, nframes) = match settings.format {
-        Format::Wav | Format::Aiff => {
+        Format::Wav | Format::Aiff | Format::Flac => {
             if !settings.part_of_batch {
                 progress.total.store(1, Ordering::Relaxed);
                 progress.set_status(format!("Exporting audio ({})", settings.format.label()));
@@ -1346,9 +1358,12 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             a.measure(settings, sources, &cancelled)?;
             *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
             let planar = a.rest(sources).unwrap_or_else(|| vec![Vec::new(); a.channels]);
-            let inter = audio_out::interleave(&planar);
             let (ch, sr, bits) = (a.channels as u16, a.sr, settings.audio.bits);
-            let data = if settings.format == Format::Wav { pcm::write_wav(&inter, ch, sr, bits) } else { pcm::write_aiff(&inter, ch, sr, bits) };
+            let data = match settings.format {
+                Format::Flac => pcm::write_flac(&planar, sr, bits)?,
+                Format::Wav => pcm::write_wav(&audio_out::interleave(&planar), ch, sr, bits),
+                _ => pcm::write_aiff(&audio_out::interleave(&planar), ch, sr, bits),
+            };
             let n = write_output(settings, &settings.path, data)?;
             progress.done.store(1, Ordering::Relaxed);
             (n, planar.first().map_or(0, Vec::len) as u64)

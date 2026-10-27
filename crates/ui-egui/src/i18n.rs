@@ -1686,6 +1686,7 @@ fn tr_export_ja(s: &str) -> &str {
         "Bottom Right" => "右下",
         "Not supported by FilmCraft's encoders yet" => "FilmCraft のエンコーダーはまだ対応していません",
         "Include Alpha Channel" => "アルファチャンネルを含める",
+        "FLAC (lossless)" => "FLAC（ロスレス）",
         _ => tr(s),
     }
 }

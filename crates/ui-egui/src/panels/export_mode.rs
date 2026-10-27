@@ -139,6 +139,8 @@ fn preset_in_japanese(name: &str) -> std::borrow::Cow<'_, str> {
         "Waveform Audio 48 kHz 16-bit" => "WAV オーディオ 48 kHz 16 ビット",
         "Waveform Audio 48 kHz 24-bit" => "WAV オーディオ 48 kHz 24 ビット",
         "AIFF 48 kHz 16-bit" => "AIFF 48 kHz 16 ビット",
+        "FLAC 16-bit" => "FLAC 16 ビット",
+        "FLAC 24-bit" => "FLAC 24 ビット",
         _ => return name.into(),
     };
     fixed.into()
@@ -162,9 +164,11 @@ fn summary_in_japanese(s: &str) -> String {
     // "Uncompressed 16-bit PCM"
     for bits in [16, 24] {
         out = out.replace(&format!("Uncompressed {bits}-bit PCM"), &format!("非圧縮 {bits} ビット PCM"));
+        out = out.replace(&format!("FLAC (lossless) {bits}-bit"), &format!("FLAC（ロスレス）{bits} ビット"));
     }
     for (en, ja) in [
         ("Image sequence", "連番画像"),
+        (" with alpha", "（アルファ付き）"),
         ("Upper First", "上位フィールドから"),
         ("Lower First", "下位フィールドから"),
         ("Progressive", "プログレッシブ"),
@@ -842,11 +846,12 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         let fixed = mp4_aac || audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
+            AudioCodec::Flac => "FLAC (lossless)",
             _ => "Uncompressed (PCM)",
         };
         let labels = vec![("AAC".to_string(), !audio_only), ("Uncompressed (PCM)".to_string(), !mp4_aac)];
         if fixed {
-            ui.label(cur);
+            ui.label(crate::i18n::tr_export(cur));
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {
             s.audio.codec = if i == 0 { AudioCodec::Aac } else { AudioCodec::Pcm };
         }
@@ -1460,6 +1465,7 @@ mod summary_tests {
         );
         assert_eq!(super::summary_in_japanese("AAC, 320 kbps, 48000 Hz, Stereo"), "AAC、320 kbps、48000 Hz、ステレオ");
         assert_eq!(super::summary_in_japanese("Uncompressed 24-bit PCM, 48000 Hz, Mono"), "非圧縮 24 ビット PCM、48000 Hz、モノラル");
+        assert_eq!(super::summary_in_japanese("FLAC (lossless) 16-bit, 48000 Hz, Stereo"), "FLAC（ロスレス）16 ビット、48000 Hz、ステレオ");
     }
 
     /// Every built-in preset and category has a Japanese name, or is a product / platform name.
