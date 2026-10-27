@@ -607,7 +607,7 @@ pub struct PcmConfig {
 impl PcmConfig {
     /// Bytes per interleaved audio frame (all channels).
     pub fn bytes_per_frame(&self) -> u32 {
-        (self.bits as u32).div_ceil(8) * self.channels.max(1)
+        (self.bits as u32).div_ceil(8).saturating_mul(self.channels.max(1))
     }
 }
 
@@ -1163,6 +1163,10 @@ impl SampleEntry {
     pub fn hevc(cfg: HevcConfig, width: u16, height: u16) -> Self {
         Self::video(FourCc(*b"hvc1"), CodecConfig::Hevc(cfg), width, height)
     }
+    /// AV1 entry (`av01` with `av1C`, AV1-ISOBMFF §2.2).
+    pub fn av1(cfg: Av1Config, width: u16, height: u16) -> Self {
+        Self::video(FourCc(*b"av01"), CodecConfig::Av1(cfg), width, height)
+    }
     /// ProRes entry; `fourcc` one of `apch`/`apcn`/`apcs`/`apco`/`ap4h`/`ap4x`.
     pub fn prores(fourcc: FourCc, width: u16, height: u16) -> Self {
         let mut e = Self::video(fourcc, CodecConfig::ProRes { fourcc }, width, height);
@@ -1437,6 +1441,13 @@ fn write_btrt(b: &mut BoxBuf, br: BitRate) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: 16-bit samples × 2^32 − 1 channels overflowed u32.
+    #[test]
+    fn pcm_bytes_per_frame_saturates() {
+        let c = PcmConfig { bits: 16, channels: u32::MAX, ..Default::default() };
+        assert_eq!(c.bytes_per_frame(), u32::MAX);
+    }
 
     fn roundtrip(e: &SampleEntry, qt: bool, handler: &[u8; 4]) -> SampleEntry {
         let mut b = BoxBuf::new();

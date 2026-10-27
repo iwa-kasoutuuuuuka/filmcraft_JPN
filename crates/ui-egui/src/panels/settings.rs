@@ -25,7 +25,7 @@ const W: f32 = 900.0;
 const BODY_H: f32 = 600.0;
 const LIST_W: f32 = 216.0;
 const ROW_H: f32 = 24.6;
-const LABEL_W: f32 = 250.0;
+const LABEL_W: f32 = 320.0;
 
 /// The open dialog: current page and the preferences being edited (the whole preferences
 /// document, as `prefs.get` returns it).
@@ -130,7 +130,7 @@ fn modal_frame(t: &Tokens) -> Frame {
 
 fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
     let t = app.tokens;
-    let text = RichText::new(label).size(13.0).color(if primary { Color32::WHITE } else { t.text });
+    let text = RichText::new(crate::i18n::tr_ui(label)).size(13.0).color(if primary { Color32::WHITE } else { t.text });
     let b = egui::Button::new(text)
         .min_size(vec2(82.0, 30.0))
         .corner_radius(CornerRadius::same(15))
@@ -154,7 +154,7 @@ fn group(ui: &mut Ui, t: &Tokens, title: &str, add: impl FnOnce(&mut Ui)) {
             add(ui);
         });
     let rect = r.response.rect;
-    let galley = ui.painter().layout_no_wrap(title.to_string(), Tokens::ui(12.0), t.text_dim);
+    let galley = ui.painter().layout_no_wrap(crate::i18n::tr_settings(title).to_string(), Tokens::ui(12.0), t.text_dim);
     let pos = rect.left_top() + vec2(12.0, -galley.size().y / 2.0);
     ui.painter().rect_filled(Rect::from_min_size(pos - vec2(4.0, 0.0), galley.size() + vec2(8.0, 0.0)), 0.0, t.panel_bg);
     ui.painter().galley(pos, galley, t.text_dim);
@@ -163,17 +163,20 @@ fn group(ui: &mut Ui, t: &Tokens, title: &str, add: impl FnOnce(&mut Ui)) {
 
 /// A right-aligned field label in the fixed label column.
 fn field_label(ui: &mut Ui, text: &str) {
+    // A right-to-left child grows to the left past its rect when the text is wider than it, over
+    // the category list: so the label is truncated to the column (localised labels are long).
     let w = LABEL_W.min(ui.available_width() * 0.45);
     ui.allocate_ui_with_layout(vec2(w, 24.0), Layout::right_to_left(Align::Center), |ui| {
         if !text.is_empty() {
-            ui.label(RichText::new(format!("{text}:")).size(12.5));
+            let shown = format!("{}:", crate::i18n::tr_settings(text).trim_end_matches(':'));
+            ui.add(egui::Label::new(RichText::new(&shown).size(12.5)).truncate()).on_hover_text(shown);
         }
     });
 }
 
 fn unit(ui: &mut Ui, u: &str) {
     if !u.is_empty() {
-        ui.label(RichText::new(u).size(12.5));
+        ui.label(RichText::new(crate::i18n::tr_settings(u)).size(12.5));
     }
 }
 
@@ -188,12 +191,18 @@ fn choice_text(v: &Value) -> String {
 
 /// A dropdown of (value, label) options; returns the chosen value.
 fn combo(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, current: &str, opts: &[(String, String)], width: f32) -> Option<String> {
+    combo_with(app, ui, key, current, opts, width, true)
+}
+
+/// `translate: false` for options that are names the user typed (label names).
+fn combo_with(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, current: &str, opts: &[(String, String)], width: f32, translate: bool) -> Option<String> {
+    let tr = |s: &str| if translate { crate::i18n::tr_settings(s).to_string() } else { s.to_string() };
     let shown = opts.iter().find(|o| o.0 == current).map(|o| o.1.clone()).unwrap_or_else(|| current.to_string());
     let mut chosen = None;
     let mut items: Vec<(String, Rect, String)> = Vec::new();
-    let r = egui::ComboBox::from_id_salt(("settings", key)).selected_text(RichText::new(&shown).size(12.5)).width(width).height(480.0).show_ui(ui, |ui| {
+    let r = egui::ComboBox::from_id_salt(("settings", key)).selected_text(RichText::new(tr(&shown)).size(12.5)).width(width).height(480.0).show_ui(ui, |ui| {
         for (v, l) in opts {
-            let r = ui.selectable_label(v == current, l);
+            let r = ui.selectable_label(v == current, tr(l));
             items.push((format!("settings.{key}.{v}"), r.rect, l.clone()));
             if r.clicked() {
                 chosen = Some(v.clone());
@@ -246,7 +255,7 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
             match f.kind {
                 Kind::Bool => {
                     let mut b = cur.as_bool().unwrap_or(false);
-                    let r = ui.checkbox(&mut b, RichText::new(f.label).size(12.5));
+                    let r = ui.checkbox(&mut b, RichText::new(crate::i18n::tr_settings(f.label)).size(12.5));
                     app.auto.add(&format!("settings.{}", f.key), r.rect, f.label);
                     if r.changed() {
                         put(&mut d.values, f.key, json!(b));
@@ -300,7 +309,7 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                         let c = settings::parse_hex(&choice_text(get(&d.values, &format!("labels.colors.{}.color", settings::label_id(l))))).unwrap_or(l.rgb());
                         ui.painter().rect_filled(sw, 2.0, Color32::from_rgb(c[0], c[1], c[2]));
                     }
-                    if let Some(v) = combo(app, ui, f.key, &cur_s, &opts, 160.0) {
+                    if let Some(v) = combo_with(app, ui, f.key, &cur_s, &opts, 160.0, false) {
                         put(&mut d.values, f.key, json!(v));
                     }
                 }
@@ -308,8 +317,8 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                     field_label(ui, f.label);
                     let mut s = choice_text(&cur);
                     let hint = match f.kind {
-                        Kind::Path => "Default location",
-                        Kind::Font => "Font family",
+                        Kind::Path => crate::i18n::t("Default location", "デフォルトの場所"),
+                        Kind::Font => crate::i18n::t("Font family", "フォントファミリー"),
                         _ => "",
                     };
                     let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(if matches!(f.kind, Kind::Path) { 300.0 } else { 220.0 }).hint_text(hint));
@@ -318,7 +327,7 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                         put(&mut d.values, f.key, json!(s));
                     }
                     if matches!(f.kind, Kind::Path) {
-                        let b = ui.button("Browse…");
+                        let b = ui.button(crate::i18n::t("Browse…", "参照…"));
                         app.auto.add(&format!("settings.{}.browse", f.key), b.rect, "Browse…");
                         if b.clicked()
                             && let Some(dir) = app.hooks.pick_folder.as_mut().and_then(|p| p())
@@ -354,7 +363,7 @@ fn color_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, key: 
 }
 
 fn note(ui: &mut Ui, t: &Tokens, text: &str) {
-    ui.add(egui::Label::new(RichText::new(text).size(11.5).color(t.text_dim)).wrap());
+    ui.add(egui::Label::new(RichText::new(crate::i18n::tr_settings(text)).size(11.5).color(t.text_dim)).wrap());
 }
 
 fn mb(bytes: u64) -> String {
@@ -391,41 +400,61 @@ fn custom(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, name: &str
         }
         "memoryInfo" => {
             let (used, budget) = app.frames.cache_usage();
-            note(ui, &t, &format!("Decoded frames held for the monitors and thumbnails: {} of {}.", mb(used as u64), mb(budget as u64)));
-            note(ui, &t, "FilmCraft keeps the rest of the RAM free for other applications.");
+            note(
+                ui,
+                &t,
+                &crate::tf!(
+                    "Decoded frames held for the monitors and thumbnails: {} of {}.",
+                    "モニターとサムネール用に保持しているデコード済みフレーム: {} / {}",
+                    mb(used as u64),
+                    mb(budget as u64)
+                ),
+            );
+            note(
+                ui,
+                &t,
+                crate::i18n::t(
+                    "FilmCraft keeps the rest of the RAM free for other applications.",
+                    "FilmCraft は残りの RAM を他のアプリケーション用に空けておきます。",
+                ),
+            );
         }
         "mediaCacheInfo" => {
             if d.cache_info.is_null() {
                 d.cache_info = app.session.execute("mediaCache.info", json!({})).unwrap_or(json!({}));
             }
-            let loc = d.cache_info["location"].as_str().unwrap_or("not available in this session").to_string();
+            let loc =
+                d.cache_info["location"].as_str().unwrap_or(crate::i18n::t("not available in this session", "このセッションでは利用できません")).to_string();
             let size = mb(d.cache_info["bytes"].as_u64().unwrap_or(0));
             let files = d.cache_info["files"].as_u64().unwrap_or(0);
-            note(ui, &t, &format!("Currently: {loc} — {files} file(s), {size}"));
+            note(ui, &t, &crate::tf!("Currently: {loc} — {files} file(s), {size}", "現在: {loc} — {files} ファイル、{size}"));
         }
         "outputMapping" => {
             let ch = d.devices.as_ref().map(|x| x.output_channels).unwrap_or(0);
             let l = get(&d.values, "audioHardware.mapLeft").as_u64().unwrap_or(0) + 1;
             let r = get(&d.values, "audioHardware.mapRight").as_u64().unwrap_or(1) + 1;
-            let dev = if ch > 0 { format!(" ({ch} output channels)") } else { String::new() };
+            let dev = if ch > 0 { crate::tf!(" ({ch} output channels)", "(出力 {ch} チャンネル)") } else { String::new() };
             note(
                 ui,
                 &t,
-                &format!("Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2."),
+                &crate::tf!(
+                    "Programme left → device output {l}, right → device output {r}{dev}. Outputs beyond the device's channels fall back to 1 and 2.",
+                    "プログラムの左 → デバイス出力 {l}、右 → デバイス出力 {r}{dev}。デバイスのチャンネル数を超える出力は 1 と 2 に割り当てられます。"
+                ),
             );
         }
         "autoSaveStatus" => {
             let status = app.session.execute("file.autoSaveStatus", json!({})).unwrap_or_default();
             if let Some(dir) = status["autoSaveDir"].as_str() {
-                note(ui, &t, &format!("Auto-saves go to: {dir}"));
+                note(ui, &t, &crate::tf!("Auto-saves go to: {dir}", "自動保存の保存先: {dir}"));
             }
             if let Some(dir) = status["sessionDir"].as_str() {
-                note(ui, &t, &format!("Recovery copy: {dir}"));
+                note(ui, &t, &crate::tf!("Recovery copy: {dir}", "復旧用コピー: {dir}"));
             }
             let last = match (status["lastAutoSaveAt"].as_str(), status["lastJournalAt"].as_str()) {
-                (Some(a), Some(j)) => format!("Last auto-save {a} · last recovery copy {j}"),
-                (Some(a), None) => format!("Last auto-save {a}"),
-                (None, Some(j)) => format!("Last recovery copy {j}"),
+                (Some(a), Some(j)) => crate::tf!("Last auto-save {a} · last recovery copy {j}", "最後の自動保存 {a} · 最後の復旧用コピー {j}"),
+                (Some(a), None) => crate::tf!("Last auto-save {a}", "最後の自動保存 {a}"),
+                (None, Some(j)) => crate::tf!("Last recovery copy {j}", "最後の復旧用コピー {j}"),
                 (None, None) => String::new(),
             };
             if !last.is_empty() {
@@ -465,11 +494,16 @@ fn rows(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, list: &[Row]
             Row::Button { id, label, command } => {
                 ui.horizontal(|ui| {
                     field_label(ui, "Remove Media Cache Files");
-                    let b = ui.button(*label);
+                    let b = ui.button(crate::i18n::tr_settings(label));
                     app.auto.add(&format!("settings.{id}"), b.rect, label);
                     if b.clicked() {
                         d.message = match app.session.execute(command, json!({})) {
-                            Ok(v) => format!("Deleted {} file(s), {}.", v["files"].as_u64().unwrap_or(0), mb(v["bytes"].as_u64().unwrap_or(0))),
+                            Ok(v) => crate::tf!(
+                                "Deleted {} file(s), {}.",
+                                "{} 個のファイルを削除しました({})。",
+                                v["files"].as_u64().unwrap_or(0),
+                                mb(v["bytes"].as_u64().unwrap_or(0))
+                            ),
                             Err(e) => e.to_string(),
                         };
                         d.cache_info = Value::Null;
@@ -493,7 +527,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         // title bar (Premiere keeps "Preferences" as the window title)
         let (bar, _) = ui.allocate_exact_size(vec2(W, 30.0), Sense::hover());
         ui.painter().rect_filled(bar, CornerRadius { nw: 10, ne: 10, sw: 0, se: 0 }, t.header_bg);
-        ui.painter().text(bar.center(), Align2::CENTER_CENTER, "Preferences", Tokens::semibold(13.0), t.text_dim);
+        ui.painter().text(bar.center(), Align2::CENTER_CENTER, crate::i18n::t("Preferences", "環境設定"), Tokens::semibold(13.0), t.text_dim);
         app.auto.add("settings.window", bar, "Preferences");
         ui.add_space(14.0);
         ui.horizontal_top(|ui| {
@@ -510,7 +544,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 } else if r.hovered() {
                     ui.painter().rect_filled(row, 0.0, t.hover.gamma_multiply(0.6));
                 }
-                ui.painter().text(row.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, c.title, Tokens::ui(12.5), if sel { t.text } else { t.text_dim });
+                let cat_title = crate::i18n::tr_settings(c.title);
+                ui.painter().text(row.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, cat_title, Tokens::ui(12.5), if sel { t.text } else { t.text_dim });
                 app.auto.add(&format!("settings.category.{}", c.id), row, c.title);
                 if r.clicked() {
                     d.page = c.id.into();
@@ -536,10 +571,10 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.add_space(20.0);
-            if button(app, ui, "settings.help", "Help", false) {
+            if button(app, ui, "settings.help", crate::i18n::t("Help", "ヘルプ"), false) {
                 crate::links::open(ctx, &format!("{}/blob/main/docs/project-files.md#settings", crate::links::GITHUB));
             }
-            if button(app, ui, "settings.reset", "Reset…", false) {
+            if button(app, ui, "settings.reset", crate::i18n::t("Reset…", "初期設定に戻す…"), false) {
                 // this category back to its defaults (OK applies it)
                 let defaults = filmcraft_engine::autosave::Preferences::default().to_value();
                 let keep = get(&d.values, "general.recentProjects").clone();
@@ -551,7 +586,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                 if button(app, ui, "settings.ok", "OK", true) {
                     apply = true;
                 }
-                if button(app, ui, "settings.cancel", "Cancel", false) {
+                if button(app, ui, "settings.cancel", crate::i18n::t("Cancel", "キャンセル"), false) {
                     close = true;
                 }
             });

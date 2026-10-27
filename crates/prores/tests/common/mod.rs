@@ -47,7 +47,7 @@ pub fn make(ff: &Path, spec: &Spec) -> PathBuf {
         let t = tmp.to_str().unwrap().to_string();
         args.push(&t);
         run(ff, &args);
-        std::fs::rename(&tmp, &path).unwrap();
+        assert!(filmcraft_testkit::publish(&tmp, &path), "publish {}", path.display());
     }
     path
 }
@@ -257,7 +257,7 @@ pub fn source_frames(ff: &Path, name: &str, lavfi: &str, frames: u32, w: u32, h:
         let tmp = fixture_dir().join(format!("{name}.tmp.raw"));
         let f = frames.to_string();
         run(ff, &["-f", "lavfi", "-i", lavfi, "-frames:v", &f, "-f", "rawvideo", "-pix_fmt", pix, tmp.to_str().unwrap()]);
-        std::fs::rename(&tmp, &path).unwrap();
+        assert!(filmcraft_testkit::publish(&tmp, &path), "publish {}", path.display());
     }
     let bytes = std::fs::read(&path).unwrap();
     let s: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();

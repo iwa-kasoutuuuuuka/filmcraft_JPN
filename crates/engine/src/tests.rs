@@ -382,3 +382,133 @@ fn fps_validation_keeps_real_rates_and_refuses_degenerate_ones() {
     assert_eq!(s.sequence_rate(), before);
     assert_eq!(s.execute("project.inspect", json!({})).unwrap().to_string().len(), n, "no sequence was created");
 }
+
+#[test]
+fn hostile_sequence_parameters_are_refused() {
+    let mut s = demo();
+    for p in [
+        json!({"width": 0}),
+        json!({"height": 20_000}),
+        json!({"width": 4_294_967_297u64}),
+        json!({"sampleRate": 0}),
+        json!({"sampleRate": 4_294_967_296u64 + 48_000}),
+        json!({"video": u64::MAX}),
+        json!({"audio": 100}),
+    ] {
+        assert!(s.execute("file.newSequence", p.clone()).is_err(), "{p}");
+    }
+    s.execute("file.newSequence", json!({"width": 16_384, "height": 1, "sampleRate": 8_000, "video": 99, "audio": 0})).unwrap();
+    let before = s.active_sequence().unwrap().settings.clone();
+    for p in [json!({"width": 0}), json!({"height": u64::MAX}), json!({"sampleRate": 1})] {
+        assert!(s.execute("sequence.settings", p.clone()).is_err(), "{p}");
+    }
+    assert_eq!(s.active_sequence().unwrap().settings, before, "a refused change leaves the settings alone");
+    // already 99 video tracks: adding even one more (or u64::MAX) is refused
+    assert!(s.execute("sequence.addTracks", json!({"video": 1})).is_err());
+    assert!(s.execute("sequence.addTracks", json!({"video": 0, "audio": u64::MAX})).is_err());
+    s.execute("sequence.addTracks", json!({"video": 0, "audio": 99})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().audio_tracks.len(), 99);
+}
+
+#[test]
+fn hostile_track_names_and_times_do_not_panic() {
+    let mut s = demo();
+    // `split_at(1)` panicked on an empty name or a multi-byte first character
+    for t in ["", "é99", "日本", "V", "V0"] {
+        assert!(s.execute("sequence.deleteTrack", json!({"track": t})).is_err(), "{t}");
+    }
+    // times at the edges of i64 overflowed the edit maths
+    for p in [
+        json!({"time": i64::MAX}),
+        json!({"time": i64::MIN}),
+        json!({"frame": i64::MAX}),
+        json!({"frame": i64::MIN}),
+        json!({"seconds": 1e300}),
+        json!({"seconds": -1e300}),
+    ] {
+        let _ = s.execute("playhead.set", p.clone());
+        assert!(s.playhead() >= Tick::MIN && s.playhead() <= Tick::MAX);
+        let _ = s.execute("markers.add", p);
+    }
+    // speeds outside 1 %–10 000 % are refused
+    let c = s.active_sequence().unwrap().video_tracks[0].items[0].id;
+    s.state.selection = vec![c];
+    for sp in [0.0001, 1e9, -5.0] {
+        assert!(s.execute("clip.speedDuration", json!({"clips": [c.0], "speed": sp})).is_err(), "{sp}");
+    }
+    s.execute("clip.speedDuration", json!({"clips": [c.0], "speed": 50})).unwrap();
+}
+
+#[test]
+fn decode_spans_are_capped() {
+    assert!(crate::decode_span(Tick::MIN, Tick::MAX, 48_000).is_err());
+    assert!(crate::decode_span(Tick::ZERO, Tick(i64::MAX), i64::from(u32::MAX)).is_err());
+    assert_eq!(crate::decode_span(Tick::MAX, Tick::MIN, 48_000).unwrap().1, 0);
+    let (first, n) = crate::decode_span(Tick::ZERO, Tick::from_seconds_f64(2.0), 48_000).unwrap();
+    assert_eq!((first, n), (0, 96_000));
+}
+
+#[test]
+fn damaged_project_settings_are_sanitized_on_open() {
+    let mut s = demo();
+    let seq = s.state.active_sequence.unwrap();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let st = &mut p.sequence_mut(seq).unwrap().settings;
+    st.width = 0;
+    st.sample_rate = u32::MAX;
+    let path = crate::media_test_util::tmp_dir("damaged-settings").join("d.fcproj");
+    std::fs::write(&path, filmcraft_format::encode(&s.project, false)).unwrap();
+    let mut s2 = Session::default();
+    s2.execute("file.open", json!({"path": path.to_string_lossy()})).unwrap();
+    let st = &s2.active_sequence().unwrap().settings;
+    st.check().unwrap();
+    assert_eq!((st.width, st.sample_rate), (1, 192_000));
+}
+
+/// `timeline.move` keeps a clip on its own track unless another is named, takes `seconds` /
+/// `frame` / `timecode` like other commands, and says which entry is wrong (a move without
+/// `track` used to be dropped silently and the command answered "need `moves`").
+#[test]
+fn timeline_move_defaults_the_track_and_names_bad_entries() {
+    let mut s = demo();
+    let seq = s.active_sequence().unwrap();
+    let rate = seq.settings.frame_rate;
+    let (v1, last) = {
+        let t = &seq.video_tracks[0];
+        (t.id, t.items.last().unwrap().clone())
+    };
+    let to = last.end() + rate.tick_of(48);
+    s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "frame": rate.frame_at(to)}]})).unwrap();
+    let (tid, it) = s.active_sequence().unwrap().find_item(last.id).map(|(t, i)| (t, i.clone())).unwrap();
+    assert_eq!((tid, it.start), (v1, to), "stays on V1, moved to the frame");
+    s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "seconds": to.seconds() + 1.0}]})).unwrap();
+    assert!(s.active_sequence().unwrap().find_item(last.id).unwrap().1.start > to);
+    let e = s.execute("timeline.move", json!({"moves": [{"clip": last.id.0}]})).unwrap_err().to_string();
+    assert!(e.contains("moves[0]") && e.contains("seconds"), "{e}");
+    let e = s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "time": 0, "track": "V9"}]})).unwrap_err().to_string();
+    assert!(e.contains("moves[0]") && e.contains("track"), "{e}");
+    assert!(s.execute("timeline.move", json!({"moves": []})).is_err());
+    // hostile times are clamped, not overflowed
+    let _ = s.execute("timeline.move", json!({"moves": [{"clip": last.id.0, "time": i64::MAX}]}));
+}
+
+/// Parameters a command does not take are reported (they are ignored): a misspelt key, e.g.
+/// `volume` for `volumeDb`, did nothing without a word. Time keys take their `seconds` /
+/// `frame` / `timecode` forms, and pass-through settings docs take anything.
+#[test]
+fn unknown_parameters_are_reported() {
+    let mut s = demo();
+    s.execute("mixer.setStrip", json!({"strip": "A1", "volume": -6.0})).unwrap();
+    assert_eq!(s.last_unknown_params, vec!["volume".to_string()]);
+    s.execute("mixer.setStrip", json!({"strip": "A1", "volumeDb": -6.0})).unwrap();
+    assert!(s.last_unknown_params.is_empty());
+    // `time` → `seconds`; `wait` is taken by every command
+    s.execute("playhead.set", json!({"seconds": 1.0, "wait": true})).unwrap();
+    assert!(s.last_unknown_params.is_empty(), "{:?}", s.last_unknown_params);
+    // nested commands do not overwrite the top-level report
+    s.execute("captions.add", json!({"text": "x", "colour": "red"})).unwrap();
+    assert_eq!(s.last_unknown_params, vec!["colour".to_string()]);
+    // pass-through settings ("…" in the doc) are not checked
+    let spec = crate::find_command("export.queue.add").unwrap();
+    assert!(crate::commands::unknown_params(spec, &json!({"anything": 1})).is_empty());
+}

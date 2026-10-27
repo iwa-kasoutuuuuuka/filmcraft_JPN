@@ -89,15 +89,20 @@ pub struct AppearancePrefs {
     pub accessible_contrast: bool,
     /// Highlight (accent) colour of selections, focus and primary buttons (`#rrggbb`).
     pub highlight_color: String,
+    /// "Language" of the user interface: `auto` (default: the operating system's language when
+    /// it is one of ours) | `ja` | `en`. Commands, automation ids and project files are the same
+    /// in every language.
+    pub language: String,
 }
 
 impl Default for AppearancePrefs {
     fn default() -> Self {
-        Self { color_theme: "darkest".into(), accessible_contrast: false, highlight_color: DEFAULT_HIGHLIGHT.into() }
+        Self { color_theme: "darkest".into(), accessible_contrast: false, highlight_color: DEFAULT_HIGHLIGHT.into(), language: DEFAULT_LANGUAGE.into() }
     }
 }
 
 pub const DEFAULT_HIGHLIGHT: &str = "#2f6bdf";
+pub const DEFAULT_LANGUAGE: &str = "auto";
 
 /// Settings ▸ Audio Hardware (the cpal output on desktop).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -343,7 +348,9 @@ impl Default for MediaAnalysisPrefs {
             auto_transcribe: false,
             auto_transcribe_scope: "sequenceClips".into(),
             speaker_labeling: "on".into(),
-            language_auto_detect: false,
+            // the language is detected from the speech (Japanese, English, …); "Default
+            // language" is used when detection is switched off
+            language_auto_detect: true,
             default_language: "en".into(),
             whisper_model: filmcraft_speech::models::DEFAULT_MODEL.into(),
         }
@@ -602,6 +609,8 @@ const OPENING: &[(&str, &str)] = &[("showOpenDialog", "Show Open Dialog"), ("sho
 const BIN_OPEN: &[(&str, &str)] = &[("openInPlace", "Open in place"), ("openNewTab", "Open new tab"), ("openNewWindow", "Open in new window")];
 const PROJECT_OPEN: &[(&str, &str)] = &[("openNewTab", "Open new tab"), ("openNewWindow", "Open in new window")];
 const THEMES: &[(&str, &str)] = &[("darkest", "Darkest"), ("dark", "Dark"), ("light", "Light")];
+/// Each language under its own name, so the picker reads the same whatever the language is.
+const UI_LANGUAGES: &[(&str, &str)] = &[("auto", "Auto"), ("ja", "日本語"), ("en", "English")];
 const MIXDOWN: &[(&str, &str)] = &[("front", "Front Only"), ("frontRear", "Front + Rear"), ("frontLfe", "Front + LFE"), ("frontRearLfe", "Front + Rear + LFE")];
 const AUDITION: &[(&str, &str)] = &[("scratch", "Scratch disk location for Captured Audio"), ("nextToMedia", "Next to original media files")];
 const BUFFERS: &[(&str, &str)] = &[("64", "64"), ("128", "128"), ("256", "256"), ("512", "512"), ("1024", "1024"), ("2048", "2048"), ("4096", "4096")];
@@ -703,6 +712,7 @@ static CATEGORIES: &[Category] = &[
         id: "appearance",
         title: "Appearance",
         rows: &[
+            f("appearance.language", "Language", Kind::Choice(UI_LANGUAGES), true),
             f("appearance.colorTheme", "Color Theme", Kind::Choice(THEMES), true),
             b("appearance.accessibleContrast", "Accessible color contrast", true),
             f("appearance.highlightColor", "Highlight Color", Kind::Color, true),
@@ -1130,7 +1140,15 @@ impl crate::autosave::Preferences {
     /// Settings ▸ Playback ▸ Hardware decoding as the process-wide switch the hardware decoder
     /// factories consult (new decoders only).
     pub fn apply_hardware_decoding(&self) {
-        filmcraft_codecs::hw::set_hardware_decoding(self.playback.hardware_decoding != "off");
+        filmcraft_codecs::hw::set_hardware_mode(self.hardware_mode());
+    }
+
+    /// The hardware decoding mode this setting selects.
+    pub fn hardware_mode(&self) -> filmcraft_codecs::hw::HwMode {
+        match self.playback.hardware_decoding.as_str() {
+            "off" => filmcraft_codecs::hw::HwMode::Off,
+            _ => filmcraft_codecs::hw::HwMode::Auto,
+        }
     }
 
     /// Values of one category as a JSON object.

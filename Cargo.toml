@@ -11,6 +11,8 @@ rust-version = "1.95"
 repository = "https://github.com/storytold/filmcraft"
 
 [workspace.dependencies]
+# Inflate for Filmora projects (.wfp are ZIP archives); pure Rust, MIT / Apache-2.0 / Zlib.
+miniz_oxide = "0.8"
 # internal
 filmcraft-time = { path = "crates/time" }
 filmcraft-geom = { path = "crates/geom" }
@@ -24,6 +26,7 @@ filmcraft-mpegts = { path = "crates/mpegts" }
 filmcraft-mpeg2v = { path = "crates/mpeg2v" }
 filmcraft-ac3 = { path = "crates/ac3" }
 filmcraft-ogg = { path = "crates/ogg" }
+filmcraft-riff = { path = "crates/riff" }
 filmcraft-h264 = { path = "crates/h264" }
 filmcraft-hevc = { path = "crates/hevc" }
 filmcraft-vp9 = { path = "crates/vp9" }
@@ -32,7 +35,9 @@ filmcraft-dnx = { path = "crates/dnx" }
 filmcraft-av1 = { path = "crates/av1" }
 filmcraft-aac = { path = "crates/aac" }
 filmcraft-opus = { path = "crates/opus" }
+filmcraft-flac = { path = "crates/flac" }
 filmcraft-h264enc = { path = "crates/h264enc" }
+filmcraft-av1enc = { path = "crates/av1enc" }
 filmcraft-audio-dsp = { path = "crates/audio-dsp" }
 filmcraft-frame = { path = "crates/frame" }
 filmcraft-media = { path = "crates/media" }
@@ -81,9 +86,11 @@ type_complexity = "allow"
 
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
 # Codec hot loops: debug-build tests (RFC/oracle vectors) are minutes slower below opt-level 3.
 [profile.dev.package.filmcraft-h264]
@@ -99,6 +106,13 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.filmcraft-dnx]
+opt-level = 3
+
+[profile.dev.package.filmcraft-av1enc]
+opt-level = 3
+
+# rav1e (AV1 export) runs its pure-Rust kernels, far too slow for tests below opt-level 3.
+[profile.dev.package.rav1e]
 opt-level = 3
 
 [profile.dev.package.filmcraft-av1]

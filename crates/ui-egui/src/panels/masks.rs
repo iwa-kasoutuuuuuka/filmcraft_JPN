@@ -63,7 +63,11 @@ pub fn effect_rows(
             if kind == "pen" {
                 app.ui.mask_pen = if on { None } else { Some(crate::state::MaskPenDraft { clip: clip.0, effect: idx, points: vec![] }) };
                 if !on {
-                    app.ui.status = "Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close".into();
+                    app.ui.status = crate::i18n::t(
+                        "Click in the Program monitor to place mask points (drag for curves); click the first point or press Enter to close",
+                        "プログラムモニターをクリックしてマスクのポイントを配置します(ドラッグで曲線)。最初のポイントをクリックするか Enter キーで閉じます",
+                    )
+                    .into();
                 }
             } else {
                 actions.push(("masks.add".into(), json!({"clip": clip.0, "effect": idx, "shape": kind})));
@@ -124,7 +128,7 @@ pub fn effect_rows(
             }
         }
         resp.context_menu(|ui| {
-            if ui.button("Delete Mask").clicked() {
+            if ui.button(crate::i18n::t("Delete Mask", "マスクを削除")).clicked() {
                 actions.push(("masks.remove".into(), json!({"clip": clip.0, "effect": idx, "mask": k})));
                 ui.close();
             }
@@ -144,7 +148,7 @@ pub fn effect_rows(
         }
         // Inverted
         let (r, _) = ui.allocate_exact_size(vec2(body.width(), ROW_H), Sense::hover());
-        ui.painter().text(pos2(r.min.x + 40.0, r.center().y), Align2::LEFT_CENTER, "Inverted", Tokens::ui(12.0), t.text);
+        ui.painter().text(pos2(r.min.x + 40.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::t("Inverted", "反転"), Tokens::ui(12.0), t.text);
         let cr = Rect::from_min_size(pos2(r.min.x + (r.width() * 0.5).max(150.0), r.min.y + 2.0), vec2(20.0, ROW_H - 4.0));
         let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(cr));
         let mut inv = m.inverted;
@@ -359,9 +363,10 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let selected = sel_v == Some(i);
         painter.rect_filled(vr, 0.0, if selected { col } else { Color32::WHITE });
         painter.rect_stroke(vr, 0.0, Stroke::new(1.0, col), egui::StrokeKind::Middle);
-        let r = ui
-            .interact(vr.expand(3.0), egui::Id::new(("mask-vertex", i)), Sense::click_and_drag())
-            .on_hover_text("Drag: move · Alt-click: smooth/corner · Cmd-click: delete");
+        let r = ui.interact(vr.expand(3.0), egui::Id::new(("mask-vertex", i)), Sense::click_and_drag()).on_hover_text(crate::i18n::t(
+            "Drag: move · Alt-click: smooth/corner · Cmd-click: delete",
+            "ドラッグ: 移動 · Alt+クリック: スムーズ／コーナー · Ctrl+クリック: 削除",
+        ));
         app.auto.add(&format!("program.mask.vertex.{i}"), vr, "Mask vertex");
         if r.drag_started() {
             ui.data_mut(|d| d.insert_temp(sel_v_id, i));
@@ -548,7 +553,7 @@ pub fn path_value(app: &mut FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, effec
         (Icon::TrackMaskFwd, "forward", None, "fwd", "Track selected mask forward"),
     ] {
         let (r, resp) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
-        let resp = resp.on_hover_text(if running.is_some() { "Stop tracking" } else { tip });
+        let resp = resp.on_hover_text(if running.is_some() { crate::i18n::t("Stop tracking", "トラッキングを停止") } else { tip });
         if resp.hovered() {
             ui.painter().rect_filled(r, 3.0, t.hover);
         }
@@ -571,7 +576,7 @@ pub fn path_value(app: &mut FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, effec
     let (r, resp) = ui.allocate_exact_size(vec2(20.0, 18.0), Sense::click());
     icons::paint(ui.painter(), r.shrink(3.0), Icon::Wrench, if resp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add(&format!("{base}.trackMethod"), r, "Tracking method");
-    let resp = resp.on_hover_text(format!("Tracking method: {}", m.track_method.label()));
+    let resp = resp.on_hover_text(crate::tf!("Tracking method: {}", "トラッキング方法: {}", m.track_method.label()));
     egui::Popup::menu(&resp).show(|ui| {
         for tm in filmcraft_project::TrackMethod::ALL {
             if ui.selectable_label(tm == m.track_method, tm.label()).clicked() {

@@ -15,4 +15,7 @@ list (author, source, license) is in ATTRIBUTION.md.
 Inter font (assets/fonts/Inter-*.ttf) — OFL-1.1. See assets/fonts/OFL-Inter.txt.
 Noto Serif font (assets/fonts/NotoSerif-Regular.ttf) — OFL-1.1. See assets/fonts/OFL-NotoSerif.txt.
 JetBrains Mono font (assets/fonts/JetBrainsMono-Regular.ttf) — OFL-1.1. See assets/fonts/OFL-JetBrainsMono.txt.
+rav1e AV1 encoder (crates.io `rav1e`, linked unmodified into the export path) — BSD-2-Clause,
+Copyright (c) 2017-2023, the rav1e contributors; the AV1 format is covered by the Alliance for
+Open Media Patent License 1.0. See https://github.com/xiph/rav1e (LICENSE, PATENTS).
 Public-domain film and NASA frames and CC0 music shown in README screenshots (docs/images/) — public domain / CC0-1.0. See ATTRIBUTION.md.

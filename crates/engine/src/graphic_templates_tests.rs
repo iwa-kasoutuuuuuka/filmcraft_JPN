@@ -363,3 +363,32 @@ fn caption_formats_through_the_engine() {
         }
     }
 }
+
+#[test]
+fn crossed_slider_bounds_do_not_panic() {
+    let mut s = demo("gt-crossed");
+    let c = clip_of(&s.execute("graphics.template.apply", json!({"template": "builtin:title-centered"})).unwrap());
+    // a damaged project file: a slider whose min is above its max (f64::clamp panicked)
+    let seq = s.state.active_sequence.unwrap();
+    let p = std::sync::Arc::make_mut(&mut s.project);
+    let it = p.sequence_mut(seq).unwrap().find_item_mut(c).unwrap().1;
+    let link = it.graphic.as_mut().unwrap().template.as_mut().unwrap();
+    let layer = link.controls[0].layer;
+    link.controls.push(filmcraft_project::gtemplate::TemplateControl {
+        id: "crossed".into(),
+        name: "Crossed".into(),
+        kind: filmcraft_project::gtemplate::ControlKind::Slider,
+        layer,
+        param: "size".into(),
+        min: Some(10.0),
+        max: Some(-10.0),
+    });
+    s.execute("graphics.template.set", json!({"clip": c.0, "control": "crossed", "value": 50})).unwrap();
+    // and a template export refuses crossed bounds
+    let g = clip_of(&s.execute("graphics.newText", json!({"text": "Headline", "position": [200, 900]})).unwrap());
+    let r = s.execute(
+        "graphics.template.export",
+        json!({"clip": g.0, "name": "Crossed", "controls": [{"layer": 0, "param": "size", "name": "Size", "min": 200, "max": 20}]}),
+    );
+    assert!(r.is_err(), "{r:?}");
+}

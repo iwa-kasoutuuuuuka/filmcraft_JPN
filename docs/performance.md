@@ -13,6 +13,141 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Results (Lumetri wheels, curves, split tone and Looks on the GPU, before → after)
+
+`cargo xtask bench --sections playback --only lumetri-grade` (release, GPU path, 8 s plays): one
+1080p clip with Lumetri color wheels (shadows, highlights), a luma S-curve, Hue vs Sat, a shadow
+tint and Look 1 at 60 %. Same machine and date as below.
+
+| | shown/dropped (2 runs) | UI p95 ms |
+|---|---|---|
+| before (whole Lumetri on the CPU) | 96/96, 118/74 | 17.0, 15.1 |
+| **after** (one GPU pass) | **192/0, 192/0** | **3.8, 2.9** |
+
+Before, anything beyond Basic (wheels, curves, split tone, Looks) sent the whole Lumetri back to
+the CPU. They are now part of the GPU Lumetri pass (curve tables in a storage buffer), matching the
+CPU grade within 1e-5 and the GPU within 1e-6 relative (`lumetri_hdr_tests`, `fx_tests`). Sharpen
+(an Unsharp pass chained after the grade) and the Input / Look LUTs (1D shaper and tetrahedral 3D
+cube in the same data buffer) followed, then HSL Secondary: key, median denoise (radius ≤ 3 px)
+and box blur passes beside the image, then the correction (`lumetri-hsl`: 38/154 and 36/156 →
+192/0 twice, UI p95 20 → 12 ms). The grade in HDR working spaces (PQ / HLG) followed, but HDR
+sequences don't reach it yet (see below).
+
+## Results (Windows: hardware H.264 export, software → hardware)
+
+`bench --section export --only h264 --hw off|auto` (release; 8 s of a 1080p23.976 clip, H.264 +
+AAC MP4, default bitrate), runs alternated. Windows 11, NVIDIA (NVIDIA H.264 Encoder MFT).
+
+| | seconds (2 runs) | file |
+|---|---|---|
+| our encoder (`--hw off`) | 4.8, 4.9 | 20.4 MB |
+| **hardware** (Media Foundation) | **2.5, 2.3** | 21.5 MB |
+
+Before, a batch of frames rendered in parallel (≈1.3 s in total) and then encoded on the CPU
+(≈3.1 s in total for H.264, ≈3.4 s for ProRes); the encode now runs on the GPU's media engine.
+`crates/platform/src/mfencode.rs` drives the asynchronous encoder transform (NV12 in system memory,
+no B-frames, Annex B → length-prefixed samples with the parameter sets in the `avcC`). The stream
+decodes with our decoder (PSNR > 30 dB against the source) and with ffmpeg without errors
+(`tests/mfencode.rs`).
+
+Then the export overlapped rendering and encoding: each step renders a batch while the previous
+one encodes (`rayon::join`; in turn on hosts without threads), and the encoders' RGBA → YUV
+conversion (`VideoEncoder::input_converter`: NV12 for the hardware encoder, I420 for ours) runs
+inside the frame-parallel render instead of serially in the encoder, where it had cost ≈7 ms per
+1080p frame. Batches are capped at 256 MB of pictures (4K and HDR render fewer frames at once).
+
+| | before | after (2 runs) |
+|---|---|---|
+| H.264, hardware | 2.4 s | **2.0, 2.0 s** |
+| H.264, our encoder | 4.8 s | **4.6, 4.5 s** |
+| ProRes 422 HQ | 4.8 s | 4.8, 4.7 s (the encoder itself is the limit) |
+
+HEVC (H.265) export followed on the same hardware path (Export ▸ Format ▸ HEVC; NVIDIA HEVC
+Encoder MFT here): 1.9 s for the same clip at the same bitrate (21.4 MB). The `hvcC` is built
+from the encoder's own VPS / SPS / PPS (profile, tier and level read from its SPS); the stream
+decodes with our HEVC decoder and with ffmpeg. FilmCraft has no HEVC encoder of its own, so the
+format is offered only where the system has a hardware one (`filmcraft_export::available`).
+HDR sequences export HEVC Main 10: the encoded R'G'B' (HLG or PQ, BT.2020) goes in as P010
+(`rgbf_to_p010`), signalled in the stream's VUI and in the MP4 (`colr`, `mdcv` / `clli` for PQ);
+the picture matches our H.264 HDR export of the sequence at 52–54 dB.
+
+## Results (exports rendered on the GPU, CPU → GPU)
+
+`bench --section export [--cpu]` (release; 8 s of 1080p23.976, hardware H.264 / HEVC encoding on
+both sides), runs alternated. Exports render on the GPU compositor
+(`filmcraft_export::FrameRenderer`, registered by the app on its wgpu device and by the bench on
+its own) when the output is SDR at the sequence's own geometry without overlays (`gpuRendering`,
+on by default); everything else renders on the CPU as before. GPU-rendered exports match
+CPU-rendered ones above 40 dB per frame (`ui-egui/tests/gpu_export.rs`).
+
+| export | CPU render (2 runs) | **GPU render** (2 runs) |
+|---|---|---|
+| H.264 | 1.8, 1.9 s | **1.0, 1.1 s** |
+| H.264 with Lumetri + Sharpen + Levels + Tint | 6.9, 6.9 s | **1.0, 1.1 s** |
+| HEVC | 1.6, 1.6 s | **1.0, 1.0 s** |
+| ProRes 422 HQ | 4.6, 4.5 s | 3.8, 3.7 s (the encoder is the limit) |
+
+## Results (keys and HDR Lumetri on the GPU, before → after)
+
+`bench --section playback --only <scenario>` (release, GPU path, 8 s plays), before = `eb49b29`
+built with the same scenarios, runs alternated. Windows 11, one NVIDIA GPU.
+
+| scenario | before shown/dropped (2 runs) | after shown/dropped (2 runs) | UI p95 ms before → after |
+|---|---|---|---|
+| `keying`: Ultra Key (Choke, Soften, spill) on V2 over V1, Video Limiter on V1 | 17/175, 13/179 | **192/0, 192/0** | 12.5, 17.2 → **4.0, 4.4** |
+| `lumetri-hdr`: the `lumetri-grade` grade in a Rec. 2100 PQ sequence | 99/93, 103/89 | 90/102, 110/82 | unchanged (noisy) |
+
+Ultra Key, Color Key, Luma Key and Video Limiter now run as GPU passes (Ultra Key's Choke and
+Soften blur its matte beside the image). `lumetri-hdr` didn't move then: `plan.rs` rendered every
+HDR or wide-gamut sequence on the CPU (decode into the working space, composite, display
+transform), so the GPU never saw it.
+
+Then HDR and wide-gamut sequences moved to the GPU: BT.709 / sRGB media is decoded there and
+converted into the working gamut (`plan::input_matrix`, a 3×3 matrix after the decode), effects
+run in the working space (Lumetri's HDR grade), and the final pass converts for the monitor
+(BT.2390 tone mapping on max(R,G,B), gamut matrix, desaturation into the target gamut). Log, HDR
+and other-gamut media are still converted on the CPU per layer; exports, captions and blend modes
+other than Normal in such sequences keep the CPU compositor. GPU and CPU agree within 1 code value
+(p99) in PQ, HLG and wide-gamut plans, and on the HDR golden scenes (61–63 dB).
+
+| scenario | before (2 runs) | after (2 runs) | UI p95 ms |
+|---|---|---|---|
+| `lumetri-hdr` | 99/93, 103/89 | **192/0, 192/0** | 2.9, 3.0 |
+
+HDR media followed: PQ and HLG YUV media in an HDR sequence is decoded on the GPU too (the PQ
+curve in working units, the HLG inverse OETF and BT.2100 OOTF, then the gamut matrix), with the
+CPU reference decoding through the same input transform (`plan::decode_working`). On the way the
+GPU's limited-range normalisation of deeper-than-8-bit YUV was found to be ≈0.4 % off the CPU's
+(`code × 2^bits / 255` instead of `16 · 2^(bits−8)`), invisible in SDR but large on the PQ curve.
+
+| scenario | before (2 runs) | after (2 runs) | UI p95 ms |
+|---|---|---|---|
+| `hlg-grade`: the Lumetri grade on 1080p30 HEVC Main 10 HLG media in an HLG sequence | 125/67, 126/66 | **192/0, 192/0** | 27.1, 28.4 → **5.4, 4.7** |
+## Results (Windows: Media Foundation read-back, before → after)
+
+`cargo xtask bench --sections playback --only h264-1080|h264-2160 --hw on|off` (release, GPU
+path, 8 s plays) and `cargo test --release -p filmcraft-platform --test mediafoundation throughput
+-- --ignored`, 2026-10-16, AMD Ryzen 9 9950X3D (16 cores, 32 threads, 63 GB), NVIDIA GeForce RTX
+5080, Windows 11 Pro 26300, otherwise idle. Shown/dropped of 192 frames; decode ms per frame job.
+
+| case | Media Foundation before | **after** | software (`Off`) |
+|---|---|---|---|
+| H.264 1080p Full | 102/90, 186 ms (runs: 10/182 – 160/32) | **192/0, 7.3 ms** | 192/0, 3.9 ms |
+| H.264 2160p Full | 102/90 – 192/0, 21–191 ms | **192/0, 12.9 ms** | 192/0, 18.6 ms |
+| H.264 2160p 1/2 | 17/175, 282 ms | **192/0, 8.6 ms** | 192/0 |
+
+Decoding alone (`throughput`): 1080p 402 fps at 1.71 ms of CPU per frame in hardware against 305
+fps and 19.9 ms in software; 2160p 175 fps at 5.1 ms against 108 fps and 87 ms.
+
+Before, every picture came back through `IMF2DBuffer2::Lock2DSize` as soon as it came out of the
+transform, which waited for the GPU each time: ~8 ms per 1080p picture (timed per call; the
+transform's own `ProcessInput` / `ProcessOutput` took under 0.1 ms), roughly 4× that at 2160p. Now
+each picture is copied (`CopySubresourceRegion`) into a ring of three staging textures and mapped
+two pictures later, when the copy finished long ago (`Readback` in
+`crates/platform/src/mediafoundation.rs`); the pictures are bit-identical (parity tests). Keeping
+access units in flight in the transform instead did not help. Zero-copy upload into wgpu (#30)
+would also remove the CPU copy. The bench runs on Windows (no `/usr/bin/time`: no peak RSS; no
+load average).
 ## Results (GPU2: standard effects on the GPU compositor, #30, before → after)
 
 Before = this change with clips that carry standard effects sent back to the CPU layer path in

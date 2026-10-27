@@ -96,7 +96,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let sf = frame.and_then(|f| frame_signal(app, &ctx, "program", f, &st, prio));
     match &sf {
         Some(sf) => draw(app, ui, area, &st.shown, sf, &st, "scopes"),
-        None => crate::dock::placeholder(ui, area, &t, if app.session.state.active_sequence.is_some() { "…" } else { "(no sequence)" }),
+        None => crate::dock::placeholder(
+            ui,
+            area,
+            &t,
+            if app.session.state.active_sequence.is_some() { "…" } else { crate::i18n::t("(no sequence)", "(シーケンスなし)") },
+        ),
     }
     // right-click anywhere on the scopes: the settings menu
     let resp = ui.interact(area, egui::Id::new("scopes-area"), Sense::click());
@@ -119,9 +124,9 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, space: Option<Colo
     let sr = Rect::from_min_size(pos2(r.max.x - scale_w - 6.0, r.min.y + 4.0), vec2(scale_w, 22.0));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(sr));
     let mut scale = scale0;
-    let cb = egui::ComboBox::from_id_salt("scopes-scale").selected_text(scale.label()).width(scale_w - 8.0).show_ui(&mut child, |ui| {
+    let cb = egui::ComboBox::from_id_salt("scopes-scale").selected_text(crate::i18n::tr_ui(scale.label())).width(scale_w - 8.0).show_ui(&mut child, |ui| {
         for s in Scale::ALL {
-            let r = ui.selectable_value(&mut scale, s, s.label());
+            let r = ui.selectable_value(&mut scale, s, crate::i18n::tr_ui(s.label()));
             app.auto.add(&format!("scopes.menu.scale.{}", s.label().replace(' ', "")), r.rect, s.label());
         }
     });
@@ -131,7 +136,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, space: Option<Colo
     let cr = Rect::from_min_size(pos2(sr.min.x - cw - 10.0, r.min.y + 4.0), vec2(cw, 22.0));
     let mut clamp = clamp0;
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cr));
-    let cresp = child.checkbox(&mut clamp, "Clamp Signal");
+    let cresp = child.checkbox(&mut clamp, crate::i18n::t("Clamp Signal", "クランプ"));
     app.auto.add("scopes.clamp", cresp.rect, "Clamp Signal");
     let wr = Rect::from_center_size(pos2(cr.min.x - 16.0, r.center().y), vec2(22.0, 22.0));
     let wresp = ui.interact(wr, egui::Id::new("scopes-wrench"), Sense::click());
@@ -153,7 +158,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, space: Option<Colo
 type Picks = Vec<(String, Rect, String, bool)>;
 
 fn pick(ui: &mut egui::Ui, out: &mut Picks, id: &str, label: &str, on: bool) {
-    let r = ui.selectable_label(on, label);
+    let r = ui.selectable_label(on, crate::i18n::tr_ui(label));
     out.push((id.to_string(), r.rect, label.to_string(), r.clicked()));
 }
 
@@ -162,7 +167,7 @@ pub fn settings_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.set_min_width(220.0);
     let st = app.ui.panels.scopes.clone();
     let mut out: Picks = Vec::new();
-    let pr = ui.menu_button("Presets", |ui| {
+    let pr = ui.menu_button(crate::i18n::t("Presets", "プリセット"), |ui| {
         for (i, p) in SCOPE_PRESETS.iter().enumerate() {
             pick(ui, &mut out, &format!("scopes.menu.preset.{i}"), p.0, st.preset == p.0);
         }
@@ -171,8 +176,8 @@ pub fn settings_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.separator();
     for k in ScopeKind::ALL {
         let label = match k {
-            ScopeKind::Parade => format!("Parade ({})", st.parade_type.label()),
-            ScopeKind::Waveform => format!("Waveform ({})", st.waveform_type.label()),
+            ScopeKind::Parade => crate::tf!("Parade ({})", "パレード ({})", st.parade_type.label()),
+            ScopeKind::Waveform => crate::tf!("Waveform ({})", "波形 ({})", st.waveform_type.label()),
             k => k.label().to_string(),
         };
         pick(ui, &mut out, &format!("scopes.menu.{}", k.name()), &label, st.shown.contains(&k));
@@ -391,8 +396,8 @@ fn draw_one(app: &mut FilmcraftApp, ui: &mut egui::Ui, cell: Rect, k: ScopeKind,
                 }
             }
             let title = match k {
-                ScopeKind::Parade => format!("Parade ({})", st.parade_type.label()),
-                _ => format!("Waveform ({})", st.waveform_type.label()),
+                ScopeKind::Parade => crate::tf!("Parade ({})", "パレード ({})", st.parade_type.label()),
+                _ => crate::tf!("Waveform ({})", "波形 ({})", st.waveform_type.label()),
             };
             ui.painter().text(plot.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, title, Tokens::ui(9.0), Color32::from_gray(110));
             if nits_axis(st, sf) {
@@ -409,7 +414,13 @@ fn draw_one(app: &mut FilmcraftApp, ui: &mut egui::Ui, cell: Rect, k: ScopeKind,
             if let Some(tex) = tex {
                 ui.painter().image(tex.id(), plot, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             }
-            ui.painter().text(plot.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, "Histogram", Tokens::ui(9.0), Color32::from_gray(110));
+            ui.painter().text(
+                plot.left_top() + vec2(4.0, 2.0),
+                Align2::LEFT_TOP,
+                crate::i18n::t("Histogram", "ヒストグラム"),
+                Tokens::ui(9.0),
+                Color32::from_gray(110),
+            );
             if nits_axis(st, sf) {
                 app.auto.add(&format!("{prefix}.hdrWaveform"), plot, "HDR levels (cd/m²)");
             }

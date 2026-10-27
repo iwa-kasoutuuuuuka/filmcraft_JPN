@@ -7,7 +7,7 @@ It is the one crate of the workspace allowed to contain `unsafe`, under the rule
 
 ```rust
 // at startup (the desktop app, filmcraft-cli, the bench)
-let availability = filmcraft_platform::register(); // Available("VideoToolbox") on macOS
+let availability = filmcraft_platform::register(); // Available("VideoToolbox") on macOS, Available("Media Foundation") on Windows
 ```
 
 ## What it does
@@ -21,6 +21,19 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   reorder buffer of the stream's own depth (`max_num_reorder_frames` /
   `sps_max_num_reorder_pics`) restores presentation order; a run starting at an HEVC CRA leaves
   out its RASL pictures, as our decoder does. Each seek (`reset`) starts a fresh session.
+- **Windows: Media Foundation H.264 (`avcC`) and HEVC (`hvcC`) on Direct3D 11 (DXVA)**, 4:2:0,
+  8-bit H.264 and 8- / 10-bit HEVC (`mediafoundation.rs`). The decoder is the system's decoder
+  transform (`MFTEnumEx`; HEVC needs the HEVC Video Extensions) given a DXGI device manager, which
+  is what makes it decode on the GPU. One Direct3D device serves every decoder of the process, and
+  a transform is kept across seeks and flushes (setting one up costs far more than a picture).
+  Samples go in as Annex B access units, the sample entry's parameter sets in front of the first
+  one of a run; pictures come back in presentation order as NV12 / P010 textures and are read back
+  (`IMF2DBuffer2::Lock2DSize`) into planar `Yuv8` / `Yuv16`, cropped to the output rectangle. A
+  transform that accepts the stream but returns system-memory pictures is decoding in software:
+  that is reported as a failure, so our own decoder takes over.
+- **`locale`** (`locale.rs`): the operating system's display language as a BCP 47 tag, for the UI's
+  "Auto" language (`GetUserDefaultUILanguage` on Windows, the POSIX locale variables elsewhere;
+  None for a macOS app started from the Finder).
 - **Other systems:** `register()` does nothing and returns `Availability::Unavailable`.
 - **`HybridDecoder`** (`hybrid.rs`, safe code): the hardware decoder plus the means to build our
   software decoder for the same `SampleEntry` (`filmcraft_codecs::software_video_decoder`). On a
@@ -36,7 +49,9 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
 - **Never undecodable:** the factory declines (returns `None`, so the software decoder is used)
   when Settings ▸ Playback ▸ Hardware decoding is Off, for formats it does not take (field-coded
   H.264, bit depths other than 8 / 10, 4:4:4 or monochrome, luma / chroma depth mismatch, larger
-  than 8192×8192) and when VideoToolbox cannot create a hardware session.
+  than 8192×8192; on Windows also 4:2:2 and 10-bit H.264) and when the OS cannot decode the
+  stream in hardware (VideoToolbox cannot create a hardware session; no Direct3D 11 video device,
+  no decoder transform for the codec, or one that is not Direct3D 11 aware).
 - **Interchangeable:** colour, pixel aspect, pts, presentation order, `is_random_access` and
   `is_disposable` come from the software decoders' own helpers (`filmcraft_codecs::hw`,
   `video::vui_color`, `sar_par`).
@@ -50,6 +65,7 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
 | test | what |
 |---|---|
 | `tests/videotoolbox.rs` (macOS) | H.264 High, HEVC Main (open GOP: CRA + RASL) and HEVC Main 10, 640×360 (coded 368: cropping) with B-frames: every picture **bit-exact** with our software decoder, same pts order, count, colour and aspect, also after `reset` + reseek to every later sync sample, mid-stream `flush`, and a full pass after resets; forced mid-stream failures (`VtDecoder::fail_after`) at five points continue with the software decoder's exact output; seeded mutation of samples and parameter sets (bit flips, truncation, corrupt length prefixes) never panics or hangs; HEVC 4:2:2 10-bit is bit-exact with ffmpeg's decode |
+| `tests/mediafoundation.rs` (Windows) | H.264 High with B-frames from our own encoder (no external tool), 640×360 (coded 368: cropping), 1280×720 and 322×242, several GOPs: every picture **bit-exact** with our software decoder, same pts order and count, also after `reset` + reseek to every later key picture; through the factory; forced mid-stream failures (`MfDecoder::fail_after`) continue in software with the same pictures; damaged samples and parameter sets never crash or hang; unsupported formats are declined. Skips on a machine without a hardware decoder. `throughput` (ignored) prints fps and CPU per frame for both decoders. |
 | `tests/fallback.rs` (every OS) | `HybridDecoder` with a stand-in hardware decoder failing after N samples (every sync sample ± a few, first / last sample, after a seek): output identical to the software decoder; in-band parameter sets identical to the sample entry's stay in hardware, different ones switch to software |
 | `tests/setting.rs` | Hardware decoding Off gives the software decoder through `make_video_decoder` and the media stack (no hardware frames); Auto gives VideoToolbox where available |
 
@@ -63,7 +79,41 @@ M4 Pro, load 150–190 (`cargo xtask bench --hw off|auto`): CPU per decoded fram
 playback with no dropped frames at Full, 1/2 and 1/4. Details in
 [docs/performance.md](../../docs/performance.md).
 
+Windows 11, NVIDIA GPU, `cargo test -p filmcraft-platform --test mediafoundation throughput --
+--ignored --nocapture` (dev profile, 48-picture H.264 High streams from our encoder, decode and
+flush four times; measured once, machine otherwise idle): 1080p 103 fps at 1.9 ms CPU per frame
+(software 204 fps at 39 ms), 2160p 74 fps at 5.7 ms (software 67 fps at 154 ms). So on Windows
+hardware decoding costs about 20–27× less CPU; at 1080p the all-core software decoder is still the
+faster of the two in pictures per second, at 2160p the hardware is. Not yet measured: playback in
+the app, HEVC, other GPU vendors.
+
+## Audio plug-in hosting (VST3)
+
+[ADR 0002](../../docs/adr/0002-audio-plugin-hosting.md). `register_audio_plugins()` registers the
+VST3 host (Windows) with `filmcraft_audio_dsp::plugin`; nothing is loaded until a scan.
+
+- `audio_plugins.rs` (safe, every OS): the VST3 folders (`%CommonProgramFiles%\VST3`,
+  `%LOCALAPPDATA%\Programs\Common\VST3`, `$FILMCRAFT_VST3_PATH`), bundle and single-file module
+  layouts, the class-id text form (`FUID::toString`, COM layout on Windows) and the state container
+  (component + controller state).
+- `vst3host.rs` (FFI, Windows): loads the module (`LoadLibraryExW`, `InitDll`, `GetPluginFactory`;
+  never unloaded), lists `Audio Module Class` effects, creates `IComponent` + `IAudioProcessor` and
+  the `IEditController` (connected through `IConnectionPoint` when separate), sets up stereo main
+  buses (the plug-in's own arrangement when it refuses), 32-bit float processing in blocks of up to
+  1024 samples with parameter changes through `IParameterChanges`, and saves / restores state through
+  an in-memory `IBStream`. Callbacks run under `catch_unwind`.
+
+Try it: put a VST3 effect in `C:\Program Files\Common Files\VST3` (or point
+`FILMCRAFT_VST3_PATH` at a folder), then Effects ▸ Audio Effects ▸ Scan for VST3 Plug-ins (or
+`filmcraft-cli exec audioPlugins.scan`). `tests/vst3_host.rs` runs against
+`$FILMCRAFT_VST3_TEST_PLUGIN` or the `vst3` crate's `gain` example, built from the cargo registry
+copy into `target/fixtures/platform/vst3/` (a fixture, never shipped).
+
+No plug-in editor window yet, no Audio Units, in-process only (a plug-in that crashes natively takes
+the process down); see the ADR for the next steps.
+
 ## Not yet
 
-Zero-copy upload of `CVPixelBuffer`s into wgpu textures; hardware encoding; Media Foundation /
-D3D11 (Windows) and VA-API (Linux) decoders; field-coded H.264.
+Zero-copy upload of decoded pictures (`CVPixelBuffer`s, Direct3D textures) into wgpu textures;
+hardware encoding; VA-API (Linux) decoders; field-coded H.264; HEVC on Windows is implemented but
+untested (no HEVC stream without an external encoder, and it needs the HEVC Video Extensions).

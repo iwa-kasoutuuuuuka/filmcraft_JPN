@@ -18,8 +18,10 @@ Using it needs FFI into C / Objective-C APIs, which is `unsafe` Rust. The bindin
 ## Decision
 
 Allow `unsafe` in exactly one crate, `crates/platform` (`filmcraft-platform`, layer L5), for one
-job: OS media FFI (hardware decoding now, hardware encoding later). Audio output, dialogs, menus
-and other OS integration do not go in it.
+job: OS media FFI (hardware decoding, and hardware H.264 encoding through Media Foundation on Windows: `mfencode.rs`). Audio output, dialogs, menus
+and other OS integration do not go in it, with the small read-only OS queries of
+[amendment 1](#amendment-1-2026-10-19-read-only-os-queries) and audio plug-in hosting
+([amendment 2](#amendment-2-2026-10-20-audio-plug-in-hosting)) as the exceptions.
 
 Containment rules:
 
@@ -63,3 +65,30 @@ Registering a hardware decoder never makes a file undecodable, and never changes
   operating system, which carries the licences, wherever hardware decoding is used.
 - A new review burden: changes to `crates/platform` need the same scrutiny as any FFI code.
   Anything else that wants `unsafe` needs a new decision, not an extension of this one.
+
+## Amendment 1 (2026-10-19): read-only OS queries
+
+- **Status:** accepted (2026-10-19, approved by the project owner)
+
+Some values only the operating system can answer have no safe Rust binding on Windows: the
+user's display language (`locale.rs`: `GetUserDefaultUILanguage`, for the UI language setting
+"Auto") and the CPU time used by the process and the calling thread (`cputime.rs`:
+`GetProcessTimes` / `GetThreadTimes`, for `perf.stats` `process.cpuS` and the playback profiler;
+Unix reads its CPU clocks through `rustix` without `unsafe`).
+
+They go in `crates/platform` too, as their own modules under the same containment rules (1–5
+above). The scope stays narrow: a query reads a value about the current process or user, takes
+no input from media, projects or the control channel, holds nothing across calls, and its
+failure is `None` (the caller has a fallback). Nothing a project produces depends on one.
+Anything beyond such queries (audio output, dialogs, windows, files) still needs a new decision.
+
+## Amendment 2 (2026-10-20): audio plug-in hosting
+
+- **Status:** accepted (2026-10-20, approved by the project owner)
+
+Hosting VST3 audio plug-ins (later Audio Units) needs FFI into the plug-in's own code. It goes in
+`crates/platform` too (`vst3host`, Windows first), under rules 1–5 above plus the plug-in rules of
+[ADR 0002](0002-audio-plugin-hosting.md): callbacks under `catch_unwind`, plug-in data treated as
+hostile, modules never unloaded, the format-neutral safe interface in `filmcraft-audio-dsp`. Unlike
+the OS media APIs, a plug-in is third-party code in our process: ADR 0002 records what that means
+for crashes and the planned out-of-process host.

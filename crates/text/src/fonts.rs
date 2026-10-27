@@ -21,6 +21,8 @@ pub static INTER_BOLD: &[u8] = include_bytes!("../../../assets/fonts/Inter-Bold.
 pub static INTER_ITALIC: &[u8] = include_bytes!("../../../assets/fonts/Inter-Italic.ttf");
 pub static JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf");
 pub static NOTO_SERIF_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/NotoSerif-Regular.ttf");
+/// Japanese (kana, kanji, full-width forms): the fallback for text the Latin faces do not cover.
+pub static BIZ_UDPGOTHIC_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/BIZUDPGothic-Regular.ttf");
 
 /// The default family for new text.
 pub const DEFAULT_FAMILY: &str = "Inter";
@@ -235,7 +237,7 @@ fn db() -> &'static RwLock<Db> {
     static DB: OnceLock<RwLock<Db>> = OnceLock::new();
     DB.get_or_init(|| {
         let mut db = Db { faces: Vec::new(), scanned: false };
-        for b in [INTER_REGULAR, INTER_MEDIUM, INTER_SEMIBOLD, INTER_BOLD, INTER_ITALIC, JETBRAINS_MONO_REGULAR, NOTO_SERIF_REGULAR] {
+        for b in [INTER_REGULAR, INTER_MEDIUM, INTER_SEMIBOLD, INTER_BOLD, INTER_ITALIC, JETBRAINS_MONO_REGULAR, NOTO_SERIF_REGULAR, BIZ_UDPGOTHIC_REGULAR] {
             for n in read_faces_bytes(b) {
                 push(&mut db, info_from(n, FaceData::Static(b), "bundled"));
             }
@@ -394,7 +396,18 @@ fn resolve_in(family: &str, style: &str) -> Option<Resolved> {
     Some(Resolved { face: best.id, synth_bold: w >= 600 && best.info.weight <= 500, synth_italic: it && !best.info.italic, missing: false })
 }
 
-/// A face that covers `c`, preferring `prefer`; bundled and already-registered faces are searched.
+/// The family of the bundled Japanese face.
+pub const JAPANESE_FAMILY: &str = "BIZ UDPGothic";
+
+/// The bundled Japanese face (kana and kanji): what Japanese text falls back to when the chosen
+/// font has no glyphs for it, on every platform and on the web.
+pub fn japanese_face() -> FaceId {
+    static FACE: OnceLock<FaceId> = OnceLock::new();
+    *FACE.get_or_init(|| resolve_in(JAPANESE_FAMILY, "Regular").map_or(0, |r| r.face))
+}
+
+/// A face that covers `c`, preferring `prefer`; bundled and already-registered faces are searched
+/// (Japanese text finds the bundled Japanese face, [`japanese_face`]).
 pub fn fallback_for(c: char, prefer: FaceId) -> FaceId {
     let p = face(prefer);
     if p.has_char(c) || c.is_control() {
@@ -462,6 +475,24 @@ mod tests {
             let l = crate::layout("Helvetica", &crate::TextStyle { family: "Helvetica".into(), size: 30.0, ..Default::default() }, &Default::default());
             assert!(!l.missing_font && l.glyphs.iter().all(|g| g.id != 0));
         }
+    }
+
+    /// Japanese text typed in a Latin font (the default, Inter) is drawn with the bundled Japanese
+    /// face instead of missing-glyph boxes, on every system.
+    #[test]
+    fn japanese_text_falls_back_to_the_bundled_japanese_face() {
+        let jp = face(japanese_face());
+        assert_eq!((jp.info.family.as_str(), jp.info.origin), (JAPANESE_FAMILY, "bundled"));
+        for c in ['あ', 'ア', '日', '語', '、', '編', '集', 'Ａ', '～', '「'] {
+            assert!(jp.has_char(c), "{c}");
+        }
+        let inter = resolve("Inter", "Regular").face;
+        assert!(!face(inter).has_char('日'));
+        assert_eq!(fallback_for('日', inter), jp.id);
+        assert_eq!(fallback_for('A', inter), inter, "Latin stays in the requested font");
+        let l = crate::layout("日本語のタイトル ABC", &crate::TextStyle { family: "Inter".into(), size: 40.0, ..Default::default() }, &Default::default());
+        assert!(!l.glyphs.is_empty() && l.glyphs.iter().all(|g| g.id != 0), "no missing glyphs");
+        assert!(families().iter().any(|(f, _)| f == JAPANESE_FAMILY), "offered in the font menu");
     }
 
     #[test]

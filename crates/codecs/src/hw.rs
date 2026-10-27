@@ -16,15 +16,41 @@ use crate::video::{avcc_length_size, h264_disposable, hevc_disposable, hvcc_leng
 use crate::{CodecError, Result};
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
+static FORCED: AtomicBool = AtomicBool::new(false);
 
-/// Settings ▸ Playback ▸ Hardware decoding: `Auto` (true, the default) lets registered hardware
-/// decoders take streams they support; `Off` (false) makes every new decoder a software one.
-/// Decoders already created keep running: a source picks the change up when it is reopened.
-pub fn set_hardware_decoding(on: bool) {
-    ENABLED.store(on, Ordering::Relaxed);
+/// Settings ▸ Playback ▸ Hardware decoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HwMode {
+    /// Hardware decoders take the streams they support where that is the faster path (default).
+    Auto,
+    /// Hardware decoders take every stream they support (to spare the CPU or the battery).
+    On,
+    /// Every new decoder is a software one.
+    Off,
 }
 
-/// Whether hardware decoders may be used for new decoders ([`set_hardware_decoding`]).
+/// Set the mode for new decoders. Decoders already created keep running: a source picks the
+/// change up when it is reopened.
+pub fn set_hardware_mode(m: HwMode) {
+    ENABLED.store(m != HwMode::Off, Ordering::Relaxed);
+    FORCED.store(m == HwMode::On, Ordering::Relaxed);
+}
+
+/// The mode set with [`set_hardware_mode`].
+pub fn hardware_mode() -> HwMode {
+    match (ENABLED.load(Ordering::Relaxed), FORCED.load(Ordering::Relaxed)) {
+        (false, _) => HwMode::Off,
+        (true, true) => HwMode::On,
+        (true, false) => HwMode::Auto,
+    }
+}
+
+/// `true`: [`HwMode::Auto`]; `false`: [`HwMode::Off`].
+pub fn set_hardware_decoding(on: bool) {
+    set_hardware_mode(if on { HwMode::Auto } else { HwMode::Off });
+}
+
+/// Whether hardware decoders may be used for new decoders (Auto or On).
 pub fn hardware_decoding() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
@@ -72,6 +98,26 @@ pub fn note_hw_session() {
 /// A hardware factory declined a stream it is responsible for.
 pub fn note_hw_declined() {
     DECLINED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Reasons not yet reported, and every reason seen (each is reported once per process).
+static REASONS: std::sync::Mutex<(Vec<String>, Vec<String>)> = std::sync::Mutex::new((Vec::new(), Vec::new()));
+
+/// A hardware factory declined a `codec` stream because of `why`: counted, and the reason is kept
+/// for [`take_declined_reasons`] so the user learns why playback runs in software.
+pub fn note_hw_declined_because(codec: &str, why: &str) {
+    note_hw_declined();
+    let msg = format!("{codec}: {why}");
+    let mut r = REASONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if r.1.len() < 64 && !r.1.contains(&msg) {
+        r.1.push(msg.clone());
+        r.0.push(msg);
+    }
+}
+
+/// Decline reasons (`"<codec>: <why>"`) not reported yet; each distinct reason is returned once.
+pub fn take_declined_reasons() -> Vec<String> {
+    std::mem::take(&mut REASONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0)
 }
 
 /// A hardware decoder switched to software mid-stream.
@@ -179,7 +225,7 @@ impl NalStreamInfo {
             bit_depth_chroma: sps.bit_depth_chroma,
             interlaced: !sps.frame_mbs_only,
             profile_idc: sps.profile_idc,
-            color: vui_color(crop.2, crop.3, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
+            color: vui_color(crop.2, crop.3, vui.colour_primaries, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
             par: sar_par(vui.sar),
             // as the software decoder's DPB (`max_reorder`)
             reorder: sps.max_num_reorder_frames().min(sps.max_dpb_frames()),
@@ -225,7 +271,7 @@ impl NalStreamInfo {
             bit_depth_chroma: sps.bit_depth_chroma,
             interlaced: false,
             profile_idc: sps.ptl.profile_idc,
-            color: vui_color(crop.2, crop.3, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
+            color: vui_color(crop.2, crop.3, vui.colour_primaries, vui.matrix_coefficients, vui.transfer_characteristics, vui.full_range),
             par: sar_par(vui.sar),
             reorder: sps.max_num_reorder as usize,
         })
@@ -303,6 +349,19 @@ impl NalStreamInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_decline_reason_is_reported_once() {
+        let before = hw_stats().declined;
+        note_hw_declined_because("HEVC", "test reason a");
+        note_hw_declined_because("HEVC", "test reason a");
+        note_hw_declined_because("HEVC", "test reason b");
+        assert_eq!(hw_stats().declined - before, 3, "every decline is counted");
+        let r: Vec<String> = take_declined_reasons().into_iter().filter(|m| m.contains("test reason")).collect();
+        assert_eq!(r, ["HEVC: test reason a", "HEVC: test reason b"]);
+        note_hw_declined_because("HEVC", "test reason a");
+        assert!(!take_declined_reasons().iter().any(|m| m.contains("test reason")), "already reported");
+    }
 
     #[test]
     fn switch_defaults_to_auto() {

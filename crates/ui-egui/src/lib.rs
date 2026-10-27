@@ -12,12 +12,15 @@ pub mod control;
 pub mod crash;
 pub mod dock;
 pub mod frames;
+pub mod gpu_export;
 pub mod header;
+pub mod i18n;
 pub mod icons;
 pub mod links;
 pub mod menus;
 pub mod panels;
 pub mod perf;
+mod source_play;
 pub mod state;
 pub mod theme;
 pub mod widgets;
@@ -153,6 +156,14 @@ pub struct FilmcraftApp {
     deferred: Vec<(ControlRequest, f64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// When control-channel input was last delivered: the window counts as focused shortly after
+    /// (see `raw_input_hook`).
+    control_input: Option<web_time::Instant>,
+    /// The user answered the unsaved-changes prompt (or there was nothing to save): the next
+    /// close request closes the window.
+    pub(crate) quit_confirmed: bool,
+    /// Source monitor playback ([`source_play`]).
+    pub(crate) source_play: Option<source_play::SourcePlay>,
     /// BS.1770 loudness of the programme as it plays, and the next sample position to feed.
     pub(crate) loudness: Option<(filmcraft_audio_dsp::LoudnessMeter, i64)>,
     /// Status message last shown and when it first appeared (messages expire after a few seconds).
@@ -215,7 +226,7 @@ pub struct GpuState {
 fn plan_side(plan: &filmcraft_render::plan::FramePlan) -> usize {
     use filmcraft_render::plan::FramePlan;
     match plan {
-        FramePlan::Layers { width, height, layers } => {
+        FramePlan::Layers { width, height, layers, .. } => {
             layers.iter().map(|l| l.frame.width.max(l.frame.height) as usize).fold((*width).max(*height), usize::max)
         }
         FramePlan::Image(img) => img.w.max(img.h),
@@ -262,6 +273,11 @@ impl FilmcraftApp {
         match made {
             Ok(compositor) if !broken.load(std::sync::atomic::Ordering::Relaxed) => {
                 let max_texture = rs.device.limits().max_texture_dimension_2d;
+                // exports render on the same device, with a compositor of their own
+                let export = gpu_export::GpuExportRenderer::new(&rs.device, &rs.queue, broken.clone());
+                filmcraft_engine::export::register_renderer(
+                    export.map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn filmcraft_engine::export::FrameRenderer>),
+                );
                 self.gpu = Some(GpuState { render_state: rs, compositor, texture: None, last_key: None, size: (0, 0), last_ms: 0.0, broken, max_texture });
             }
             _ => log::error!("GPU compositor failed to initialise; compositing on the CPU"),
@@ -276,7 +292,7 @@ impl FilmcraftApp {
         {
             g.render_state.renderer.write().free_texture(&id);
         }
-        self.ui.status = "Graphics problem: switched to software compositing".into();
+        self.ui.status = crate::i18n::t("Graphics problem: switched to software compositing", "グラフィックの問題: ソフトウェア合成に切り替えました").into();
     }
 
     /// Composite a plan on the GPU and return the egui texture showing it.
@@ -343,6 +359,9 @@ impl FilmcraftApp {
             deferred: Vec::new(),
             last_ui_time: 0.0,
             synthetic: Vec::new(),
+            control_input: None,
+            quit_confirmed: false,
+            source_play: None,
             loudness: None,
             status_seen: (String::new(), 0.0),
             pending_screenshots: Vec::new(),
@@ -420,6 +439,7 @@ impl FilmcraftApp {
         }
         let p = self.session.prefs.clone();
         let prev = self.applied_prefs.take();
+        i18n::set_language(i18n::Language::from_pref(&p.appearance.language, i18n::system_language().as_deref()));
         if prev.as_ref().is_none_or(|q| q.appearance != p.appearance || q.general.show_tool_tips != p.general.show_tool_tips) {
             self.set_theme(ctx, ThemeKind::from_pref(&p.appearance.color_theme));
         }
@@ -486,6 +506,7 @@ impl FilmcraftApp {
         if self.session.active_sequence().is_none() {
             return;
         }
+        self.stop_source();
         // restart from the end → from the start (Settings ▸ Timeline ▸ "At playback end, return to
         // beginning when restarting playback")
         let dur = self.session.active_sequence().map(|q| q.duration()).unwrap_or_default();
@@ -767,7 +788,7 @@ impl FilmcraftApp {
                     .iter()
                     .chain(filmcraft_media::AUDIO_EXTENSIONS)
                     .chain(filmcraft_media::STILL_EXTENSIONS)
-                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf"])
+                    .chain(&["srt", "vtt", "scc", "edl", "xml", "fcpxml", "otio", "aaf", "omf", "wfp"])
                     .copied()
                     .collect();
                 let paths = self.hooks.pick_files.as_mut().map(|f| f(&exts)).unwrap_or_default();
@@ -833,18 +854,45 @@ impl FilmcraftApp {
         }
     }
 
-    /// Import dropped files.
+    /// Files dropped on the window: media and folders (their media files) are imported, a
+    /// project file opens (asking about unsaved changes first); what failed is reported. (A
+    /// folder failed with "access denied", a project file as "unsupported media", and errors
+    /// were dropped silently.)
     fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        let mut paths = Vec::new();
+        let mut media = Vec::new();
+        let mut project = None;
         for f in dropped {
             let p = f.path();
-            if p.exists() {
-                paths.push(p.to_string_lossy().to_string());
+            if !p.exists() {
+                continue;
+            }
+            let is_project = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcproj"));
+            let path = p.to_string_lossy().to_string();
+            if is_project {
+                project.get_or_insert(path);
+            } else {
+                media.push(path);
             }
         }
-        if !paths.is_empty() {
-            let _ = self.session.execute("file.import", json!({"paths": paths}));
+        if !media.is_empty() {
+            match self.session.execute("mediaBrowser.import", json!({"paths": media})) {
+                Ok(v) => {
+                    let n = v["items"].as_array().map_or(0, Vec::len);
+                    let errors: Vec<&str> = v["errors"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                    self.ui.status = if errors.is_empty() {
+                        crate::tf!("Imported {n} item(s)", "{n} 個の項目を読み込みました")
+                    } else {
+                        crate::tf!("Imported {n} item(s); could not import: {}", "{n} 個の項目を読み込みました。読み込めなかったもの: {}", errors.join("; "))
+                    };
+                }
+                Err(e) => self.ui.status = e.to_string(),
+            }
+        }
+        if let Some(path) = project
+            && let Err(e) = menus::invoke(self, ctx, "file.open", json!({"path": path}))
+        {
+            self.ui.status = e;
         }
     }
 
@@ -859,7 +907,20 @@ impl FilmcraftApp {
                 hook(&items);
             }
         }
-        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) {
+        // A text layer being typed on the Program monitor owns the keys, including in the pass that
+        // starts the edit: shortcuts run before the panels take focus, so a first key (or an input
+        // method's) would otherwise fire a single-key tool shortcut.
+        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) || (self.ui.gfx_edit.is_some() && self.ui.focused == PanelKind::Program) {
+            return;
+        }
+        // A dialog is open (a modal such as Recover Unsaved Changes, or a command's dialog): keys
+        // go to it, not to the panels behind (Space started playback, Delete removed clips)
+        if ctx.memory(|m| m.top_modal_layer()).is_some()
+            || self.dialog.is_some()
+            || self.ui.clip_dialog.is_some()
+            || self.ui.extras.dialog.is_some()
+            || self.ui.color_dialog.is_some()
+        {
             return;
         }
         // Esc cancels a dynamic trim in progress
@@ -879,6 +940,17 @@ impl FilmcraftApp {
             }
         });
         for id in fire {
+            // The Source monitor's own playhead and clip markers when it has focus (these moved
+            // the sequence's playhead and added sequence markers)
+            if self.ui.focused == PanelKind::Source
+                && self.session.state.source_item.is_some()
+                && let Some(r) = crate::panels::monitor::source_key(self, &id)
+            {
+                if let Err(e) = r {
+                    self.ui.status = e;
+                }
+                continue;
+            }
             // Mark In/Out in the Source monitor when it has focus.
             let params = if self.ui.focused == PanelKind::Source
                 && (matches!(id.as_str(), "markers.markIn" | "markers.markOut") || id.starts_with("markers.markSplit") || id.starts_with("markers.goToSplit"))
@@ -1042,6 +1114,7 @@ impl FilmcraftApp {
         }
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
+        self.advance_source_playback(&ctx);
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
@@ -1107,7 +1180,11 @@ impl FilmcraftApp {
         let p = ui.painter();
         p.rect_filled(bar, 3.0, t.separator);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * f, bar.height())), 3.0, t.accent);
-        let verb = if job.label.starts_with("Rendering") { job.label.clone() } else { "Exporting".to_string() };
+        let verb = match (job.label.starts_with("Rendering"), crate::i18n::is_japanese()) {
+            (true, false) => job.label.clone(),
+            (true, true) => crate::i18n::t("Rendering", "レンダリング中").to_string(),
+            (false, _) => crate::i18n::t("Exporting", "書き出し中").to_string(),
+        };
         p.text(egui::pos2(bar.min.x - 8.0, sb.center().y), egui::Align2::RIGHT_CENTER, format!("{verb}… {:.0}%", f * 100.0), Tokens::ui(11.0), t.text_dim);
         let resp = ui.interact(cancel, egui::Id::new(("job-cancel", job.id)), egui::Sense::click());
         let c = if resp.hovered() { t.hot_text } else { t.text_dim };
@@ -1116,7 +1193,7 @@ impl FilmcraftApp {
         p.line_segment([cancel.center() + egui::vec2(-k, k), cancel.center() + egui::vec2(k, -k)], egui::Stroke::new(1.4, c));
         self.auto.add("status.job.cancel", cancel, &format!("Cancel {}", job.label));
         self.auto.add("status.job.progress", bar, &format!("{:.0}%", f * 100.0));
-        if resp.on_hover_text("Cancel").clicked() {
+        if resp.on_hover_text(crate::i18n::t("Cancel", "キャンセル")).clicked() {
             job.progress.cancel.store(true, Ordering::Relaxed);
             self.watched_render = None;
         }
@@ -1124,22 +1201,7 @@ impl FilmcraftApp {
 
     /// Contextual hint for the status bar (Premiere shows tool/gesture hints here).
     fn hint_text(&self) -> String {
-        match self.ui.tool {
-            state::Tool::Selection => "Click to select, or click in empty space and drag to marquee select. Use Shift, Opt, and Cmd for other options.",
-            state::Tool::TrackSelectForward => "Click to select all clips to the right in all tracks. Shift-click for a single track.",
-            state::Tool::TrackSelectBackward => "Click to select all clips to the left in all tracks. Shift-click for a single track.",
-            state::Tool::Ripple => "Drag an edit point to ripple trim; later clips move to keep the gap closed.",
-            state::Tool::Rolling => "Drag an edit point to roll it: the out of one clip and the in of the next move together.",
-            state::Tool::RateStretch => "Drag an edge to change the clip's speed so it fills the new duration.",
-            state::Tool::Remix => "Drag the edge of a music clip to remix it to the new duration at musically matching beats.",
-            state::Tool::Razor => "Click to split a clip. Shift-click to split all tracks.",
-            state::Tool::Slip => "Drag a clip to slip its source in/out without moving it.",
-            state::Tool::Slide => "Drag a clip to slide it between its neighbours.",
-            state::Tool::Hand => "Drag to scroll the timeline.",
-            state::Tool::Zoom => "Click to zoom in; Opt-click to zoom out.",
-            _ => "",
-        }
-        .to_string()
+        crate::i18n::tr_hint(self.ui.tool).to_string()
     }
 
     fn dock_area(&mut self, ui: &mut egui::Ui, body: egui::Rect) {
@@ -1188,26 +1250,33 @@ impl FilmcraftApp {
     fn error_window(&mut self, ctx: &egui::Context) {
         let Some(msg) = self.ui_error.clone() else { return };
         let mut close = false;
-        egui::Window::new("FilmCraft hit an error").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.set_max_width(460.0);
-            ui.label("Something went wrong while drawing the window. Your project is still open; save it to be safe.");
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(&msg).monospace().small());
-            if let Some(p) = crash::log_path() {
-                ui.label(egui::RichText::new(format!("Details: {}", p.display())).small());
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let s = ui.button("Save Project");
-                self.auto.add("error.save", s.rect, "Save Project");
-                if s.clicked() {
-                    let _ = crate::menus::invoke(self, ctx, "file.save", serde_json::json!({}));
+        egui::Window::new(crate::i18n::t("FilmCraft hit an error", "FilmCraft でエラーが発生しました"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                ui.label(crate::i18n::t(
+                    "Something went wrong while drawing the window. Your project is still open; save it to be safe.",
+                    "ウィンドウの描画中に問題が発生しました。プロジェクトは開いたままです。安全のため保存してください。",
+                ));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(&msg).monospace().small());
+                if let Some(p) = crash::log_path() {
+                    ui.label(egui::RichText::new(crate::tf!("Details: {}", "詳細: {}", p.display())).small());
                 }
-                let d = ui.button("Continue");
-                self.auto.add("error.dismiss", d.rect, "Continue");
-                close |= d.clicked();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let s = ui.button(crate::i18n::t("Save Project", "プロジェクトを保存"));
+                    self.auto.add("error.save", s.rect, "Save Project");
+                    if s.clicked() {
+                        let _ = crate::menus::invoke(self, ctx, "file.save", serde_json::json!({}));
+                    }
+                    let d = ui.button(crate::i18n::t("Continue", "続行"));
+                    self.auto.add("error.dismiss", d.rect, "Continue");
+                    close |= d.clicked();
+                });
             });
-        });
         if close {
             self.ui_error = None;
         }
@@ -1229,6 +1298,13 @@ impl eframe::App for FilmcraftApp {
                     .map_or(self.synthetic.len(), |i| if pointer(&self.synthetic[i]) { i.max(1) } else { i + 1 })
             };
             raw_input.events.extend(self.synthetic.drain(..n));
+            self.control_input = Some(web_time::Instant::now());
+        }
+        // Agents drive the app while another window has the OS focus; egui ignores keys and text
+        // for an unfocused window (a text field clicked through the control channel never got
+        // `ui.type`). Control input counts as focusing the window, for a moment.
+        if self.control_input.is_some_and(|t| t.elapsed().as_secs_f32() < 1.0) {
+            raw_input.focused = true;
         }
     }
 
@@ -1281,6 +1357,12 @@ impl eframe::App for FilmcraftApp {
             ui.ctx().request_repaint();
             return;
         }
+        // Closing the window with unsaved changes asks first (Save / Don't Save / Cancel).
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_confirmed && self.session.is_dirty() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            crate::panels::clip_dialogs::open_quit_prompt(self);
+        }
         // No frame worker threads on the web: render queued frames here, within a time budget
         // that leaves room for the UI pass (a no-op where workers run).
         self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 }));
@@ -1314,12 +1396,18 @@ mod gpu_fallback_tests {
     #[test]
     fn plan_side_covers_output_and_every_layer() {
         let frame = |w: u32, h: u32| std::sync::Arc::new(filmcraft_frame::VideoFrame::rgba_f32(w, h, vec![0.0; (w * h * 4) as usize]));
-        let layer =
-            |w, h| PlanLayer { frame: frame(w, h), matrix: filmcraft_geom::Affine::IDENTITY, opacity: 1.0, blend: filmcraft_render::Blend::Normal, fx: None };
+        let layer = |w, h| PlanLayer {
+            frame: frame(w, h),
+            matrix: filmcraft_geom::Affine::IDENTITY,
+            opacity: 1.0,
+            blend: filmcraft_render::Blend::Normal,
+            fx: None,
+            is_adjustment: false,
+        };
         // a 4K source in an HD sequence still needs a 3840-wide texture on the GPU
-        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![layer(64, 64), layer(3840, 2160)] };
+        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![layer(64, 64), layer(3840, 2160)], color: Default::default() };
         assert_eq!(super::plan_side(&p), 3840);
-        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![] };
+        let p = FramePlan::Layers { width: 1920, height: 1080, layers: vec![], color: Default::default() };
         assert_eq!(super::plan_side(&p), 1920);
         let p = FramePlan::Image(filmcraft_render::Image::new(800, 4000));
         assert_eq!(super::plan_side(&p), 4000);

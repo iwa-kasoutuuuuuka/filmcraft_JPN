@@ -46,6 +46,17 @@ pub fn temp_path(out: &Path) -> PathBuf {
     out.with_file_name(name)
 }
 
+/// Move a finished temporary fixture into place. Another test process may have published the same
+/// fixture first: on Windows the rename then fails ("access denied" while that process reads it)
+/// instead of replacing it, so an existing `out` counts as success and `tmp` is dropped.
+pub fn publish(tmp: &Path, out: &Path) -> bool {
+    if std::fs::rename(tmp, out).is_ok() {
+        return true;
+    }
+    let _ = std::fs::remove_file(tmp);
+    std::fs::metadata(out).is_ok_and(|m| m.len() > 0)
+}
+
 /// Return `out` if it already exists (non-empty); otherwise run `make(tmp)` on a [`temp_path`]
 /// and atomically rename the result into place. Concurrent generators race harmlessly.
 /// `None` when `make` reports failure (the temporary file is removed).
@@ -61,8 +72,7 @@ pub fn generate(out: &Path, make: impl FnOnce(&Path) -> bool) -> Option<PathBuf>
         let _ = std::fs::remove_file(&tmp);
         return None;
     }
-    std::fs::rename(&tmp, out).ok()?;
-    Some(out.to_path_buf())
+    publish(&tmp, out).then(|| out.to_path_buf())
 }
 
 /// Status of one fixture for `cargo xtask fixtures`.

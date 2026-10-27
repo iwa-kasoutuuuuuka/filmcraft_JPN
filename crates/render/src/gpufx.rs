@@ -9,12 +9,12 @@
 //! op to the GPU when [`FxOp::gpu_ok`] says the shader covers it (finite numbers, no minifying
 //! resample), otherwise the clip is rendered on the CPU as before.
 
-use filmcraft_color::{hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
+use filmcraft_color::{GradeSpace, hsl_to_rgb, linear_to_srgb, luma709, rgb_to_hsl};
 use filmcraft_geom::Affine;
 use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
-use crate::effects::{FxCtx, b, choice, color, dec, enc, f, gaussian_boxes, point};
+use crate::effects::{FxCtx, b, choice, color, curve_param, dec, enc, f, gaussian_boxes, is_identity_curve, on, point, text, wheel_rgb};
 use crate::image::Image;
 
 /// A bilinear resample of the working image through an affine map (`Image::transformed` at a
@@ -161,10 +161,300 @@ pub enum FxOp {
         invert: bool,
         mask_only: bool,
     },
+    /// Solid blocks `bw` × `bh` pixels, each the picture's colour at the block's centre.
+    Mosaic {
+        bw: f32,
+        bh: f32,
+    },
+    /// Blend towards `target` (sRGB-encoded) by `amount` times a soft edge mask.
+    Vignette {
+        amount: f32,
+        mid: f32,
+        round: f32,
+        feather: f32,
+        target: [f32; 3],
+    },
+    Lumetri {
+        temp: f32,
+        tint: f32,
+        exposure: f32,
+        contrast: f32,
+        hl: f32,
+        sh: f32,
+        wh: f32,
+        bl: f32,
+        sat: f32,
+        vib: f32,
+        faded: f32,
+        va: f32,
+        vmid: f32,
+        vround: f32,
+        vfeather: f32,
+        aspect: f32,
+        /// Split tone, Look, color wheels and curves (`None`: none of them is in use).
+        extra: Option<Box<LumetriExtra>>,
+        /// HDR working spaces (`None`: SDR).
+        hdr: Option<LumetriHdr>,
+    },
+    /// Color Key.
+    Key(crate::effects::Key),
+    /// Video Limiter.
+    VideoLimiter(VideoLimiter),
+    /// Ultra Key: matte, Choke / Soften blurs of it, then the foreground.
+    UltraKey(Box<UltraKey>),
+    /// Luma Key: threshold and cutoff (display-encoded luma).
+    LumaKey {
+        th: f32,
+        cut: f32,
+    },
+    /// Lumetri ▸ HSL Secondary: key, refine (median, blur), correct (or show the mask).
+    HslSecondary(Box<crate::effects::HslSecondary>),
+    /// Several operations of one effect, in order (Lumetri, then its Sharpen).
+    Chain(Vec<FxOp>),
+    /// Noise, Drop Shadow, the warps, stylize and Generate effects ([`crate::gpufx_ext`]).
+    Ext(crate::gpufx_ext::ExtOp),
+    /// Lights & Glows, Turbulent Displace, Median, Channel Blur, Roughen Edges… ([`crate::gpufx_more`]).
+    More(Box<crate::gpufx_more::MoreOp>),
 }
+
+/// Samples of each curve table in [`LumetriExtra`] (as the CPU grade samples them).
+pub const CURVE_N: usize = 1024;
+
+/// The per-pixel parts of Lumetri beyond Basic: Creative split tone and procedural Look, the
+/// color wheels, the RGB curves and the hue / saturation / luma curves.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LumetriExtra {
+    /// Shadow and highlight tint, each minus 0.5 (applied before saturation).
+    pub split: Option<[f32; 6]>,
+    /// Procedural Look (1…8) and its intensity.
+    pub look: u32,
+    pub look_k: f32,
+    /// Wheel offsets (shadows, midtones, highlights RGB) then the three luma sliders.
+    pub wheels: Option<[f32; 12]>,
+    /// [`CURVE_N`]-sample tables: luma, red, green, blue, hue vs sat, hue vs hue, hue vs luma,
+    /// luma vs sat, sat vs sat.
+    pub curves: [Option<Vec<f32>>; 9],
+    /// Basic ▸ Input LUT (applied first) and Creative ▸ Look LUT (instead of the procedural Look).
+    pub input_lut: Option<std::sync::Arc<filmcraft_color::Lut>>,
+    pub look_lut: Option<std::sync::Arc<filmcraft_color::Lut>>,
+}
+
+/// Header floats of [`LumetriExtra::packed`] before the curve tables.
+const HEADER: usize = 72;
+/// Where the HDR grade spaces go in the header ([`LumetriHdr::pack`]).
+const HDR_AT: usize = 64;
+
+/// Lumetri in an HDR working space: the grading signals of Basic Correction (HDR White) and of
+/// the curves / wheels / Looks (HDR Range), and HDR Specular.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LumetriHdr {
+    pub basic: GradeSpace,
+    pub advanced: GradeSpace,
+    pub specular: f32,
+}
+
+impl LumetriHdr {
+    /// The GPU's code of a grade space (0 SDR, 1 PQ, 2 HLG) and its two parameters (PQ: the
+    /// normalisation; HLG: HDR White and the system gamma).
+    pub fn code(gs: GradeSpace) -> (u32, [f32; 2]) {
+        match gs {
+            GradeSpace::Sdr => (0, [0.0; 2]),
+            GradeSpace::Pq { norm, .. } => (1, [norm, 0.0]),
+            GradeSpace::Hlg { white, gamma } => (2, [white, gamma]),
+        }
+    }
+
+    /// The grade spaces' codes (Basic, Advanced) and the header floats at `HDR_AT`: specular,
+    /// the BT.2020 luma weights, the Basic then the Advanced parameters.
+    pub fn pack(&self, d: &mut Vec<f32>) -> [u32; 2] {
+        if d.len() < HEADER {
+            d.resize(HEADER, 0.0);
+        }
+        let (bm, bp) = Self::code(self.basic);
+        let (am, ap) = Self::code(self.advanced);
+        let l = luma2020();
+        let v = [self.specular, l[0], l[1], l[2], bp[0], bp[1], ap[0], ap[1]];
+        if let Some(dst) = d.get_mut(HDR_AT..HDR_AT + v.len()) {
+            dst.copy_from_slice(&v);
+        }
+        [bm, am]
+    }
+
+    fn finite(&self) -> bool {
+        let (_, b) = Self::code(self.basic);
+        let (_, a) = Self::code(self.advanced);
+        b.iter().chain(&a).all(|v| v.is_finite()) && self.specular.is_finite()
+    }
+}
+
+/// BT.2020 luma weights (the HLG grading signal's OOTF).
+pub fn luma2020() -> [f32; 3] {
+    let l = filmcraft_color::Gamut::Bt2020.luma();
+    [l[0] as f32, l[1] as f32, l[2] as f32]
+}
+/// Where the two LUT descriptions start in the header (18 floats each).
+const LUT_SLOTS: [usize; 2] = [24, 42];
+
+/// Whether the GPU pass can run a LUT: tables of at least two entries, finite values and domains.
+fn lut_ok(l: &filmcraft_color::Lut) -> bool {
+    let fin = |v: &[f32]| v.iter().all(|x| x.is_finite());
+    let dom = |lo: &[f32; 3], hi: &[f32; 3]| fin(lo) && fin(hi) && (0..3).all(|k| hi[k] != lo[k]);
+    (l.shaper.is_some() || l.cube.is_some())
+        && l.shaper.as_ref().is_none_or(|s| s.data.len() >= 2 && dom(&s.domain_min, &s.domain_max) && s.data.iter().all(|v| fin(v)))
+        && l.cube.as_ref().is_none_or(|c| c.size >= 2 && c.data.len() == c.size.pow(3) && dom(&c.domain_min, &c.domain_max) && c.data.iter().all(|v| fin(v)))
+}
+
+impl LumetriExtra {
+    /// Flags (bit 0 split tone, bit 1 wheels, bit 2 + k curve k, bit 11 input LUT, bit 12 look LUT)
+    /// and the data the GPU pass reads: 72 header floats (split tone at 0, wheels at 8, look
+    /// intensity at 20, the two LUT descriptions at 24 and 42, the HDR block at 64), the curve
+    /// tables at `HEADER + k * CURVE_N`, then the LUT tables.
+    pub fn packed(&self) -> (u32, Vec<f32>) {
+        let mut flags = 0u32;
+        let mut d = vec![0f32; HEADER + 9 * CURVE_N];
+        if let Some(s) = self.split {
+            flags |= 1;
+            d[..6].copy_from_slice(&s);
+        }
+        if let Some(wh) = self.wheels {
+            flags |= 2;
+            d[8..20].copy_from_slice(&wh);
+        }
+        d[20] = self.look_k;
+        for (k, c) in self.curves.iter().enumerate() {
+            if let Some(t) = c.as_ref().filter(|t| t.len() == CURVE_N) {
+                flags |= 4 << k;
+                d[HEADER + k * CURVE_N..HEADER + (k + 1) * CURVE_N].copy_from_slice(t);
+            }
+        }
+        // a LUT slot: has shaper, shaper size, shaper offset, shaper domain (6), cube size, cube
+        // offset, cube domain (6)
+        for (slot, (lut, bit)) in [(&self.input_lut, 11u32), (&self.look_lut, 12u32)].into_iter().enumerate() {
+            let Some(l) = lut.as_ref().filter(|l| lut_ok(l)) else { continue };
+            flags |= 1 << bit;
+            let at = LUT_SLOTS[slot];
+            if let Some(s) = &l.shaper {
+                d[at] = 1.0;
+                d[at + 1] = s.data.len() as f32;
+                d[at + 2] = d.len() as f32;
+                d[at + 3..at + 6].copy_from_slice(&s.domain_min);
+                d[at + 6..at + 9].copy_from_slice(&s.domain_max);
+                d.extend(s.data.iter().flatten());
+            }
+            if let Some(cube) = &l.cube {
+                d[at + 9] = cube.size as f32;
+                d[at + 10] = d.len() as f32;
+                d[at + 11..at + 14].copy_from_slice(&cube.domain_min);
+                d[at + 14..at + 17].copy_from_slice(&cube.domain_max);
+                d.extend(cube.data.iter().flatten());
+            }
+        }
+        (flags, d)
+    }
+
+    fn finite(&self) -> bool {
+        let fin = |v: &[f32]| v.iter().all(|x| x.is_finite());
+        self.split.is_none_or(|s| fin(&s))
+            && self.wheels.is_none_or(|w| fin(&w))
+            && self.look_k.is_finite()
+            && self.look <= 8
+            && self.curves.iter().flatten().all(|t| t.len() == CURVE_N && fin(t))
+            && self.input_lut.as_ref().is_none_or(|l| lut_ok(l))
+            && self.look_lut.as_ref().is_none_or(|l| lut_ok(l))
+    }
+
+    /// Whether the Advanced stage has anything to do.
+    fn has_advanced(&self) -> bool {
+        self.look > 0 || self.look_lut.is_some() || self.wheels.is_some() || self.curves.iter().any(Option::is_some)
+    }
+
+    /// The Advanced stage of the CPU grade (`effects::lumetri_advanced`) on a grading signal,
+    /// after the Basic stage (`hdr`: an HDR signal, whose values above 1 are kept).
+    fn advanced(&self, mut v: [f32; 3], hdr: bool) -> [f32; 3] {
+        use crate::effects::within_unit;
+        let sample = |l: &Vec<f32>, x: f32| {
+            // above HDR White a curve continues with slope 1 from its end point
+            if hdr && x > 1.0 {
+                return l.last().copied().unwrap_or(0.0) + (x - 1.0);
+            }
+            let p = x.clamp(0.0, 1.0) * (CURVE_N - 1) as f32;
+            let i = p as usize;
+            let j = (i + 1).min(CURVE_N - 1);
+            l[i] + (l[j] - l[i]) * (p - i as f32)
+        };
+        if let Some(l) = &self.look_lut {
+            let lk = within_unit(v, hdr, |u| l.apply(u));
+            v = [v[0] + (lk[0] - v[0]) * self.look_k, v[1] + (lk[1] - v[1]) * self.look_k, v[2] + (lk[2] - v[2]) * self.look_k];
+        } else if self.look > 0 {
+            let lk = if hdr { within_unit(v, true, |u| crate::effects::apply_look(self.look, u)) } else { crate::effects::apply_look(self.look, v) };
+            v = [v[0] + (lk[0] - v[0]) * self.look_k, v[1] + (lk[1] - v[1]) * self.look_k, v[2] + (lk[2] - v[2]) * self.look_k];
+        }
+        if let Some(w) = self.wheels {
+            let l = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+            let wsh = (1.0 - l).powi(2);
+            let whi = l * l;
+            let wmid = (1.0 - wsh - whi).max(0.0);
+            for k in 0..3 {
+                v[k] += (w[k] * 0.3 + w[9] * 0.3) * wsh;
+                v[k] += (w[3 + k] * 0.3 + w[10] * 0.3) * wmid;
+                v[k] *= 1.0 + (w[6 + k] * 0.5 + w[11] * 0.5) * whi;
+            }
+        }
+        let [luma, red, green, blue, hvs, hvh, hvl, lvs, svs] = &self.curves;
+        if let Some(l) = luma {
+            v = v.map(|q| sample(l, q));
+        }
+        if let Some(l) = red {
+            v[0] = sample(l, v[0]);
+        }
+        if let Some(l) = green {
+            v[1] = sample(l, v[1]);
+        }
+        if let Some(l) = blue {
+            v[2] = sample(l, v[2]);
+        }
+        if hvs.is_some() || hvh.is_some() || hvl.is_some() || lvs.is_some() || svs.is_some() {
+            v = within_unit(v, hdr, |u| {
+                let mut hsl = filmcraft_color::rgb_to_hsl(u[0], u[1], u[2]);
+                let (h0, s0, l0) = (hsl[0], hsl[1], hsl[2]);
+                if let Some(t) = hvh {
+                    hsl[0] = (hsl[0] + (sample(t, h0) - 0.5)).rem_euclid(1.0);
+                }
+                let mut sm = 1.0;
+                if let Some(t) = hvs {
+                    sm *= sample(t, h0) * 2.0;
+                }
+                if let Some(t) = lvs {
+                    sm *= sample(t, l0) * 2.0;
+                }
+                if let Some(t) = svs {
+                    sm *= sample(t, s0) * 2.0;
+                }
+                hsl[1] = (hsl[1] * sm).clamp(0.0, 1.0);
+                if let Some(t) = hvl {
+                    hsl[2] = (hsl[2] + (sample(t, h0) - 0.5) * 0.5).clamp(0.0, 1.0);
+                }
+                filmcraft_color::hsl_to_rgb(hsl[0], hsl[1], hsl[2])
+            });
+        }
+        v
+    }
+}
+
+pub use crate::vfx::color::{UltraKey, VideoLimiter};
+
+/// Widest HSL Secondary denoise median the GPU pass takes (radius in px; 7 × 7 window).
+pub const HSL_MEDIAN_MAX: usize = 3;
 
 /// Effect ids [`FxOp::eval`] understands (the GPU-capable standard effects).
 pub const GPU_EFFECTS: &[&str] = &[
+    "lumetri",
+    "ultra_key",
+    "color_key",
+    "luma_key",
+    "video_limiter",
+    "mosaic",
+    "vignette",
     "brightness_contrast",
     "proc_amp",
     "tint",
@@ -196,10 +486,48 @@ pub const GPU_EFFECTS: &[&str] = &[
     "channel_mix",
     "color_replace",
     "alpha_adjust",
+    "mosaic_legacy",
+    // `gpufx_ext::EXT_EFFECTS`
+    "noise",
+    "noise_legacy",
+    "drop_shadow",
+    "corner_pin",
+    "lens_distortion",
+    "twirl",
+    "twirl_legacy",
+    "wave_warp",
+    "spherize",
+    "basic_3d",
+    "magnify",
+    "magnify_legacy",
+    "find_edges",
+    "emboss",
+    "bevel_alpha",
+    "replicate",
+    "strobe",
+    "ramp",
+    "four_color_gradient",
+    "circle",
+    "grid",
+    // GPU4: `gpufx_more::MORE_EFFECTS`, and Reduce Interlace Flicker (a vertical Gaussian)
+    "lens_flare",
+    "rgb_split",
+    "lighting_effects",
+    "color_emboss",
+    "rounded_crop",
+    "gradient",
+    "light_leaks",
+    "turbulent_displace",
+    "median",
+    "channel_blur",
+    "alpha_glow",
+    "edge_glow",
+    "roughen_edges",
+    "reduce_interlace_flicker",
 ];
 
 /// `Image::transformed` without the mip path: the destination rectangle it writes and the inverse.
-fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
+pub(crate) fn resample(w: usize, h: usize, m: &Affine, opacity: f32) -> Resample {
     let Some(inv) = m.inverse() else { return Resample { inv: None, rect: [0; 4], opacity } };
     let b = m.bounds(&filmcraft_geom::Rect::new(0.0, 0.0, w as f64, h as f64));
     let y0 = (b.y.floor().max(0.0) as usize).min(h);
@@ -294,6 +622,12 @@ impl FxOp {
                 let dims = choice(e, "dimensions");
                 let (rx, ry) = gaussian_boxes(w, h, if dims == 2 { 0.0 } else { r }, if dims == 1 { 0.0 } else { r });
                 FxOp::Gaussian { rx, ry, repeat: b(e, "repeat_edge") }
+            }
+            "reduce_interlace_flicker" => {
+                // a vertical-only softening across fields (`effects::gaussian(img, 0, s, true)`)
+                let s = crate::vfx::fv(e, "softness", cx) * cx.px_scale.max(0.25);
+                let (rx, ry) = gaussian_boxes(w, h, 0.0, s);
+                FxOp::Gaussian { rx, ry, repeat: true }
             }
             "camera_blur" => {
                 let r = f(e, "percent", cx) * cx.px_scale * 0.3;
@@ -415,7 +749,123 @@ impl FxOp {
                 use crate::vfx::{bv, fv};
                 FxOp::AlphaAdjust { opacity: fv(e, "opacity", cx) / 100.0, ignore: bv(e, "ignore"), invert: bv(e, "invert"), mask_only: bv(e, "mask_only") }
             }
-            _ => return None,
+            "lumetri" => {
+                let (basic_on, creative_on, vignette_on) = (on(e, "basic_on"), on(e, "creative_on"), on(e, "vignette_on"));
+                let (curves_on, wheels_on) = (on(e, "curves_on"), on(e, "wheels_on"));
+                // Input / Look LUTs (as `effects::lumetri` resolves them; a LUT that does not resolve
+                // is not applied there either)
+                let input_lut = if basic_on { crate::luts::resolve(cx.project, text(e, "input_lut")) } else { None };
+                let look_lut = if creative_on { crate::luts::resolve(cx.project, text(e, "look_lut")) } else { None };
+                // HSL Secondary: its own passes after the grade (a median wider than 3 px stays on
+                // the CPU)
+                let hsl = crate::effects::HslSecondary::from_effect(e, cx);
+                if hsl.as_ref().is_some_and(|h| h.median_r > HSL_MEDIAN_MAX || h.show_mask > 3) {
+                    return None;
+                }
+                // Creative ▸ Sharpen: an unsharp mask after the grade (as `effects::lumetri`)
+                let sharpen = if creative_on { f(e, "sharpen", cx) / 100.0 } else { 0.0 };
+                // HDR working spaces: the grading signals and HDR Specular (`effects::lumetri`)
+                let hdr = (cx.working != filmcraft_color::WorkingSpace::Rec709).then(|| LumetriHdr {
+                    basic: GradeSpace::new(cx.working, f(e, "hdr_white", cx)),
+                    advanced: GradeSpace::new(cx.working, f(e, "curves_hdr_range", cx)),
+                    specular: if basic_on { f(e, "hdr_specular", cx) / 100.0 } else { 0.0 },
+                });
+                let split = creative_on
+                    .then(|| {
+                        let (st, ht) = (color(e, "shadow_tint", cx), color(e, "highlight_tint", cx));
+                        [st[0] - 0.5, st[1] - 0.5, st[2] - 0.5, ht[0] - 0.5, ht[1] - 0.5, ht[2] - 0.5]
+                    })
+                    .filter(|s| s.iter().any(|v| v.abs() > 1e-4));
+                let look = if creative_on && look_lut.is_none() { choice(e, "look") } else { 0 };
+                let wheels = wheels_on
+                    .then(|| {
+                        let v2 = |id: &str| e.param(id).map(|p| p.vec2_at(cx.t)).unwrap_or_default();
+                        let (ws, wm, wh) = (wheel_rgb(v2("wheel_shadows")), wheel_rgb(v2("wheel_midtones")), wheel_rgb(v2("wheel_highlights")));
+                        let l = |id: &str| f(e, id, cx) / 100.0;
+                        [ws[0], ws[1], ws[2], wm[0], wm[1], wm[2], wh[0], wh[1], wh[2], l("wheel_shadows_l"), l("wheel_midtones_l"), l("wheel_highlights_l")]
+                    })
+                    .filter(|w| w[..9].iter().any(|v| v.abs() > 1e-5) || w[9].abs() + w[10].abs() + w[11].abs() > 1e-5);
+                let rgb = |id: &str| curve_param(e, id).filter(|c| curves_on && !is_identity_curve(c)).map(|c| crate::effects::curve_lut(&c, CURVE_N));
+                let hue = |id: &str| curve_param(e, id).filter(|_| curves_on).and_then(|c| crate::effects::hue_lut(&c, CURVE_N));
+                let curves = [
+                    rgb("curve_luma"),
+                    rgb("curve_red"),
+                    rgb("curve_green"),
+                    rgb("curve_blue"),
+                    hue("hue_vs_sat"),
+                    hue("hue_vs_hue"),
+                    hue("hue_vs_luma"),
+                    hue("luma_vs_sat"),
+                    hue("sat_vs_sat"),
+                ];
+                let extra =
+                    (split.is_some() || look > 0 || wheels.is_some() || curves.iter().any(Option::is_some) || input_lut.is_some() || look_lut.is_some())
+                        .then(|| Box::new(LumetriExtra { split, look, look_k: f(e, "look_intensity", cx) / 100.0, wheels, curves, input_lut, look_lut }));
+                let bf = |id: &str| if basic_on { f(e, id, cx) } else { 0.0 };
+                let sat = (if basic_on { f(e, "saturation", cx) / 100.0 } else { 1.0 }) * (if creative_on { f(e, "creative_sat", cx) / 100.0 } else { 1.0 });
+                let va = if vignette_on { f(e, "vignette_amount", cx) } else { 0.0 };
+                let aspect = (w as f32) / (h as f32).max(1.0);
+                let grade = FxOp::Lumetri {
+                    temp: bf("temperature") / 100.0,
+                    tint: bf("tint") / 100.0,
+                    exposure: 2f32.powf(bf("exposure")),
+                    contrast: bf("contrast") / 100.0,
+                    hl: bf("highlights") / 100.0,
+                    sh: bf("shadows") / 100.0,
+                    wh: bf("whites") / 100.0,
+                    bl: bf("blacks") / 100.0,
+                    sat,
+                    vib: if creative_on { f(e, "vibrance", cx) / 100.0 } else { 0.0 },
+                    faded: if creative_on { f(e, "faded_film", cx) / 100.0 } else { 0.0 },
+                    va,
+                    vmid: f(e, "vignette_midpoint", cx) / 100.0,
+                    vround: f(e, "vignette_roundness", cx) / 100.0,
+                    vfeather: f(e, "vignette_feather", cx) / 100.0,
+                    aspect,
+                    extra,
+                    hdr,
+                };
+                // the order of `effects::lumetri`: grade, HSL Secondary, Sharpen
+                let mut ops = vec![grade];
+                if let Some(h) = hsl {
+                    ops.push(FxOp::HslSecondary(Box::new(h)));
+                }
+                if sharpen.abs() > 1e-3 {
+                    let r = 1.2 * cx.px_scale.max(0.35);
+                    let (rx, ry) = gaussian_boxes(w, h, r, r);
+                    ops.push(FxOp::Unsharp { rx, ry, amount: sharpen.max(-1.0), threshold: 0.0 });
+                }
+                if ops.len() == 1 { ops.remove(0) } else { FxOp::Chain(ops) }
+            }
+            "color_key" => FxOp::Key(crate::effects::Key::from_effect(e, cx)),
+            "video_limiter" => FxOp::VideoLimiter(VideoLimiter::from_effect(e, cx)),
+            "ultra_key" => FxOp::UltraKey(Box::new(UltraKey::from_effect(e, cx, w, h))),
+            "luma_key" => FxOp::LumaKey { th: f(e, "threshold", cx) / 100.0, cut: f(e, "cutoff", cx) / 100.0 },
+            "mosaic" | "mosaic_legacy" => {
+                // Softness blends towards an interpolation of the blocks: the CPU does that
+                if crate::vfx::fv(e, "softness", cx).abs() > 1e-6 {
+                    return None;
+                }
+                let (bx, by) = (f(e, "horizontal", cx).max(1.0) as usize, f(e, "vertical", cx).max(1.0) as usize);
+                FxOp::Mosaic { bw: (w as f32 / bx.max(1) as f32).max(1.0), bh: (h as f32 / by.max(1) as f32).max(1.0) }
+            }
+            "vignette" => {
+                let amt = crate::vfx::fv(e, "amount", cx) / 100.0;
+                let col = crate::vfx::cv(e, "color", cx);
+                FxOp::Vignette {
+                    amount: amt.abs(),
+                    mid: crate::vfx::fv(e, "midpoint", cx) / 100.0,
+                    round: crate::vfx::fv(e, "roundness", cx) / 100.0,
+                    feather: (crate::vfx::fv(e, "feather", cx) / 100.0).max(0.01),
+                    target: if amt < 0.0 { [col[0], col[1], col[2]] } else { [1.0; 3] },
+                }
+            }
+            _ => {
+                if let Some(x) = crate::gpufx_ext::ExtOp::eval(e, cx, w, h) {
+                    return Some(FxOp::Ext(x));
+                }
+                return crate::gpufx_more::MoreOp::eval(e, cx, w, h).map(|m| FxOp::More(Box::new(m)));
+            }
         })
     }
 
@@ -458,6 +908,34 @@ impl FxOp {
             FxOp::ChannelMix { m } => m.iter().all(|r| fin(r)),
             FxOp::ColorReplace { sim, target, replace, replace_hsl, .. } => sim.is_finite() && fin(target) && fin(replace) && fin(replace_hsl),
             FxOp::AlphaAdjust { opacity, .. } => opacity.is_finite(),
+            FxOp::Mosaic { bw, bh } => fin(&[*bw, *bh]) && *bw >= 1.0 && *bh >= 1.0,
+            FxOp::Vignette { amount, mid, round, feather, target } => fin(&[*amount, *mid, *round, *feather]) && fin(target),
+            FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra, hdr } => {
+                fin(&[*temp, *tint, *exposure, *contrast, *hl, *sh, *wh, *bl, *sat, *vib, *faded, *va, *vmid, *vround, *vfeather, *aspect])
+                    && *aspect > 0.0
+                    && extra.as_ref().is_none_or(|x| x.finite())
+                    && hdr.is_none_or(|h| h.finite())
+            }
+            FxOp::Key(k) => fin(&k.kycc) && fin(&[k.tol, k.soft]) && k.soft > 0.0,
+            FxOp::LumaKey { th, cut } => fin(&[*th, *cut]),
+            FxOp::VideoLimiter(v) => fin(&[v.max, v.comp]) && v.max > 0.0 && v.warning.is_none_or(|w| fin(&w)),
+            FxOp::UltraKey(k) => {
+                fin(&k.k)
+                    && fin(&[k.tol, k.gain, k.highlight, k.shadow, k.pedestal, k.choke, k.contrast, k.mid, k.spill, k.desat, k.range, k.spill_luma])
+                    && k.cc.is_none_or(|c| fin(&c))
+                    && k.pedestal < 1.0
+                    && k.choke < 1.0
+                    && k.dom < 3
+            }
+            FxOp::HslSecondary(h) => {
+                fin(&[h.hc, h.hr, h.smin, h.lmin, h.lmax, h.soft, h.htemp, h.htint, h.hsat, h.hshift, h.denoise])
+                    && h.median_r <= HSL_MEDIAN_MAX
+                    && h.show_mask <= 3
+                    && LumetriHdr::code(h.grade_space()).1.iter().all(|v| v.is_finite())
+            }
+            FxOp::Chain(ops) => ops.iter().all(FxOp::gpu_ok),
+            FxOp::Ext(x) => x.gpu_ok(),
+            FxOp::More(m) => m.gpu_ok(),
         }
     }
 
@@ -605,6 +1083,8 @@ impl FxOp {
             FxOp::DirectionalBlur { dx, dy, steps } => crate::effects::directional_taps(img, *dx, *dy, *steps as usize),
             FxOp::Unsharp { rx, ry, amount, threshold } => crate::effects::unsharp_boxes(img, rx, ry, *amount, *threshold),
             FxOp::Crop { x0, x1, y0, y1, feather } => crate::effects::crop_px(img, *x0, *x1, *y0, *y1, *feather),
+            FxOp::Mosaic { bw, bh } => crate::effects::mosaic_blocks(img, *bw, *bh),
+            FxOp::Vignette { amount, mid, round, feather, target } => crate::vfx::color::vignette_px(img, *amount, *mid, *round, *feather, *target),
             FxOp::Resample(r) => {
                 let out = match (&r.inv, r.rect[0]) {
                     (Some(m), u32::MAX) => img.transformed(img.w, img.h, m), // mip path (CPU only)
@@ -709,6 +1189,90 @@ impl FxOp {
                     }
                 });
             }
+            FxOp::Lumetri { temp, tint, exposure, contrast, hl, sh, wh, bl, sat, vib, faded, va, vmid, vround, vfeather, aspect, extra, hdr } => {
+                let (gb, ga, specular) = hdr.map(|h| (h.basic, h.advanced, h.specular)).unwrap_or((GradeSpace::Sdr, GradeSpace::Sdr, 0.0));
+                let is_hdr = gb.is_hdr();
+                let split = extra.as_ref().and_then(|x| x.split);
+                let input_lut = extra.as_ref().and_then(|x| x.input_lut.clone());
+                let gains = [1.0 + 0.35 * temp, 1.0 - 0.3 * tint, 1.0 - 0.35 * temp];
+                let (w, h) = (img.w as f32, img.h as f32);
+                let (exposure, contrast) = (*exposure, *contrast);
+                let (hl, sh, wh, bl) = (*hl, *sh, *wh, *bl);
+                let (sat, vib, faded, va) = (*sat, *vib, *faded, *va);
+                let (vmid, vround, vfeather, aspect) = (*vmid, *vround, *vfeather, *aspect);
+                img.map_rgb(|c, x, y| {
+                    let c = match &input_lut {
+                        Some(l) => gb.decode(crate::effects::within_unit(gb.encode(c), is_hdr, |v| l.apply(v))),
+                        None => c,
+                    };
+                    let lin = [c[0] * gains[0] * exposure, c[1] * gains[1] * exposure, c[2] * gains[2] * exposure];
+                    let mut v = gb.encode(lin);
+                    let b0 = -bl * 0.15;
+                    let w0 = 1.0 - wh * 0.15;
+                    v = v.map(|q| (q - b0) / (w0 - b0).max(1e-3));
+                    let l = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                    let ws = (1.0 - l).clamp(0.0, 1.0).powi(3);
+                    let whl = l.clamp(0.0, 1.0).powi(3);
+                    let nl = (l + sh * 0.35 * ws + hl * 0.35 * whl).max(0.0);
+                    if l > 1e-5 {
+                        let k = nl / l;
+                        v = v.map(|q| q * k);
+                    }
+                    if contrast.abs() > 1e-4 {
+                        let k = 1.0 + contrast;
+                        v = v.map(|q| {
+                            if is_hdr && q > 1.0 {
+                                return q;
+                            }
+                            let q = q.clamp(0.0, 1.0);
+                            let s = q * q * (3.0 - 2.0 * q);
+                            if k >= 1.0 { q + (s - q) * (k - 1.0) } else { 0.5 + (q - 0.5) * k }
+                        });
+                    }
+                    if specular.abs() > 1e-4 {
+                        v = v.map(|q| if q > 1.0 { 1.0 + (q - 1.0) * (1.0 + specular).max(0.0) } else { q });
+                    }
+                    if faded > 0.0 {
+                        v = v.map(|q| q * (1.0 - 0.25 * faded) + 0.12 * faded);
+                    }
+                    if let Some(s) = split {
+                        let l2 = (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]).clamp(0.0, 1.0);
+                        for k in 0..3 {
+                            v[k] += s[k] * 0.3 * (1.0 - l2) + s[3 + k] * 0.3 * l2;
+                        }
+                    }
+                    let l3 = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                    let cur_sat = v[0].max(v[1]).max(v[2]) - v[0].min(v[1]).min(v[2]);
+                    let s = sat * (1.0 + vib * (1.0 - cur_sat.clamp(0.0, 1.0)));
+                    v = v.map(|q| l3 + (q - l3) * s);
+                    if va.abs() > 1e-4 {
+                        let nx = (x as f32 / w - 0.5) * 2.0 * if vround < 0.0 { aspect.powf(-vround) } else { 1.0 };
+                        let ny = (y as f32 / h - 0.5) * 2.0;
+                        let d = (nx * nx + ny * ny).sqrt() / std::f32::consts::SQRT_2;
+                        let edge = ((d - vmid * 0.9) / (vfeather.max(0.01) * 0.9)).clamp(0.0, 1.0);
+                        let e2 = edge * edge * (3.0 - 2.0 * edge);
+                        let k = 1.0 + va * 0.2 * e2;
+                        v = v.map(|q| if va < 0.0 { q * k.max(0.0) } else { q + (1.0 - q) * (k - 1.0) });
+                    }
+                    // the Advanced stage reads the pixel the Basic stage wrote
+                    match extra.as_ref().filter(|x| x.has_advanced()) {
+                        Some(x) => ga.decode(x.advanced(ga.encode(gb.decode(v)), is_hdr)),
+                        None => gb.decode(v),
+                    }
+                });
+            }
+            FxOp::Key(k) => k.apply(img),
+            FxOp::LumaKey { th, cut } => crate::effects::luma_key(img, *th, *cut),
+            FxOp::VideoLimiter(v) => v.apply(img),
+            FxOp::UltraKey(k) => k.apply(img),
+            FxOp::HslSecondary(h) => h.apply(img),
+            FxOp::Chain(ops) => {
+                for op in ops {
+                    op.apply(img);
+                }
+            }
+            FxOp::Ext(x) => x.apply(img),
+            FxOp::More(m) => m.apply(img),
         }
     }
 }

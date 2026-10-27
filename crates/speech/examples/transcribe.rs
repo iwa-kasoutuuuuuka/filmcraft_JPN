@@ -2,7 +2,7 @@
 //!
 //! ```sh
 //! ffmpeg -i speech.flac -ar 16000 -ac 1 -f f32le speech.f32
-//! cargo run --release -p filmcraft-speech --features whisper --example transcribe -- <model dir> [--words] [--diarize] speech.f32…
+//! cargo run --release -p filmcraft-speech --features whisper --example transcribe -- <model dir> [--words] [--diarize] [--translate] speech.f32…
 //! ```
 
 use filmcraft_speech::{Options, Transcriber, word_error_rate};
@@ -16,17 +16,19 @@ fn main() {
     eprintln!("loaded {id} in {:.2}s", t0.elapsed().as_secs_f64());
     let mut show_words = false;
     let mut diarize = false;
+    let mut translate = false;
     let mut language = None;
     let (mut errs, mut words, mut audio_s, mut cpu_s) = (0.0, 0usize, 0.0, 0.0);
     for a in args {
         match a.as_str() {
             "--words" => show_words = true,
             "--diarize" => diarize = true,
+            "--translate" => translate = true,
             l if l.starts_with("--lang=") => language = Some(l[7..].to_string()),
             p => {
                 let audio: Vec<f32> = std::fs::read(p).expect("read").as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
                 let t1 = std::time::Instant::now();
-                let opts = Options { language: language.clone(), diarize, ..Default::default() };
+                let opts = Options { language: language.clone(), diarize, translate, ..Default::default() };
                 let t = w.transcribe(&audio, &opts, &mut |_, _| true).expect("transcribe");
                 let secs = t1.elapsed().as_secs_f64();
                 audio_s += audio.len() as f64 / 16_000.0;

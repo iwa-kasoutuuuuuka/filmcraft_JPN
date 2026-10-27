@@ -45,6 +45,17 @@ fn app_icon() -> egui::IconData {
     eframe::icon_data::from_png_bytes(png).unwrap_or_default()
 }
 
+/// Put the OS hardware video decoders in front of our own and say what was found.
+///
+/// The registration is a statement of its own, never an argument of the log line: `log::info!`
+/// does not evaluate its arguments when that level is off (and no logger is installed by
+/// default), so `log::info!("{:?}", register())` registers nothing.
+fn register_hardware_decoders() -> filmcraft_platform::Availability {
+    let availability = filmcraft_platform::register();
+    log::info!("hardware decoding: {availability:?}");
+    availability
+}
+
 fn main() -> eframe::Result {
     app_nap::disable();
     let mut control_port: Option<u16> = std::env::var("FILMCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
@@ -75,7 +86,16 @@ fn main() -> eframe::Result {
     filmcraft_ui_egui::crash::install(data_dir.clone().or_else(default_data_dir).map(|d| d.join("Logs")));
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own; Settings ▸ Playback ▸
     // Hardware decoding switches them off. Unsupported streams and failures use our decoders.
-    log::info!("hardware decoding: {:?}", filmcraft_platform::register());
+    register_hardware_decoders();
+    // Audio plug-in hosts (VST3 on Windows). Nothing is loaded until a scan (Effects panel ▸
+    // Audio Effects ▸ Scan for VST3 Plug-ins, `audioPlugins.scan`, or a project that uses one), so
+    // a broken plug-in cannot stop FilmCraft from starting (docs/adr/0002-audio-plugin-hosting.md).
+    let plugins = filmcraft_platform::register_audio_plugins();
+    log::info!("audio plug-ins: {plugins:?}");
+    // Settings ▸ Appearance ▸ Language "Auto" follows the operating system's language
+    filmcraft_ui_egui::i18n::set_system_language(filmcraft_platform::locale::system_language());
+    // perf.stats `process.cpuS` and the playback profiler on systems without Unix CPU clocks
+    filmcraft_ui_egui::frames::register_cpu_clocks(filmcraft_platform::cputime::process_cpu_time, filmcraft_platform::cputime::thread_cpu_time);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FilmCraft")
@@ -242,4 +262,20 @@ fn agent_event_loop(agent: bool) -> Option<eframe::EventLoopBuilderHook> {
     }
     let _ = agent;
     None
+}
+
+#[cfg(test)]
+mod tests {
+    /// The app registers the platform's hardware decoders whatever the log level is (no logger is
+    /// installed in tests, as in the app by default). Before the fix the registration was an
+    /// argument of `log::info!` and never ran: every stream was decoded in software.
+    #[test]
+    fn hardware_decoders_are_registered_without_a_logger() {
+        assert!(!log::log_enabled!(log::Level::Info), "no logger: info is off");
+        let availability = super::register_hardware_decoders();
+        if cfg!(any(target_os = "macos", windows)) {
+            assert!(matches!(availability, filmcraft_platform::Availability::Available(_)), "{availability:?}");
+        }
+        assert_eq!(filmcraft_platform::register(), availability, "registering again is harmless");
+    }
 }

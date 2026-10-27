@@ -118,6 +118,17 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert!((num(&j["format"]["duration"]) - 0.25).abs() < 0.01, "{name}: {}", j["format"]["duration"]);
                 continue;
             }
+            "flac" => {
+                assert_eq!(fmt_name, "flac", "{name}");
+                let a = stream(&j, "audio").unwrap();
+                assert_eq!(a["codec_name"], "flac", "{name}");
+                let bits = settings["audio"]["bits"].as_u64().unwrap();
+                assert_eq!(a["bits_per_raw_sample"], bits.to_string(), "{name}");
+                assert_eq!(a["sample_rate"], "48000", "{name}");
+                assert_eq!(a["channels"], 2, "{name}");
+                assert!((num(&a["duration"]) - 0.25).abs() < 0.01, "{name}: {}", a["duration"]);
+                continue;
+            }
             "gif" => {
                 let v = stream(&j, "video").unwrap();
                 assert_eq!(v["codec_name"], "gif");
@@ -154,6 +165,12 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                 assert_eq!(a["codec_name"], "aac", "{name}");
                 assert!((num(&a["bit_rate"]) / 1000.0 - 320.0).abs() < 80.0, "{name}: AAC {}", a["bit_rate"]);
             }
+            "av1" => {
+                assert!(fmt_name.contains("mp4"), "{name}: {fmt_name}");
+                assert_eq!(v["codec_name"], "av1", "{name}");
+                assert_eq!(v["pix_fmt"], "yuv420p", "{name}");
+                assert_eq!(a["codec_name"], "aac", "{name}");
+            }
             "prores" => {
                 assert!(fmt_name.contains("mov"), "{name}: {fmt_name}");
                 assert_eq!(v["codec_name"], "prores", "{name}");
@@ -161,10 +178,20 @@ fn every_builtin_preset_exports_and_ffprobe_confirms() {
                     "proxy" => ("Proxy", 45.0),
                     "lt" => ("LT", 102.0),
                     "standard" => ("Standard", 147.0),
+                    "4444" => ("4444", 330.0),
+                    "4444xq" => ("XQ", 500.0),
                     _ => ("HQ", 220.0),
                 };
                 assert_eq!(v["profile"], profile, "{name}");
-                assert!(vbr <= mbps * px * 1.5, "{name}: {vbr:.1} Mb/s vs nominal {:.1}", mbps * px);
+                let alpha = settings["alpha"].as_bool().unwrap_or(false);
+                if matches!(profile, "4444" | "XQ") {
+                    let pix = v["pix_fmt"].as_str().unwrap_or_default();
+                    let want = if alpha { "yuva444p12" } else { "yuv444p12" };
+                    assert!(pix.starts_with(want), "{name}: {pix}");
+                }
+                // the alpha plane comes on top of the nominal picture rate
+                let slack = if alpha { 2.0 } else { 1.5 };
+                assert!(vbr <= mbps * px * slack, "{name}: {vbr:.1} Mb/s vs nominal {:.1}", mbps * px);
                 assert_eq!(a["codec_name"], "pcm_s24le", "{name}");
             }
             "dnxhr" => {
@@ -244,7 +271,7 @@ fn user_presets_persist_with_favourites_import_and_export() {
     let favs = s.execute("export.presets.list", json!({"favorites": true})).unwrap()["presets"].as_array().unwrap().len();
     assert_eq!(favs, 2);
     let hits = s.execute("export.presets.list", json!({"query": "prores"})).unwrap()["presets"].as_array().unwrap().len();
-    assert_eq!(hits, 5, "four QuickTime ProRes presets and MXF OP1a ProRes 422 HQ");
+    assert_eq!(hits, 9, "eight QuickTime ProRes presets (422 and 4444) and MXF OP1a ProRes 422 HQ");
     // persisted: a fresh session with the same data directory sees both
     let mut s2 = demo();
     s2.export_presets.set_dir(&dir.0);
@@ -444,4 +471,19 @@ fn default_export_dir_never_needs_a_real_filesystem() {
     // a saved project exports next to itself
     let s = Session { path: Some("/projects/show/edit.fcproj".into()), ..Default::default() };
     assert_eq!(crate::export_tools::default_export_dir(&s), std::path::PathBuf::from("/projects/show"));
+}
+
+/// Unsaved projects export to the home directory's video folder: `Movies` on macOS, `Videos` on
+/// Windows (exports used to land in the bare home folder there).
+#[test]
+fn exports_default_to_the_video_folder() {
+    let home = std::env::temp_dir().join(format!("fc-home-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    assert_eq!(crate::export_tools::video_dir(&home), home, "no video folder: the home folder");
+    std::fs::create_dir_all(home.join("Videos")).unwrap();
+    assert_eq!(crate::export_tools::video_dir(&home), home.join("Videos"));
+    std::fs::create_dir_all(home.join("Movies")).unwrap();
+    assert_eq!(crate::export_tools::video_dir(&home), home.join("Movies"));
+    let _ = std::fs::remove_dir_all(&home);
 }

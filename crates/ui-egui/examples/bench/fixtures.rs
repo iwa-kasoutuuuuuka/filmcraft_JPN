@@ -12,11 +12,9 @@ pub fn fixtures_dir() -> PathBuf {
     }
 }
 
+/// ffmpeg as the tests find it: `FILMCRAFT_FFMPEG`, `PATH`, the usual install locations (Windows too).
 pub fn ffmpeg() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("FILMCRAFT_FFMPEG") {
-        return Some(PathBuf::from(p));
-    }
-    ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].iter().map(PathBuf::from).find(|p| p.exists())
+    filmcraft_testkit::ffmpeg()
 }
 
 /// A fixture: file name, lavfi video source, seconds, with audio, video encoder arguments.
@@ -30,6 +28,27 @@ struct Spec {
 
 const X264: &[&str] = &["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"];
 const X265: &[&str] = &["-c:v", "libx265", "-preset", "fast", "-crf", "22", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-x265-params", "log-level=error"];
+// HEVC Main 10 HLG / BT.2020, as phones record HDR
+const X265_HLG: &[&str] = &[
+    "-c:v",
+    "libx265",
+    "-preset",
+    "fast",
+    "-crf",
+    "22",
+    "-pix_fmt",
+    "yuv420p10le",
+    "-tag:v",
+    "hvc1",
+    "-x265-params",
+    "log-level=error:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
+    "-color_primaries",
+    "bt2020",
+    "-color_trc",
+    "arib-std-b67",
+    "-colorspace",
+    "bt2020nc",
+];
 const VP9: &[&str] = &["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "0", "-crf", "32", "-row-mt", "1", "-pix_fmt", "yuv420p"];
 const AV1: &[&str] = &["-c:v", "libsvtav1", "-preset", "10", "-crf", "35", "-pix_fmt", "yuv420p", "-svtav1-params", "keyint=48"];
 const PRORES: &[&str] = &["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-vendor", "apl0"];
@@ -40,6 +59,7 @@ const SPECS: &[Spec] = &[
     Spec { name: "b1080.mp4", src: "mandelbrot=s=1920x1080:r=24000/1001,trim=duration=20,noise=alls=6:allf=t", secs: 20, audio: false, codec: X264 },
     Spec { name: "c1080.mp4", src: "smptehdbars=s=1920x1080:r=24000/1001:d=20,noise=alls=10:allf=t+u", secs: 20, audio: false, codec: X264 },
     Spec { name: "a2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X264 },
+    Spec { name: "hlg1080.mov", src: "testsrc2=s=1920x1080:r=30:d=20,noise=alls=6:allf=t", secs: 20, audio: false, codec: X265_HLG },
     Spec { name: "hevc2160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: X265 },
     Spec { name: "vp92160.webm", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: VP9 },
     Spec { name: "av12160.mp4", src: "testsrc2=s=3840x2160:r=24000/1001:d=10,noise=alls=6:allf=t", secs: 10, audio: false, codec: AV1 },

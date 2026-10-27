@@ -178,14 +178,18 @@ fn open(p: &Path) -> MpegSource {
 }
 
 /// ffprobe's video frames in display order: pts (90 kHz).
-fn ffprobe_frame_pts(file: &Path) -> Option<Vec<i64>> {
+/// ffprobe's PTS per frame, in display order; `None` where ffprobe prints `N/A` (some ffprobe
+/// builds leave a frame of an MPEG-1 program stream without a PTS instead of interpolating it).
+fn ffprobe_frame_pts(file: &Path) -> Option<Vec<Option<i64>>> {
     let fp = filmcraft_testkit::ffprobe()?;
     let o = std::process::Command::new(fp)
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts", "-of", "csv=p=0"])
         .arg(file)
         .output()
         .ok()?;
-    Some(String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().trim_end_matches(',').parse().ok()).collect())
+    let text = String::from_utf8_lossy(&o.stdout);
+    let fields = text.lines().map(|l| l.trim().trim_end_matches(',')).filter(|l| !l.is_empty());
+    Some(fields.map(|l| l.parse().ok()).collect())
 }
 
 /// Decode every frame in order and `seeks` random frames; compare with ffmpeg within `tol`.
@@ -236,7 +240,12 @@ fn check_video(ff: &Path, file: &Path, tol: u16, seeks: usize) -> (u16, f64) {
         let missing: Vec<usize> = (0..pts.len()).filter(|&i| pts[i].is_none()).collect();
         assert!(missing.is_empty(), "{}: frames without PTS: {missing:?} (ffprobe {:?})", file.display(), &fp[..fp.len().min(12)]);
         let pts: Vec<i64> = pts.into_iter().flatten().collect();
-        assert_eq!(pts, fp, "{}: frame PTS", file.display());
+        assert_eq!(pts.len(), fp.len(), "{}: frame count vs ffprobe {fp:?}", file.display());
+        for (i, (ours, theirs)) in pts.iter().zip(&fp).enumerate() {
+            if let Some(theirs) = theirs {
+                assert_eq!(ours, theirs, "{}: frame {i} PTS (ours {pts:?}, ffprobe {fp:?})", file.display());
+            }
+        }
     }
     let psnr = if sse == 0.0 { f64::INFINITY } else { 10.0 * (255f64 * 255.0 * cnt as f64 / sse).log10() };
     (worst, psnr)

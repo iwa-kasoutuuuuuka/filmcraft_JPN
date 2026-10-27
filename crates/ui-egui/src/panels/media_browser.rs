@@ -138,7 +138,8 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // file types
     let fr = Rect::from_min_size(pos2(x, bar.min.y + 1.0), vec2(150.0, 22.0));
     let label = mb::FILE_TYPES.iter().find(|f| f.0 == prefs.file_types).map(|f| f.1.to_string()).unwrap_or_else(|| format!(".{}", prefs.file_types));
-    let fresp = crate::widgets::dropdown_text(ui, fr, &label, &t, egui::Id::new("mb-types")).on_hover_text("File Types Displayed");
+    let fresp = crate::widgets::dropdown_text(ui, fr, &label, &t, egui::Id::new("mb-types"))
+        .on_hover_text(crate::i18n::t("File Types Displayed", "表示するファイルの種類"));
     app.auto.add("mediaBrowser.fileTypes", fr, "File Types Displayed");
     egui::Popup::menu(&fresp).show(|ui| {
         for (k, l) in mb::FILE_TYPES {
@@ -150,7 +151,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
         }
         ui.separator();
-        ui.menu_button("File Extension", |ui| {
+        ui.menu_button(crate::i18n::t("File Extension", "ファイル拡張子"), |ui| {
             for e in mb::extensions() {
                 if ui.selectable_label(prefs.file_types == e, format!(".{e}")).clicked() {
                     exec(app, &ctx, "mediaBrowser.settings", json!({"fileTypes": e}));
@@ -179,19 +180,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let row2 = Rect::from_min_size(pos2(bar.min.x, bar.max.y + 4.0), vec2(bar.width(), 20.0));
     let mut ingest = app.session.project.settings.ingest.enabled;
     let mut c = ui.new_child(egui::UiBuilder::new().max_rect(row2).id_salt("mb-row2").layout(egui::Layout::left_to_right(egui::Align::Center)));
-    let r = c.checkbox(&mut ingest, "Ingest");
+    let r = c.checkbox(&mut ingest, crate::i18n::t("Ingest", "インジェスト"));
     app.auto.add("mediaBrowser.ingest", r.rect, "Ingest");
     if r.changed() {
         exec(app, &ctx, "project.ingestSettings", json!({"enabled": ingest}));
     }
-    let w = c.add(egui::Button::new(egui::RichText::new("⚙").size(12.0)).frame(false)).on_hover_text("Open Ingest Settings");
+    let w = c
+        .add(egui::Button::new(egui::RichText::new("⚙").size(12.0)).frame(false))
+        .on_hover_text(crate::i18n::t("Open Ingest Settings", "インジェスト設定を開く"));
     app.auto.add("mediaBrowser.ingestSettings", w.rect, "Open Ingest Settings");
     if w.clicked() {
         exec(app, &ctx, "project.ingestSettings", json!({}));
     }
     c.add_space(12.0);
     let mut seq = prefs.import_as_image_sequence;
-    let r = c.checkbox(&mut seq, "Import as Image Sequence");
+    let r = c.checkbox(&mut seq, crate::i18n::t("Import as Image Sequence", "画像シーケンスとして読み込み"));
     app.auto.add("mediaBrowser.importAsImageSequence", r.rect, "Import as Image Sequence");
     if r.changed() {
         exec(app, &ctx, "mediaBrowser.settings", json!({"importAsImageSequence": seq}));
@@ -219,12 +222,21 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             let n = entries.iter().filter(|e| !e.is_dir).count();
             let sel = app.session.browser.selection.len();
-            let status = if sel > 0 { format!("{sel} of {n} items selected") } else { format!("{n} items") };
+            // shown in Japanese; the automation label stays English like every other element's
+            let status =
+                if sel > 0 { crate::tf!("{sel} of {n} items selected", "{n} 項目中 {sel} 項目を選択") } else { crate::tf!("{n} items", "{n} 項目") };
+            let label = if sel > 0 { format!("{sel} of {n} items selected") } else { format!("{n} items") };
             ui.painter().text(pos2(list_r.min.x + 6.0, rect.max.y - 12.0), Align2::LEFT_CENTER, &status, Tokens::ui(11.0), t.text_dim);
-            app.auto.add("mediaBrowser.count", Rect::from_min_size(pos2(list_r.min.x, rect.max.y - 22.0), vec2(160.0, 20.0)), &status);
+            app.auto.add("mediaBrowser.count", Rect::from_min_size(pos2(list_r.min.x, rect.max.y - 22.0), vec2(160.0, 20.0)), &label);
         }
         Err(e) => {
-            ui.painter().text(list_r.center(), Align2::CENTER_CENTER, format!("Cannot open {dir}: {e}"), Tokens::ui(11.5), t.text_dim);
+            ui.painter().text(
+                list_r.center(),
+                Align2::CENTER_CENTER,
+                crate::tf!("Cannot open {dir}: {e}", "{dir} を開けません: {e}"),
+                Tokens::ui(11.5),
+                t.text_dim,
+            );
         }
     }
     if prefs.view == "thumbnails" {
@@ -264,7 +276,7 @@ fn tree(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, dir: &str) {
             let hr = ui.label(egui::RichText::new(title).size(11.0).color(app.tokens.text_dim).strong());
             app.auto.add(&format!("mediaBrowser.tree.{key}"), hr.rect, title);
             if list.is_empty() {
-                ui.label(egui::RichText::new("  (none)").size(10.5).color(app.tokens.text_faint));
+                ui.label(egui::RichText::new(crate::i18n::t("  (none)", "  (なし)")).size(10.5).color(app.tokens.text_faint));
             }
             for (name, path) in list {
                 let expandable = matches!(key, "localDrives" | "network" | "favorites");
@@ -335,11 +347,11 @@ fn node(
             exec(app, ctx, "mediaBrowser.favorite", json!({"path": path, "remove": fav}));
             ui.close();
         }
-        if ui.button("Import").clicked() {
+        if ui.button(crate::i18n::t("Import", "読み込み")).clicked() {
             exec(app, ctx, "mediaBrowser.import", json!({"paths": [path]}));
             ui.close();
         }
-        if section == "recent" && ui.button("Clear Recent Directories").clicked() {
+        if section == "recent" && ui.button(crate::i18n::t("Clear Recent Directories", "最近使用したディレクトリを消去")).clicked() {
             exec(app, ctx, "mediaBrowser.clearRecent", json!({}));
             ui.close();
         }
@@ -399,14 +411,14 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
     }
     resp.context_menu(|ui| {
         let paths: Vec<String> = if app.session.browser.selection.contains(&e.path) { app.session.browser.selection.clone() } else { vec![e.path.clone()] };
-        let b = ui.button("Import");
+        let b = ui.button(crate::i18n::t("Import", "読み込み"));
         app.auto.add("mediaBrowser.entryMenu.import", b.rect, "Import");
         if b.clicked() {
             exec(app, &ctx, "mediaBrowser.import", json!({"paths": paths, "imageSequence": false}));
             ui.close();
         }
         if !e.is_dir {
-            let b = ui.button("Open In Source Monitor");
+            let b = ui.button(crate::i18n::t("Open In Source Monitor", "ソースモニターで開く"));
             app.auto.add("mediaBrowser.entryMenu.openInSource", b.rect, "Open In Source Monitor");
             if b.clicked() {
                 exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
@@ -414,7 +426,7 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
             }
         }
         if e.numbered {
-            let b = ui.button("Import as Image Sequence");
+            let b = ui.button(crate::i18n::t("Import as Image Sequence", "画像シーケンスとして読み込み"));
             app.auto.add("mediaBrowser.entryMenu.importSequence", b.rect, "Import as Image Sequence");
             if b.clicked() {
                 exec(app, &ctx, "mediaBrowser.import", json!({"paths": [e.path], "imageSequence": true}));
@@ -423,12 +435,19 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
         }
         if e.is_dir {
             let fav = app.session.prefs.media_browser.favorites.contains(&e.path);
-            if ui.button(if fav { "Remove from Favorites" } else { "Add to Favorites" }).clicked() {
+            if ui
+                .button(if fav {
+                    crate::i18n::t("Remove from Favorites", "お気に入りから削除")
+                } else {
+                    crate::i18n::t("Add to Favorites", "お気に入りに追加")
+                })
+                .clicked()
+            {
                 exec(app, &ctx, "mediaBrowser.favorite", json!({"path": e.path, "remove": fav}));
                 ui.close();
             }
         }
-        if ui.button("Reveal in Finder").clicked() {
+        if ui.button(crate::i18n::t("Reveal in Finder", "エクスプローラーで表示")).clicked() {
             let _ = crate::panels::menu_dialogs::open_path(app, &ctx, &e.path, true);
             ui.close();
         }
@@ -556,7 +575,7 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
             let resp = ui.interact(cr.intersect(header), egui::Id::new(("mb-col", c)), Sense::click());
             app.auto.add(&format!("mediaBrowser.header.{c}"), cr.intersect(header), c);
             resp.context_menu(|ui| {
-                if ui.button("Edit Columns…").clicked() {
+                if ui.button(crate::i18n::t("Edit Columns…", "列を編集…")).clicked() {
                     app.ui.media_browser.edit_columns = Some(columns.to_vec());
                     ui.close();
                 }
@@ -788,9 +807,12 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut cols) = app.ui.media_browser.edit_columns.clone() else { return };
     let mut close = false;
     let mut ok = false;
-    egui::Window::new("Edit Columns").id(egui::Id::new("mb-edit-columns")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
-        ctx,
-        |ui| {
+    egui::Window::new(crate::i18n::t("Edit Columns", "列を編集"))
+        .id(egui::Id::new("mb-edit-columns"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
             let mut mv: Option<(usize, isize)> = None;
             for c in mb::ALL_COLUMNS {
                 ui.horizontal(|ui| {
@@ -819,15 +841,14 @@ pub fn dialogs(app: &mut FilmcraftApp, ctx: &egui::Context) {
             }
             ui.separator();
             ui.horizontal(|ui| {
-                let r = ui.button("Cancel");
+                let r = ui.button(crate::i18n::t("Cancel", "キャンセル"));
                 app.auto.add("mediaBrowser.columns.cancel", r.rect, "Cancel");
                 close |= r.clicked();
                 let r = ui.button("OK");
                 app.auto.add("mediaBrowser.columns.ok", r.rect, "OK");
                 ok = r.clicked();
             });
-        },
-    );
+        });
     if ok {
         let r = app.session.execute("mediaBrowser.settings", json!({"columns": cols}));
         if let Err(e) = r {

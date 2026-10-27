@@ -47,11 +47,13 @@ impl Image {
         let y0 = fy.floor();
         let tx = fx - x0;
         let ty = fy - y0;
+        // (a position far outside saturates the cast; the neighbour must not overflow)
         let (x0, y0) = (x0 as isize, y0 as isize);
+        let (x1, y1) = (x0.saturating_add(1), y0.saturating_add(1));
         let a = self.get_or_clear(x0, y0);
-        let b = self.get_or_clear(x0 + 1, y0);
-        let c = self.get_or_clear(x0, y0 + 1);
-        let d = self.get_or_clear(x0 + 1, y0 + 1);
+        let b = self.get_or_clear(x1, y0);
+        let c = self.get_or_clear(x0, y1);
+        let d = self.get_or_clear(x1, y1);
         let mut o = [0.0; 4];
         for k in 0..4 {
             let top = a[k] + (b[k] - a[k]) * tx;
@@ -196,5 +198,21 @@ impl Image {
             }
         });
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bilinear tap far outside the image (a warp with hostile parameters) is transparent; the
+    /// saturated `as isize` cast once overflowed computing its right / lower neighbour.
+    #[test]
+    fn sample_far_outside_does_not_overflow() {
+        let img = Image::filled(4, 3, [0.5, 0.4, 0.3, 1.0]);
+        for (x, y) in [(f32::MAX, 1.0), (1.0, f32::MAX), (-f32::MAX, 2.0), (1e30, -1e30)] {
+            assert_eq!(img.sample_bilinear(x, y), [0.0; 4], "{x}, {y}");
+        }
+        assert_eq!(img.sample_bilinear(1.5, 1.5), [0.5, 0.4, 0.3, 1.0]);
     }
 }

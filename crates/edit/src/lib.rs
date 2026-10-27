@@ -749,10 +749,16 @@ pub fn rate_stretch(seq: &mut Sequence, clip: ClipId, edge: Edge, delta: Tick, c
     Ok(speed)
 }
 
+/// Slowest speed [`set_speed`] accepts (1 %).
+pub const MIN_SPEED: f64 = 0.01;
+/// Fastest speed [`set_speed`] accepts (10 000 %).
+pub const MAX_SPEED: f64 = 100.0;
+
 /// Set speed/duration (Clip ▸ Speed/Duration…). `ripple` shifts following material.
 pub fn set_speed(seq: &mut Sequence, clip: ClipId, speed: f64, reverse: bool, ripple: bool, ctx: &mut EditCtx) -> Result<()> {
-    if speed <= 0.0 {
-        return Err(EditError::Other("speed must be positive".into()));
+    // also refuses NaN; extreme speeds overflowed the duration maths
+    if !(MIN_SPEED..=MAX_SPEED).contains(&speed) {
+        return Err(EditError::Other(format!("speed must be {}%–{}%", MIN_SPEED * 100.0, MAX_SPEED * 100.0)));
     }
     let (tid, it) = seq.find_item(clip).ok_or(EditError::NoItem(clip))?;
     let src_len = it.source_out() - it.source_in;

@@ -22,7 +22,7 @@ fn modal_frame(t: &Tokens) -> Frame {
 
 fn button(app: &mut FilmcraftApp, ui: &mut Ui, id: &str, label: &str, primary: bool) -> bool {
     let t = app.tokens;
-    let text = RichText::new(label).size(13.0).color(if primary { Color32::WHITE } else { t.text });
+    let text = RichText::new(crate::i18n::tr_ui(label)).size(13.0).color(if primary { Color32::WHITE } else { t.text });
     let b = egui::Button::new(text)
         .min_size(vec2(88.0, 30.0))
         .corner_radius(CornerRadius::same(15))
@@ -45,31 +45,46 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     egui::Modal::new(egui::Id::new("recovery-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(520.0);
         Frame::new().inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
-            ui.label(RichText::new("Recover Unsaved Changes").size(18.0).strong().color(t.text));
+            ui.label(RichText::new(crate::i18n::t("Recover Unsaved Changes", "未保存の変更を復元")).size(18.0).strong().color(t.text));
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
             let c = &items[choice];
-            let name = c["projectName"].as_str().unwrap_or("Untitled");
+            let name = c["projectName"].as_str().unwrap_or(crate::i18n::t("Untitled", "名称未設定"));
             let when = c["savedAt"].as_str().unwrap_or("");
             let why = if c["cleanExit"].as_bool() == Some(true) {
-                format!("FilmCraft was closed while “{name}” had unsaved changes.")
+                crate::tf!("FilmCraft was closed while “{name}” had unsaved changes.", "「{name}」に未保存の変更がある状態で FilmCraft が終了しました。")
             } else {
-                format!("FilmCraft quit unexpectedly while “{name}” had unsaved changes.")
+                crate::tf!(
+                    "FilmCraft quit unexpectedly while “{name}” had unsaved changes.",
+                    "「{name}」に未保存の変更がある状態で FilmCraft が予期せず終了しました。"
+                )
             };
             ui.label(RichText::new(why).size(13.5).color(t.text));
             ui.add_space(4.0);
-            ui.label(RichText::new(format!("Recover unsaved changes from {when}?")).size(13.5).color(t.text));
+            ui.label(RichText::new(crate::tf!("Recover unsaved changes from {when}?", "{when} の未保存の変更を復元しますか？")).size(13.5).color(t.text));
             if let Some(p) = c["projectPath"].as_str() {
                 ui.label(RichText::new(p).size(11.5).color(t.text_dim));
             } else {
-                ui.label(RichText::new("The project had not been saved yet.").size(11.5).color(t.text_dim));
+                ui.label(
+                    RichText::new(crate::i18n::t("The project had not been saved yet.", "このプロジェクトはまだ保存されていませんでした。"))
+                        .size(11.5)
+                        .color(t.text_dim),
+                );
             }
             if items.len() > 1 {
                 ui.add_space(8.0);
-                ui.label(RichText::new(format!("{} sessions have unsaved changes:", items.len())).size(12.0).color(t.text_dim));
+                ui.label(
+                    RichText::new(crate::tf!("{} sessions have unsaved changes:", "{} 件のセッションに未保存の変更があります:", items.len()))
+                        .size(12.0)
+                        .color(t.text_dim),
+                );
                 for (i, it) in items.iter().enumerate() {
-                    let label = format!("{} — {}", it["projectName"].as_str().unwrap_or("Untitled"), it["savedAt"].as_str().unwrap_or(""));
+                    let label = format!(
+                        "{} — {}",
+                        it["projectName"].as_str().unwrap_or(crate::i18n::t("Untitled", "名称未設定")),
+                        it["savedAt"].as_str().unwrap_or("")
+                    );
                     let r = ui.radio(choice == i, RichText::new(&label).size(12.5));
                     app.auto.add(&format!("recovery.item.{i}"), r.rect, &label);
                     if r.clicked() {
@@ -80,20 +95,20 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
             ui.add_space(18.0);
             let id = items[choice]["id"].as_str().unwrap_or("").to_string();
             ui.horizontal(|ui| {
-                if button(app, ui, "recovery.discard", "Discard", false) {
+                if button(app, ui, "recovery.discard", crate::i18n::t("Discard", "破棄"), false) {
                     if let Err(e) = app.session.execute("file.discardRecovery", json!({ "id": id })) {
                         app.ui.status = e.to_string();
                     }
                     choice = 0;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if button(app, ui, "recovery.recover", "Recover", true) {
+                    if button(app, ui, "recovery.recover", crate::i18n::t("Recover", "復元"), true) {
                         match app.session.execute("file.recover", json!({ "id": id })) {
                             Ok(_) => open = false,
                             Err(e) => app.ui.status = e.to_string(),
                         }
                     }
-                    if button(app, ui, "recovery.later", "Not Now", false) {
+                    if button(app, ui, "recovery.later", crate::i18n::t("Not Now", "後で"), false) {
                         open = false;
                     }
                 });
@@ -111,20 +126,24 @@ pub fn show_revert(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let r = egui::Modal::new(egui::Id::new("revert-modal")).frame(modal_frame(&t)).show(ctx, |ui| {
         ui.set_width(460.0);
         Frame::new().inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 20 }).show(ui, |ui| {
-            ui.label(RichText::new("Revert").size(18.0).strong().color(t.text));
+            ui.label(RichText::new(crate::i18n::t("Revert", "復帰")).size(18.0).strong().color(t.text));
             ui.add_space(6.0);
             ui.separator();
             ui.add_space(6.0);
-            ui.label(RichText::new(format!("Are you sure you want to discard your changes to '{file}'?")).size(13.5).color(t.text));
+            ui.label(
+                RichText::new(crate::tf!("Are you sure you want to discard your changes to '{file}'?", "「{file}」への変更を破棄してもよろしいですか？"))
+                    .size(13.5)
+                    .color(t.text),
+            );
             ui.add_space(18.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if button(app, ui, "revert.yes", "Yes", true) {
+                if button(app, ui, "revert.yes", crate::i18n::t("Yes", "はい"), true) {
                     if let Err(e) = app.session.execute("file.revert", json!({})) {
                         app.ui.status = e.to_string();
                     }
                     open = false;
                 }
-                if button(app, ui, "revert.no", "No", false) {
+                if button(app, ui, "revert.no", crate::i18n::t("No", "いいえ"), false) {
                     open = false;
                 }
             });

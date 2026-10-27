@@ -22,6 +22,15 @@ pub fn tmp_dir(name: &str) -> PathBuf {
 /// Write a `frames`-frame `w`×`h` 24 fps movie of a demo scene (with its audio) to `path`.
 /// `.mov` = ProRes 422 HQ + PCM, `.mp4` = H.264 + AAC.
 pub fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
+    write_movie(path, scene, w, h, frames, None);
+}
+
+/// [`make_movie`] with `audio` (mono, 48 kHz) as its sound instead of the scene's.
+pub fn make_movie_with_audio(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64, audio: &[f32]) {
+    write_movie(path, scene, w, h, frames, Some(audio));
+}
+
+fn write_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64, audio: Option<&[f32]>) {
     let rate = FrameRate::FPS_24;
     let dur = rate.tick_of(frames);
     let src = GeneratorSource::new(Generator::Demo(scene), w, h, rate, dur);
@@ -45,14 +54,34 @@ pub fn make_movie(path: &Path, scene: DemoScene, w: u32, h: u32, frames: i64) {
     for e in &mut v.effects {
         filmcraft_project::resolve_auto_points(e, (w, h), (w, h));
     }
-    let a = p.make_track_item(item, TrackKind::Audio, Tick::ZERO, r, rate).unwrap();
+    // the scene's own sound, or `audio` as a WAV clip
+    let voice = audio.map(|samples| {
+        let wav: Arc<[u8]> = crate::voiceover::write_wav_f32(samples, 48_000).into();
+        let src = filmcraft_codecs::open_bytes("voice.wav", wav).unwrap();
+        let clip = MediaClip {
+            media: MediaRef::File { path: "voice.wav".into() },
+            info: src.info().clone(),
+            interpret: Default::default(),
+            mark_in: None,
+            mark_out: None,
+            markers: vec![],
+            offline: false,
+            proxy: None,
+            identity: None,
+        };
+        (p.add_item("voice", Label::Iris, ItemKind::Media(clip), None), src)
+    });
+    let a = p.make_track_item(voice.as_ref().map_or(item, |v| v.0), TrackKind::Audio, Tick::ZERO, r, rate).unwrap();
     let q = p.sequence_mut(seq).unwrap();
     q.video_tracks[0].items.push(v);
     q.audio_tracks[0].items.push(a);
     let fmt = if path.extension().is_some_and(|e| e == "mp4") { filmcraft_export::Format::H264 } else { filmcraft_export::Format::ProRes };
     let settings = filmcraft_export::ExportSettings { format: fmt, path: path.to_string_lossy().into_owned(), bitrate_kbps: 4000, ..Default::default() };
     let shared: filmcraft_media::SharedSource = Arc::new(src);
-    let provider = move |id: ItemId| (id == item).then(|| shared.clone());
+    let provider = move |id: ItemId| match &voice {
+        Some((v, src)) if id == *v => Some(src.clone()),
+        _ => (id == item).then(|| shared.clone()),
+    };
     filmcraft_export::export(&Arc::new(p), seq, &settings, &provider, &Default::default()).unwrap();
 }
 

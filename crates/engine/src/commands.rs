@@ -51,6 +51,53 @@ pub fn command_specs() -> &'static [CommandSpec] {
     SPECS.get_or_init(build)
 }
 
+/// Parameter names in `params` that `spec` does not take, by its parameter doc. Time parameters
+/// take their `frame` / `seconds` / `timecode` forms too; a doc with "…" (pass-through
+/// settings) takes anything.
+pub fn unknown_params(spec: &CommandSpec, params: &Value) -> Vec<String> {
+    let Some(given) = params.as_object() else { return Vec::new() };
+    if spec.params.contains('…') {
+        return Vec::new();
+    }
+    let mut known: Vec<String> = doc_keys(spec.params);
+    let mut extra = Vec::new();
+    for k in &known {
+        // `time` → `frame`, `seconds`, `timecode`; `startTime` → `startFrame`, …
+        let prefix = if k == "time" { Some("") } else { k.strip_suffix("Time") };
+        if let Some(prefix) = prefix {
+            for alt in ["frame", "seconds", "timecode"] {
+                extra.push(if prefix.is_empty() { alt.to_string() } else { format!("{prefix}{}{}", alt[..1].to_uppercase(), &alt[1..]) });
+            }
+        }
+    }
+    known.extend(extra);
+    // taken by every command (the UI's routing, waiting for jobs)
+    known.extend(["force", "wait"].map(str::to_string));
+    let mut out: Vec<String> = given.keys().filter(|k| !known.iter().any(|x| x == *k)).cloned().collect();
+    out.sort();
+    out
+}
+
+/// The `"key":` names of a parameter doc.
+fn doc_keys(doc: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = doc;
+    while let Some(i) = rest.find('"') {
+        let after = &rest[i + 1..];
+        let Some(j) = after.find('"') else { break };
+        let k = &after[..j];
+        if after[j + 1..].trim_start().starts_with(':')
+            && !k.is_empty()
+            && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !out.iter().any(|x| x == k)
+        {
+            out.push(k.to_string());
+        }
+        rest = &after[j + 1..];
+    }
+    out
+}
+
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
     command_specs().iter().find(|c| c.id == id)
 }
@@ -130,6 +177,16 @@ fn fps_p(p: &Value, cmd: &str) -> Result<Option<FrameRate>> {
     }
     Ok(Some(r))
 }
+/// A count of tracks to add to a sequence that has `have` of that kind; more than
+/// [`filmcraft_project::MAX_TRACKS`] in all is refused.
+fn track_count_p(p: &Value, k: &str, default: usize, have: usize, cmd: &str) -> Result<usize> {
+    let n = u64_p(p, k).map(|n| usize::try_from(n).unwrap_or(usize::MAX)).unwrap_or(default);
+    let max = filmcraft_project::MAX_TRACKS;
+    if have.saturating_add(n) > max {
+        return Err(bad(cmd, format!("`{k}`: a sequence has at most {max} {k} tracks ({have} already, {n} asked for)")));
+    }
+    Ok(n)
+}
 pub(crate) fn bool_p(p: &Value, k: &str) -> Option<bool> {
     p.get(k).and_then(Value::as_bool)
 }
@@ -138,17 +195,22 @@ pub(crate) fn u64_p(p: &Value, k: &str) -> Option<u64> {
 }
 
 /// Parse a time from params: `time` (ticks), `frame`, `seconds` or `timecode`, with `prefix`.
+/// Clamped to [`Tick::MIN`]..=[`Tick::MAX`] so hostile values cannot overflow the edit maths.
 pub(crate) fn time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
+    raw_time_p(s, p, prefix).map(|t| t.clamp(Tick::MIN, Tick::MAX))
+}
+fn raw_time_p(s: &Session, p: &Value, prefix: &str) -> Option<Tick> {
     let rate = s.sequence_rate();
     let k = |n: &str| if prefix.is_empty() { n.to_string() } else { format!("{prefix}{}{}", n[..1].to_uppercase(), &n[1..]) };
     if let Some(t) = p.get(k("time")).and_then(Value::as_i64) {
         return Some(Tick(t));
     }
     if let Some(f) = p.get(k("frame")).and_then(Value::as_i64) {
-        return Some(rate.tick_of(f));
+        return Some(rate.tick_of(f.clamp(-(1 << 40), 1 << 40)));
     }
     if let Some(sec) = p.get(k("seconds")).and_then(Value::as_f64) {
-        return Some(Tick::from_seconds_f64(sec));
+        // NaN reads as 0; the `as` cast inside saturates and the caller clamps
+        return Some(Tick::from_seconds_f64(sec.clamp(-1e12, 1e12)));
     }
     if let Some(tc) = p.get(k("timecode")).and_then(Value::as_str) {
         let df = s.active_sequence().map(|q| q.settings.drop_frame).unwrap_or(false);
@@ -169,7 +231,7 @@ fn resolve_effect_name(s: &Session, p: &Value, name: &str) -> Option<&'static fi
         return Some(d);
     }
     let n = name.to_ascii_lowercase();
-    let cands: Vec<_> = filmcraft_project::effect_defs().iter().filter(|e| e.name.to_ascii_lowercase() == n).collect();
+    let cands: Vec<_> = filmcraft_project::all_effect_defs().into_iter().filter(|e| e.name.to_ascii_lowercase() == n).collect();
     if cands.len() <= 1 {
         return cands.first().copied().or_else(|| filmcraft_project::find_effect(&n));
     }
@@ -195,11 +257,37 @@ pub(crate) fn track_p(s: &Session, p: &Value, k: &str) -> Option<TrackId> {
     // "V1", "A2"
     let name = v.as_str()?;
     let seq = s.active_sequence()?;
-    let (kind, idx) = name.split_at(1);
-    let i: usize = idx.parse().ok()?;
-    let tracks = if kind.eq_ignore_ascii_case("v") { &seq.video_tracks } else { &seq.audio_tracks };
+    let mut chars = name.chars();
+    let kind = chars.next()?;
+    let i: usize = chars.as_str().parse().ok()?;
+    let tracks = match kind.to_ascii_lowercase() {
+        'v' => &seq.video_tracks,
+        'a' => &seq.audio_tracks,
+        _ => return None,
+    };
     tracks.get(i.checked_sub(1)?).map(|t| t.id)
 }
+/// The destination track named by `key` (an id, or a name such as `"V2"`) for a placement, or
+/// `None` when not given. A name past the last track of its kind adds tracks up to it, as dropping
+/// above the top track does; any other track that doesn't exist is an error, never a silent
+/// fallback to another track (which would overwrite what is there).
+pub(crate) fn dest_track_p(s: &mut Session, p: &Value, key: &str, video: bool, cmd: &str) -> Result<Option<TrackId>> {
+    let Some(v) = p.get(key).filter(|v| !v.is_null()) else { return Ok(None) };
+    if let Some(t) = track_p(s, p, key) {
+        let exists = s.active_sequence().is_some_and(|q| q.all_tracks().any(|x| x.id == t));
+        return if exists { Ok(Some(t)) } else { Err(bad(cmd, format!("no track {v} in this sequence"))) };
+    }
+    let name = v.as_str().ok_or_else(|| bad(cmd, format!("`{key}`: a track id or a name such as \"V2\"")))?;
+    let mut chars = name.chars();
+    let is_video = chars.next().is_some_and(|c| c.eq_ignore_ascii_case(&'v'));
+    let n = chars.as_str().parse::<usize>().ok().filter(|n| (1..=filmcraft_project::MAX_TRACKS).contains(n) && is_video == video);
+    let Some(n) = n else { return Err(bad(cmd, format!("no track {name}: give V1… for video, A1… for audio"))) };
+    let have = s.active_sequence().map_or(0, |q| if video { q.video_tracks.len() } else { q.audio_tracks.len() });
+    let add = n.saturating_sub(have);
+    s.execute("sequence.addTracks", if video { json!({"video": add, "audio": 0}) } else { json!({"video": 0, "audio": add}) })?;
+    track_p(s, p, key).map(Some).ok_or_else(|| bad(cmd, format!("no track {name}")))
+}
+
 pub(crate) fn item_p(p: &Value, k: &str) -> Option<ItemId> {
     u64_p(p, k).map(ItemId)
 }
@@ -228,6 +316,17 @@ pub(crate) fn default_seq_settings_for(info: &filmcraft_media::MediaInfo) -> Seq
         st.height = v.height;
         st.frame_rate = v.frame_rate;
         st.preset = format!("{}x{} {}", v.width, v.height, v.frame_rate.label());
+        // HDR media (phones record HLG, HDR cameras PQ): a sequence in its HDR working space, as
+        // the clip is graded and delivered in HDR
+        let working = match v.color.transfer {
+            filmcraft_color::Transfer::Hlg => Some(filmcraft_color::WorkingSpace::Rec2100Hlg),
+            filmcraft_color::Transfer::Pq => Some(filmcraft_color::WorkingSpace::Rec2100Pq),
+            _ => None,
+        };
+        if let Some(w) = working {
+            st.color.working = w;
+            st.working_space = w.label().into();
+        }
     }
     if let Some(a) = &info.audio {
         st.sample_rate = a.sample_rate.max(8000);
@@ -311,12 +410,24 @@ fn import_source(
     Ok(id)
 }
 
-fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value) -> Result<Value> {
+/// Width, height (the active sequence's unless given) and duration (seconds, `default_secs`
+/// unless given) of a new synthetic item, clamped to sane values.
+fn synthetic_geometry(s: &Session, p: &Value, default_secs: f64) -> (u32, u32, f64) {
     let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-    let w = u64_p(p, "width").map(|v| v as u32).unwrap_or(st.width);
-    let h = u64_p(p, "height").map(|v| v as u32).unwrap_or(st.height);
-    let secs = f64_p(p, "seconds").unwrap_or(5.0);
-    let name = str_p(p, "name").unwrap_or(name).to_string();
+    let w = u64_p(p, "width").map_or(st.width, |v| v.clamp(16, 16_384) as u32);
+    let h = u64_p(p, "height").map_or(st.height, |v| v.clamp(16, 16_384) as u32);
+    let secs = f64_p(p, "seconds").filter(|v| v.is_finite()).unwrap_or(default_secs).clamp(0.05, 86_400.0);
+    (w, h, secs)
+}
+
+fn new_generator(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value) -> Result<Value> {
+    new_generator_for(s, g, name, label, p, 5.0)
+}
+
+fn new_generator_for(s: &mut Session, g: Generator, name: &str, label: Label, p: &Value, default_secs: f64) -> Result<Value> {
+    let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
+    let (w, h, secs) = synthetic_geometry(s, p, default_secs);
+    let name = str_p(p, "name").filter(|n| !n.trim().is_empty()).unwrap_or(name).to_string();
     let src = GeneratorSource::new(g, w, h, st.frame_rate, Tick::from_seconds_f64(secs));
     let pool = s.media.clone();
     let id = s.edit(&format!("New {name}"), |pr, st| {
@@ -461,6 +572,27 @@ fn edit_at_source(s: &mut Session, insert: bool) -> Result<Value> {
     Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
 }
 
+/// Add Marker with the Source monitor focused: a clip marker on the media it shows (a subclip's
+/// parent), at the Source playhead unless a time is given (media time).
+fn add_source_marker(s: &mut Session, p: &Value) -> Result<Value> {
+    let item = s.state.source_item.ok_or_else(|| EngineError::Other("open a clip in the Source monitor".into()))?;
+    let v = crate::clip_ops::source_view(s, item).ok_or_else(|| EngineError::Other("the Source monitor clip has no media".into()))?;
+    let t = time_p(s, p, "").unwrap_or(s.state.source_playhead).clamp(v.start, v.end);
+    let name = str_p(p, "name").unwrap_or("").to_string();
+    let comment = str_p(p, "comment").unwrap_or("").to_string();
+    let color = str_p(p, "color").and_then(Label::from_name).unwrap_or(Label::Green);
+    let dur = p.get("durationFrames").and_then(Value::as_i64).map(|f| v.rate.tick_of(f.clamp(0, 1 << 40))).unwrap_or_default();
+    let media = v.media;
+    let id = s.edit("Add Marker", |pr, _| {
+        let id = MarkerId(pr.alloc_id());
+        let m = pr.item_mut(media).and_then(|i| i.as_media_mut()).ok_or_else(|| EngineError::Other("the Source monitor clip has no media".into()))?;
+        m.markers.push(Marker { id, start: t, duration: dur, name, comment, kind: MarkerKind::Comment, color });
+        m.markers.sort_by_key(|k| k.start);
+        Ok(id)
+    })?;
+    Ok(json!({"marker": id.0, "item": media.0}))
+}
+
 fn marker_list_mut(s: &mut Session) -> Result<(ItemId, Tick)> {
     let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
     Ok((seq, s.playhead()))
@@ -509,19 +641,22 @@ fn build() -> Vec<CommandSpec> {
                 let mut st = SequenceSettings::default();
                 if let Some(from) = item_p(p, "fromItem").and_then(|i| s.project.item(i)).and_then(|i| i.as_media()) {
                     st = default_seq_settings_for(&from.info);
+                    // media metadata is hostile too: clamp it, then check what the caller asked for
+                    st.sanitize();
                 }
                 if let Some(w) = u64_p(p, "width") {
-                    st.width = w as u32;
+                    st.width = u32::try_from(w).unwrap_or(u32::MAX);
                 }
                 if let Some(h) = u64_p(p, "height") {
-                    st.height = h as u32;
+                    st.height = u32::try_from(h).unwrap_or(u32::MAX);
                 }
                 if let Some(fps) = fps_p(p, "file.newSequence")? {
                     st.frame_rate = fps;
                 }
                 if let Some(sr) = u64_p(p, "sampleRate") {
-                    st.sample_rate = sr as u32;
+                    st.sample_rate = u32::try_from(sr).unwrap_or(u32::MAX);
                 }
+                st.check().map_err(|e| bad("file.newSequence", e))?;
                 if let Some(m) = str_p(p, "mix") {
                     st.audio_master =
                         crate::mixer::channels_from(m).ok_or_else(|| bad("file.newSequence", format!("unknown mix `{m}` (Stereo, Mono, 5.1, Adaptive)")))?;
@@ -534,8 +669,8 @@ fn build() -> Vec<CommandSpec> {
                     None => None,
                 };
                 st.preset = format!("{}x{} {}", st.width, st.height, st.frame_rate.label());
-                let nv = u64_p(p, "video").unwrap_or(3) as usize;
-                let na = u64_p(p, "audio").unwrap_or(3) as usize;
+                let nv = track_count_p(p, "video", 3, 0, "file.newSequence")?;
+                let na = track_count_p(p, "audio", 3, 0, "file.newSequence")?;
                 let n = s.project.sequences().count() + 1;
                 let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format!("Sequence {n:02}"));
                 let seq_label = s.prefs.labels.defaults.sequence;
@@ -568,53 +703,72 @@ fn build() -> Vec<CommandSpec> {
             let id = s.edit("New Bin", |pr, _| Ok(pr.add_bin(&n, parent)))?;
             Ok(json!({"bin": id.0}))
         }),
-        cmd!("file.newAdjustmentLayer", "Adjustment Layer…", ["File", "New"], None, r#"{"seconds":f64=5}"#, always, |s, p| {
-            let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
-            let secs = f64_p(p, "seconds").unwrap_or(5.0);
-            let id = s.edit("New Adjustment Layer", |pr, st2| {
-                let id = pr.add_item(
-                    "Adjustment Layer",
-                    Label::Lavender,
-                    ItemKind::AdjustmentLayer { width: st.width, height: st.height, rate: st.frame_rate, duration: Tick::from_seconds_f64(secs) },
-                    None,
-                );
-                st2.project_selection = vec![id];
-                Ok(id)
-            })?;
-            Ok(json!({"item": id.0}))
+        cmd!(
+            "file.newAdjustmentLayer",
+            "Adjustment Layer…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"#,
+            always,
+            |s, p| {
+                let st = s.active_sequence().map(|q| q.settings.clone()).unwrap_or_default();
+                let (width, height, secs) = synthetic_geometry(s, p, 5.0);
+                let name = str_p(p, "name").filter(|n| !n.trim().is_empty()).unwrap_or("Adjustment Layer").to_string();
+                let id = s.edit("New Adjustment Layer", |pr, st2| {
+                    let id = pr.add_item(
+                        &name,
+                        Label::Lavender,
+                        ItemKind::AdjustmentLayer { width, height, rate: st.frame_rate, duration: Tick::from_seconds_f64(secs) },
+                        None,
+                    );
+                    st2.project_selection = vec![id];
+                    Ok(id)
+                })?;
+                Ok(json!({"item": id.0}))
+            }
+        ),
+        cmd!(
+            "file.newBarsAndTone",
+            "Bars and Tone…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=10,"width":u32?,"height":u32?,"name":str?}"#,
+            always,
+            |s, p| new_generator_for(s, Generator::BarsAndTone, "Bars and Tone", Label::Lavender, p, 10.0)
+        ),
+        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"#, always, |s, p| {
+            new_generator(s, Generator::BlackVideo, "Black Video", Label::Lavender, p)
         }),
-        cmd!("file.newBarsAndTone", "Bars and Tone…", ["File", "New"], None, r#"{"seconds":f64=10}"#, always, |s, p| new_generator(
-            s,
-            Generator::BarsAndTone,
-            "Bars and Tone",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newBlackVideo", "Black Video…", ["File", "New"], None, r#"{"seconds":f64}"#, always, |s, p| new_generator(
-            s,
-            Generator::BlackVideo,
-            "Black Video",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newColorMatte", "Color Matte…", ["File", "New"], None, r##"{"color":"#rrggbb","seconds":f64}"##, always, |s, p| {
-            let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
-            new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
-        }),
-        cmd!("file.newCountingLeader", "Universal Counting Leader…", ["File", "New"], None, "{}", always, |s, p| new_generator(
-            s,
-            Generator::CountingLeader,
-            "Universal Counting Leader",
-            Label::Lavender,
-            p
-        )),
-        cmd!("file.newTransparentVideo", "Transparent Video…", ["File", "New"], None, "{}", always, |s, p| new_generator(
-            s,
-            Generator::TransparentVideo,
-            "Transparent Video",
-            Label::Lavender,
-            p
-        )),
+        cmd!(
+            "file.newColorMatte",
+            "Color Matte…",
+            ["File", "New"],
+            None,
+            r##"{"color":"#rrggbb","seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"##,
+            always,
+            |s, p| {
+                let c = str_p(p, "color").and_then(filmcraft_color::parse_hex).unwrap_or([0.1, 0.1, 0.1, 1.0]);
+                new_generator(s, Generator::ColorMatte { color: c }, "Color Matte", Label::Lavender, p)
+            }
+        ),
+        cmd!(
+            "file.newCountingLeader",
+            "Universal Counting Leader…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"#,
+            always,
+            |s, p| new_generator(s, Generator::CountingLeader, "Universal Counting Leader", Label::Lavender, p)
+        ),
+        cmd!(
+            "file.newTransparentVideo",
+            "Transparent Video…",
+            ["File", "New"],
+            None,
+            r#"{"seconds":f64=5,"width":u32?,"height":u32?,"name":str?}"#,
+            always,
+            |s, p| new_generator(s, Generator::TransparentVideo, "Transparent Video", Label::Lavender, p)
+        ),
         cmd!(
             "file.importDemoFootage",
             "Demo Footage",
@@ -889,7 +1043,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq"?,"dnxProfile":"lb|sq|hq|hqx"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|flac"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"maxBitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"keyframeDistance":u32?,"sdr":bool?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"alpha":bool=false,"dnxProfile":"lb|sq|hq|hqx"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -1236,8 +1390,9 @@ fn build() -> Vec<CommandSpec> {
             Ok(json!({"linkedSelection": s.state.linked_selection}))
         }),
         cmd!("sequence.addTracks", "Add Tracks…", ["Sequence"], None, r#"{"video":n=1,"audio":n=0}"#, has_seq, |s, p| {
-            let nv = u64_p(p, "video").unwrap_or(1) as usize;
-            let na = u64_p(p, "audio").unwrap_or(0) as usize;
+            let (hv, ha) = s.active_sequence().map(|q| (q.video_tracks.len(), q.audio_tracks.len())).unwrap_or_default();
+            let nv = track_count_p(p, "video", 1, hv, "sequence.addTracks")?;
+            let na = track_count_p(p, "audio", 0, ha, "sequence.addTracks")?;
             s.edit_sequence("Add Tracks", |q, ctx, _| {
                 for _ in 0..nv {
                     let n = q.video_tracks.len() + 1;
@@ -1283,20 +1438,22 @@ fn build() -> Vec<CommandSpec> {
                     }
                     let q = pr.sequence_mut(id).ok_or(EngineError::NoSequence)?;
                     if let Some(w) = u64_p(&p, "width") {
-                        q.settings.width = w as u32;
+                        q.settings.width = u32::try_from(w).unwrap_or(u32::MAX);
                     }
                     if let Some(h) = u64_p(&p, "height") {
-                        q.settings.height = h as u32;
+                        q.settings.height = u32::try_from(h).unwrap_or(u32::MAX);
                     }
                     if let Some(f) = fps {
                         q.settings.frame_rate = f;
                     }
                     if let Some(sr) = u64_p(&p, "sampleRate") {
-                        q.settings.sample_rate = sr as u32;
+                        q.settings.sample_rate = u32::try_from(sr).unwrap_or(u32::MAX);
                     }
                     if let Some(m) = mix {
                         q.settings.audio_master = m;
                     }
+                    // the edit is discarded on error, so the project keeps its old settings
+                    q.settings.check().map_err(|e| bad("sequence.settings", e))?;
                     Ok(())
                 })?;
                 Ok(Value::Null)
@@ -1405,9 +1562,12 @@ fn build() -> Vec<CommandSpec> {
             "Add Marker",
             ["Markers"],
             Some("M"),
-            r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?}"#,
+            r#"{"time":ticks?,"name":str?,"comment":str?,"color":label?,"durationFrames":i64?,"target":"program|source"?}"#,
             has_seq,
             |s, p| {
+                if str_p(p, "target") == Some("source") {
+                    return add_source_marker(s, p);
+                }
                 let (_seq, ph) = marker_list_mut(s)?;
                 let t = time_p(s, p, "").unwrap_or(ph);
                 let name = str_p(p, "name").unwrap_or("").to_string();
@@ -1565,8 +1725,9 @@ fn build() -> Vec<CommandSpec> {
                 let item = item_p(p, "item").ok_or_else(|| bad("timeline.place", "need `item`"))?;
                 let at = time_p(s, p, "").unwrap_or(s.playhead());
                 let tg = s.targeting();
-                let v = track_p(s, p, "track").or(tg.video_dest);
-                let a = track_p(s, p, "audioTrack").or(tg.audio_dest);
+                let n0 = s.history.undo.len();
+                let v = dest_track_p(s, p, "track", true, "timeline.place")?.or(tg.video_dest);
+                let a = dest_track_p(s, p, "audioTrack", false, "timeline.place")?.or(tg.audio_dest);
                 let pi = s.project.item(item).ok_or_else(|| bad("timeline.place", "no such item"))?;
                 let full = match &pi.kind {
                     // Settings ▸ Timeline ▸ Still Image Default Duration
@@ -1586,6 +1747,8 @@ fn build() -> Vec<CommandSpec> {
                 let sin = p.get("sourceIn").and_then(Value::as_i64).map(Tick).or(mi).unwrap_or_default();
                 let dur = p.get("duration").and_then(Value::as_i64).map(Tick).unwrap_or_else(|| mo.unwrap_or(full) - sin);
                 let ids = place_item(s, item, TimeRange::new(sin, dur), at, v, a, bool_p(p, "insert").unwrap_or(false), "Place Clip", None)?;
+                // tracks added for the destination and the placement undo as one step
+                crate::clip_ops::collapse_history(s, n0, "Place Clip");
                 Ok(json!({"clips": ids.iter().map(|c| c.0).collect::<Vec<_>>()}))
             }
         ),
@@ -1616,19 +1779,40 @@ fn build() -> Vec<CommandSpec> {
             }
             Ok(json!({"selection": s.state.selection.iter().map(|c| c.0).collect::<Vec<_>>()}))
         }),
-        cmd!("timeline.move", "Move Clips", [], None, r#"{"moves":[{"clip":id,"track":id|"V2","time":ticks}],"insert":bool}"#, has_seq, |s, p| {
-            let moves: Vec<(ClipId, TrackId, Tick)> = p
-                .get("moves")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|m| Some((clip_p(m, "clip")?, track_p(s, m, "track")?, Tick(m.get("time")?.as_i64()?)))).collect())
-                .unwrap_or_default();
-            if moves.is_empty() {
-                return Err(bad("timeline.move", "need `moves`"));
+        cmd!(
+            "timeline.move",
+            "Move Clips",
+            [],
+            None,
+            r#"{"moves":[{"clip":id,"track":id|"V2"?,"time":ticks|"seconds"|"frame"|"timecode"}],"insert":bool}"#,
+            has_seq,
+            |s, p| {
+                let list = p
+                    .get("moves")
+                    .and_then(Value::as_array)
+                    .filter(|a| !a.is_empty())
+                    .ok_or_else(|| bad("timeline.move", "need `moves`: [{clip, time|seconds|frame|timecode, track?}]"))?;
+                let mut moves: Vec<(ClipId, TrackId, Tick)> = Vec::with_capacity(list.len());
+                for (i, m) in list.iter().enumerate() {
+                    let clip = clip_p(m, "clip").ok_or_else(|| bad("timeline.move", format!("moves[{i}]: need `clip`")))?;
+                    // the clip's own track unless another is named
+                    let track = match m.get("track") {
+                        Some(_) => track_p(s, m, "track").ok_or_else(|| bad("timeline.move", format!("moves[{i}]: unknown `track`")))?,
+                        None => s
+                            .active_sequence()
+                            .and_then(|q| q.find_item(clip))
+                            .map(|(t, _)| t)
+                            .ok_or_else(|| bad("timeline.move", format!("moves[{i}]: no clip {}", clip.0)))?,
+                    };
+                    let time =
+                        time_p(s, m, "").ok_or_else(|| bad("timeline.move", format!("moves[{i}]: need `time` (ticks), `seconds`, `frame` or `timecode`")))?;
+                    moves.push((clip, track, time));
+                }
+                let ins = bool_p(p, "insert").unwrap_or(false);
+                s.edit_sequence(if ins { "Move (Insert)" } else { "Move" }, |q, ctx, _| Ok(edit::move_items(q, &moves, ins, ctx)?))?;
+                Ok(Value::Null)
             }
-            let ins = bool_p(p, "insert").unwrap_or(false);
-            s.edit_sequence(if ins { "Move (Insert)" } else { "Move" }, |q, ctx, _| Ok(edit::move_items(q, &moves, ins, ctx)?))?;
-            Ok(Value::Null)
-        }),
+        ),
         cmd!(
             "timeline.trim",
             "Trim Edit",
@@ -1925,6 +2109,10 @@ fn build() -> Vec<CommandSpec> {
             let is_audio = def.kind == filmcraft_project::EffectKind::Audio;
             let (fw, fh) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
             let label = format!("Apply {}", def.name);
+            // audio plug-ins: create the plug-in once now (an error if it cannot load) for its state
+            let mut template = def.instance();
+            let sr = s.active_sequence().map_or(48000, |q| q.settings.sample_rate);
+            crate::audio_plugins::prepare_instance(&mut template, sr, "effects.apply")?;
             s.edit_sequence(&label, |q, _, _| {
                 let mut n = 0;
                 for t in q.all_tracks_mut() {
@@ -1932,7 +2120,7 @@ fn build() -> Vec<CommandSpec> {
                         continue;
                     }
                     for i in t.items.iter_mut().filter(|i| clips.contains(&i.id)) {
-                        let mut inst = def.instance();
+                        let mut inst = template.clone();
                         resolve_auto_points(&mut inst, (fw, fh), (fw, fh));
                         // standard effects go before the intrinsic ones (render order)
                         let pos = i.effects.iter().position(|e| e.def().is_some_and(|d| d.intrinsic)).unwrap_or(i.effects.len());
@@ -2196,7 +2384,9 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::settings::commands());
     v.extend(crate::mixer::commands());
     v.extend(crate::multicam::commands());
+    v.extend(crate::autoswitch::commands());
     v.extend(crate::essential_sound::commands());
+    v.extend(crate::audio_plugins::commands());
     v.extend(crate::color::commands());
     v.extend(crate::graphics::commands());
     v.extend(crate::graphic_templates::commands());
@@ -2208,6 +2398,11 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::presets::commands());
     v.extend(crate::export_tools::commands());
     v.extend(crate::transcript::commands());
+    v.extend(crate::silence::commands());
+    v.extend(crate::censor::commands());
+    v.extend(crate::text_style::commands());
+    v.extend(crate::vertical::commands());
+    v.extend(crate::creator::commands());
     v.extend(crate::panels::commands());
     v.extend(crate::scopes::commands());
     v.extend(crate::remix::commands());
@@ -2505,8 +2700,8 @@ fn list_effects(p: &Value) -> Value {
     let kind = str_p(p, "kind");
     let folder = str_p(p, "folder");
     let detail = p.get("detail").and_then(Value::as_bool).unwrap_or(false);
-    let out = filmcraft_project::effect_defs()
-        .iter()
+    let out = filmcraft_project::all_effect_defs()
+        .into_iter()
         .filter(|d| kind.is_none_or(|k| format!("{:?}", d.kind).eq_ignore_ascii_case(k)))
         .filter(|d| folder.is_none_or(|f| d.category.join("/").starts_with(f)))
         .map(|d| {
@@ -2769,7 +2964,11 @@ fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     {
         name_project(std::sync::Arc::make_mut(&mut s.project), name);
     }
-    let bytes = filmcraft_format::encode(&s.project, false);
+    // the Timeline tabs travel with the file (restored on open)
+    let mut snapshot = (*s.project).clone();
+    snapshot.open_sequences =
+        Some(filmcraft_project::OpenSequences { tabs: s.state.open_sequences.clone(), active: s.state.active_sequence }).filter(|o| o.active.is_some());
+    let bytes = filmcraft_format::encode(&snapshot, false);
     let mut backup = None;
     if adopt && s.path.as_deref() == Some(path) && s.loaded_schema < filmcraft_format::SCHEMA_VERSION {
         let b = schema_backup_path(path, s.loaded_schema);
@@ -2797,18 +2996,32 @@ fn schema_backup_path(path: &str, schema: u32) -> String {
 }
 
 /// Make `proj` the session's project (fresh history, media pool and editor state).
-fn install_project(s: &mut Session, proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: Option<String>, clean: bool) {
+    // a damaged file must not reach the renderer with a zero-sized frame or a zero sample rate
+    proj.sanitize();
     let proxies = s.media.use_proxies();
     s.media = std::sync::Arc::new(crate::MediaPool::default());
     s.media.set_use_proxies(proxies);
     s.offline = Default::default();
-    let first = proj.sequences().next().map(|i| i.id);
+    // the Timeline tabs open when it was saved, else its first sequence (it always opened the
+    // first one, e.g. a multi-camera source sequence instead of the edit)
+    let saved = proj.open_sequences.take().unwrap_or_default();
+    let is_seq = |id: &ItemId| proj.sequence(*id).is_some();
+    let mut tabs: Vec<ItemId> = saved.tabs.iter().copied().filter(is_seq).collect();
+    tabs.dedup();
+    let active = saved.active.filter(is_seq).or_else(|| tabs.first().copied()).or_else(|| proj.sequences().next().map(|i| i.id));
+    if let Some(a) = active
+        && !tabs.contains(&a)
+    {
+        tabs.push(a);
+    }
     s.project = std::sync::Arc::new(proj);
+    crate::audio_plugins::on_project_installed(&s.project);
     s.history = Default::default();
     s.history.limit = 200;
     s.state = crate::Session::default().state;
-    s.state.active_sequence = first;
-    s.state.open_sequences = first.into_iter().collect();
+    s.state.active_sequence = active;
+    s.state.open_sequences = tabs;
     if let Some(p) = &path
         && !cfg!(target_arch = "wasm32")
     {
@@ -2843,7 +3056,7 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
         Some(id) => per.candidates.iter().position(|c| c.id == id).ok_or_else(|| bad("file.recover", format!("no recovery session `{id}`")))?,
         None => 0,
     };
-    let c = per.candidates[idx].clone();
+    let c = per.candidates.get(idx).cloned().ok_or_else(|| EngineError::Other("there is nothing to recover".into()))?;
     let saved_at = per.local_time(c.meta.saved_unix);
     let loaded = crate::autosave::load_candidate(&c).map_err(EngineError::Other)?;
     install_project(s, loaded.project, c.meta.project_path.clone(), false);

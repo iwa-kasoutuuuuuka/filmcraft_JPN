@@ -36,7 +36,7 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
             f.write_all(data)?;
             f.sync_all()?;
         }
-        fs::rename(&tmp, path)
+        rename_retrying(&tmp, path)
     })();
     if let Err(e) = r {
         let _ = fs::remove_file(&tmp);
@@ -44,6 +44,23 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     }
     sync_dir(&parent_dir(path));
     Ok(())
+}
+
+/// Rename `from` over `to`. On Windows a file that another program holds open without delete
+/// sharing (a virus scanner, a cloud sync client, the search indexer) can't be replaced and the
+/// rename fails with "access denied"; such locks are brief, so retry for about a second.
+fn rename_retrying(from: &Path, to: &Path) -> io::Result<()> {
+    let mut wait = std::time::Duration::from_millis(10);
+    for _ in 0..7 {
+        match fs::rename(from, to) {
+            Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied => {
+                std::thread::sleep(wait);
+                wait = wait.saturating_mul(2);
+            }
+            r => return r,
+        }
+    }
+    fs::rename(from, to)
 }
 
 /// Best-effort directory fsync (persists the rename on POSIX; not possible on Windows, where
@@ -89,6 +106,27 @@ mod tests {
         assert_eq!(fs::read(&p).unwrap(), b"good");
         let tmp_left = fs::read_dir(&d).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp")).count();
         assert_eq!(tmp_left, 0);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A program briefly holding the project open without delete sharing (antivirus, sync
+    /// clients) made a save fail at once with "access denied" on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn save_waits_out_a_brief_lock_on_windows() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tmpdir("locked");
+        let p = d.join("a.fcproj");
+        atomic_write(&p, b"one").unwrap();
+        // FILE_SHARE_READ only: the file can't be replaced while this handle is open
+        let held = OpenOptions::new().read(true).share_mode(1).open(&p).unwrap();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            drop(held);
+        });
+        atomic_write(&p, b"two").unwrap();
+        t.join().unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"two");
         fs::remove_dir_all(&d).unwrap();
     }
 

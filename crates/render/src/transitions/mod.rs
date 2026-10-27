@@ -32,6 +32,7 @@ mod dissolve;
 mod grunge;
 mod legacy;
 mod lights;
+mod morph;
 mod motion;
 mod special;
 pub mod wipe;

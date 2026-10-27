@@ -66,6 +66,30 @@ impl Tool {
             Tool::Type => "Type Tool",
         }
     }
+    /// The name in the UI language.
+    pub fn localized_label(self) -> &'static str {
+        if crate::i18n::is_japanese() { self.japanese_label() } else { self.label() }
+    }
+    fn japanese_label(self) -> &'static str {
+        match self {
+            Tool::Selection => "選択ツール",
+            Tool::TrackSelectForward => "前方選択ツール",
+            Tool::TrackSelectBackward => "後方選択ツール",
+            Tool::Ripple => "リップル編集ツール",
+            Tool::Rolling => "ローリング編集ツール",
+            Tool::RateStretch => "レート調整ツール",
+            Tool::Remix => "リミックスツール",
+            Tool::Razor => "レーザーツール",
+            Tool::Slip => "スリップツール",
+            Tool::Slide => "スライドツール",
+            Tool::Pen => "ペンツール",
+            Tool::Rectangle => "長方形ツール",
+            Tool::Ellipse => "楕円形ツール",
+            Tool::Hand => "手のひらツール",
+            Tool::Zoom => "ズームツール",
+            Tool::Type => "文字ツール",
+        }
+    }
     pub fn shortcut(self) -> &'static str {
         match self {
             Tool::Selection => "V",
@@ -107,10 +131,11 @@ impl Tool {
     }
     pub fn from_name(s: &str) -> Option<Tool> {
         let n = s.to_ascii_lowercase().replace([' ', '_', '-'], "").replace("tool", "");
-        Tool::ALL
-            .iter()
-            .copied()
-            .find(|t| format!("{t:?}").to_ascii_lowercase() == n || t.label().to_ascii_lowercase().replace([' ', '-'], "").replace("tool", "") == n)
+        Tool::ALL.iter().copied().find(|t| {
+            format!("{t:?}").to_ascii_lowercase() == n
+                || t.label().to_ascii_lowercase().replace([' ', '-'], "").replace("tool", "") == n
+                || t.japanese_label().replace("ツール", "").replace([' ', '・'], "") == s.replace("ツール", "").replace([' ', '・'], "")
+        })
     }
     /// Tools-panel groups (Premiere groups related tools under one button with a flyout).
     pub fn groups() -> Vec<Vec<Tool>> {
@@ -708,6 +733,13 @@ pub struct GfxEdit {
     pub layer: usize,
     pub caret: usize,
     pub anchor: usize,
+    /// Text being composed in the input method (Japanese kana → kanji conversion), shown at the
+    /// caret until it is committed.
+    #[serde(default)]
+    pub preedit: String,
+    /// The clause of `preedit` being converted (character range), drawn highlighted.
+    #[serde(default)]
+    pub preedit_clause: Option<(usize, usize)>,
 }
 
 fn captions_tab() -> String {

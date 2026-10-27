@@ -33,7 +33,7 @@ pub fn field_id(name: &str) -> String {
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some(item) = target(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a clip to view its metadata.");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("Select a clip to view its metadata.", "クリップを選択すると、メタデータが表示されます。"));
         app.auto.add("metadata.empty", rect, "Select a clip to view its metadata.");
         return;
     };
@@ -45,7 +45,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut commit: Option<(String, String)> = None;
     // header: "Clip: name" with a rule (like the Info panel)
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-    let g = ui.painter().layout_no_wrap(format!("Clip: {name}"), Tokens::semibold(14.0), t.text);
+    let g = ui.painter().layout_no_wrap(crate::tf!("Clip: {name}", "クリップ: {name}"), Tokens::semibold(14.0), t.text);
     let gw = g.size().x;
     ui.painter().galley(egui::pos2(hr.min.x, hr.center().y - g.size().y / 2.0), g, t.text);
     ui.painter().line_segment([egui::pos2(hr.min.x + gw + 10.0, hr.center().y), egui::pos2(hr.max.x, hr.center().y)], egui::Stroke::new(2.0, t.separator));

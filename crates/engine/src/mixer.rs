@@ -760,6 +760,8 @@ fn add_insert(s: &mut Session, p: &Value) -> Result<Value> {
         .filter(|d| d.kind == filmcraft_project::EffectKind::Audio && !d.intrinsic)
         .ok_or_else(|| bad("mixer.addInsert", format!("`{eid}` is not an audio effect")))?;
     let mut inst = def.instance();
+    let sr = active_seq(s)?.settings.sample_rate;
+    crate::audio_plugins::prepare_instance(&mut inst, sr, "mixer.addInsert")?;
     inst.post_fader = bool_p(p, "postFader").unwrap_or(false);
     let slot = u64_p(p, "slot").map(|v| v as usize);
     let n = active_seq(s)?.strip(id).map(|t| t.effects.len()).unwrap_or(0);
@@ -1151,7 +1153,7 @@ fn set_default_transition(s: &mut Session, p: &Value) -> Result<Value> {
     let def = find_effect(id)
         .or_else(|| find_transition(id, filmcraft_project::EffectKind::VideoTransition))
         .or_else(|| find_transition(id, filmcraft_project::EffectKind::AudioTransition))
-        .or_else(|| filmcraft_project::effect_defs().iter().find(|d| d.name.eq_ignore_ascii_case(id)))
+        .or_else(|| filmcraft_project::all_effect_defs().into_iter().find(|d| d.name.eq_ignore_ascii_case(id)))
         .ok_or_else(|| bad("effects.setDefaultTransition", format!("no effect `{id}`")))?;
     match def.kind {
         filmcraft_project::EffectKind::AudioTransition => s.state.default_audio_transition = def.id.to_string(),

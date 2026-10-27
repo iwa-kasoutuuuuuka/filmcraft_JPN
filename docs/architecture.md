@@ -27,7 +27,7 @@ Design principles:
  L2  edit · codecs · interchange · captions · speech
  L1  frame · media · project · audio-dsp · text
  L0  foundation: time · geom · color · bitstream · testkit (dev-dependency only)
-     codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · h264 · h264enc · hevc · vp9 · av1 · mpeg2v · prores · dnx · aac · ac3 · opus
+     codecs/containers: isobmff · matroska · mxf · cfb · mpegts · ogg · riff · h264 · h264enc · av1enc · hevc · vp9 · av1 · mpeg2v · prores · dnx · aac · ac3 · opus · flac
 ```
 
 Crates are named `filmcraft-<dir>` (`crates/time` is `filmcraft-time`). The apps are `filmcraft`
@@ -45,7 +45,9 @@ and `filmcraft-cli`.
 | `cfb` | L0 | Compound File Binary ([MS-CFB] structured storage) reader and writer, the container of AAF ([README](../crates/cfb/README.md)) |
 | `mpegts` | L0 | MPEG-2 Systems demux (H.222.0): transport streams (188 / 192-byte BDAV / 204), program streams (MPEG-2 / MPEG-1, VOB, MOD), PSI, PES, PTS / PCR, access-unit index built on open ([README](../crates/mpegts/README.md)) |
 | `ogg` | L0 | Ogg demux (RFC 3533), Ogg Opus timing (RFC 7845 granules, pre-skip, end trimming), Vorbis headers |
+| `riff` | L0 | RIFF chunk walker and AVI demux (AVI 1.0 and OpenDML): `avih` / `strh` / `strf` (`BITMAPINFOHEADER`, `WAVEFORMATEX(TENSIBLE)`), chunk tables from the `indx` / `ix##` OpenDML indexes, `idx1` (relative or absolute offsets) or a bounded `movi` scan, `AVIX` extensions ([README](../crates/riff/README.md)) |
 | `h264`, `h264enc` | L0 | H.264 decoder; H.264 encoder |
+| `av1enc` | L0 | AV1 encoder: a safe wrapper around rav1e (BSD-2-Clause, pure Rust, no assembly), panics caught, `av1C` from the sequence header ([README](../crates/av1enc/README.md)) |
 | `hevc` | L0 | H.265 Main/Main 10 decoder |
 | `prores` | L0 | ProRes decoder and encoder |
 | `dnx` | L0 | DNxHD / DNxHR (SMPTE ST 2019-1 VC-3) decoder and DNxHR encoder |
@@ -53,15 +55,16 @@ and `filmcraft-cli`.
 | `mpeg2v` | L0 | MPEG-2 video (Main / 4:2:2 profile; frame and field pictures, dual prime) and MPEG-1 video decoder ([README](../crates/mpeg2v/README.md)) |
 | `aac` | L0 | AAC-LC decoder and encoder |
 | `ac3` | L0 | AC-3 (ATSC A/52) decoder ([README](../crates/ac3/README.md)) |
+| `flac` | L0 | FLAC encoder (RFC 9639): fixed / LPC predictors, partitioned Rice codes, stereo decorrelation, STREAMINFO MD5; 8–24-bit, 1–8 channels (decoding stays in `codecs` via symphonia) ([README](../crates/flac/README.md)) |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
 | `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, image sequences, WAV / Broadcast WAV |
 | `project` | L1 | document model, effect definitions, keyframes |
-| `audio-dsp` | L1 | loudness metering (BS.1770 / R128), audio effects, channel layouts (BS.775 up/downmix, 5.1 panner), music remix analysis; no dependencies |
+| `audio-dsp` | L1 | loudness metering (BS.1770 / R128), audio effects, channel layouts (BS.775 up/downmix, 5.1 panner), music remix analysis; the audio plug-in hosting interface and catalogue (`plugin`; hosts live in `platform`); no dependencies |
 | `text` | L1 | text engine: font database (bundled OFL fonts + system fonts), shaping (harfrust), bidi, line breaking, paragraph layout, glyph/path rasteriser, strokes ([crates/text/README.md](../crates/text/README.md)) |
 | `edit` | L2 | pure edit algebra (insert, overwrite, razor, ripple, roll, slip, slide, rate stretch…; text-based editing: `edit::transcript`) |
 | `speech` | L2 | speech-to-text: `Transcriber` trait, Whisper model catalogue + verified downloader (feature `download`), pure-Rust Whisper inference on candle with word timestamps (feature `whisper`), speaker labelling ([transcripts.md](transcripts.md)) |
-| `codecs` | L2 | container + codec hub: MP4/MOV, MKV, MXF, Ogg and MPEG TS / PS / video elementary stream sources, GOP-aware seeking, decoder registry, audio decoding |
+| `codecs` | L2 | container + codec hub: MP4/MOV, MKV, MXF, Ogg, AVI and MPEG TS / PS / video elementary stream sources, GOP-aware seeking, decoder registry, audio decoding |
 | `interchange` | L2 | EDL, FCP7 XML, FCPXML, OTIO, AAF (on `cfb`) and OMF 2.0 import/export (no file I/O; the engine supplies rendered audio essence) ([README](../crates/interchange/README.md)) |
 | `render` | L3 | sequence evaluation, CPU compositor, video effects (`effects`, `vfx`; effects needing other frames or tracks read them through `vfx::FxEnv`), transitions, audio mix |
 | `gpu` | L3 | wgpu compositor (WGSL) |
@@ -71,7 +74,7 @@ and `filmcraft-cli`.
 | `engine` | L4 | `Session`, command registry, undo history, media pool, jobs, interchange glue |
 | `ui-egui` | L5 | the egui frontend: docking, panels, timeline, monitors, playback, control-channel handlers |
 | `automation` | L5 | MCP server (`rmcp`, stdio), headless or bridged to the running app |
-| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)) |
+| `platform` | L5 | OS media FFI only: hardware video decoding (VideoToolbox H.264 / HEVC on macOS; a no-op elsewhere) behind `codecs::VideoDecoder`, with transparent fallback to our decoders. The one crate allowed `unsafe` ([ADR 0001](adr/0001-platform-ffi.md), [README](../crates/platform/README.md)). Also VST3 audio plug-in hosting (Windows; [ADR 0002](adr/0002-audio-plugin-hosting.md)). |
 | `filmcraft` | L6 | desktop binary: eframe/wgpu window, cpal audio output, file dialogs, native macOS menu, TCP control server |
 | `filmcraft-cli` | L6 | headless CLI: `exec`, `run`, `inspect`, `describe`, `commands`, `import`, `export`, `render`, `probe`, `mcp`; `--bridge` targets the running app |
 | `filmcraft-web` | L6 | the browser app (wasm32): eframe web runner on WebGPU/WebGL2, Blob-backed services, OPFS recovery, WebAudio, WebCodecs, `window.filmcraft` API ([web.md](web.md)) |
@@ -93,7 +96,7 @@ are exempt):
 `cargo xtask wasm` runs `cargo check --target wasm32-unknown-unknown` on every L0–L4 crate, the
 egui UI and the web app, so everything up to the engine stays web-portable and the web app builds
 ([web.md](web.md)). `unsafe_code = "forbid"` applies workspace-wide, except in `platform`
-(`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md)).
+(`deny`, allowed only on its FFI modules; [ADR 0001](adr/0001-platform-ffi.md), [ADR 0002](adr/0002-audio-plugin-hosting.md)).
 
 ## 2. Time base
 
@@ -258,13 +261,21 @@ file ──► codecs (MP4/MOV, MKV, audio)        demux + decode, GOP-aware see
   Balance, Leave Color, Change to Color, Color Pass, Color Replace, Channel Mix, ASC CDL, Gamma
   Correction, Levels, Extract, Invert, Posterize, Alpha Adjust, Gaussian Blur and Directional Blur
   (and their legacy aliases), Camera Blur, Sharpen, Unsharp Mask, Crop, Edge Feather, Transform,
-  Horizontal / Vertical Flip, Mirror and Offset. When every enabled effect of a media clip is in
-  that set (unmasked, with finite parameters, and no Transform shrinking the picture below half
+  Horizontal / Vertical Flip, Mirror and Offset; Lumetri, the keys, Video Limiter, Mosaic and
+  Vignette; and (`render::gpufx_ext`) Noise, Drop Shadow, Corner Pin, Lens Distortion, Twirl, Wave
+  Warp, Spherize, Basic 3D, Magnify, Find Edges, Emboss, Bevel Alpha, Replicate, Strobe Light,
+  Ramp, 4-Color Gradient, Circle and Grid; and (`render::gpufx_more`) Lens Flare, RGB Split,
+  Lighting Effects, Color Emboss, Rounded Crop, Gradient, Light Leaks, Turbulent Displace, Median,
+  Channel Blur, Alpha Glow, Edge Glow, Roughen Edges and Reduce Interlace Flicker (planes such as
+  a glow's edge mask or blurred alpha are made in single channels of a texture kept beside the
+  layer, with channel-masked box passes). When every enabled effect of a media clip is in
+  that set (with finite parameters, and no Transform shrinking the picture below half
   size, which the CPU pre-filters), the plan hands the GPU the clip's source with
   the effects' parameters evaluated at that time: the source is drawn into an `Rgba32Float`
   working image at the size the CPU decodes it, each effect runs as compute passes with the CPU
   reference's math (effects, then Motion, then Opacity / blend, as on the CPU), and the result is
-  placed like any layer. Other standard effects, effect and opacity masks, adjustment layers,
+  placed like any layer. Effect masks and a clip's Opacity masks run there too (§5.3). Other
+  standard effects, adjustment layers with other effects or Opacity masks,
   nested sequences and non-dissolve transitions are rendered on the CPU for that layer or frame
   and handed to the GPU as an image (a layer image keeps its clip's blend mode), so both paths
   give the same picture. Setting `FILMCRAFT_CPU_COMPOSITE=1`
@@ -459,7 +470,12 @@ with different vertex counts hold). Feather, Opacity and Expansion are ordinary 
   (the effect only applies inside); Opacity masks scale the clip's layer before Motion, so they
   follow the clip's transform. Adjustment-layer masks are in sequence pixels.
 - **GPU.** `filmcraft-gpu::GpuMask` evaluates the same coverage and mix in WGSL (compute), tested
-  to agree with the CPU within 3·10⁻⁶. Layers with masks are CPU-rendered images in frame plans.
+  to agree with the CPU within 3·10⁻⁶. In frame plans the masks of a media clip's GPU effects, of
+  its Opacity effect, and of an adjustment layer's GPU effects travel with the `LayerFx` as
+  flattened polygons; the effect stage keeps the image before a masked effect in one more working
+  texture and mixes by the coverage in a mask pass (`OP_MASK` in `fx.wgsl`, the same math), or
+  scales the layer for Opacity masks. A layer with more than 2048 mask points or 32 masks, and an
+  adjustment layer with Opacity masks, is rendered on the CPU.
 - **Editing.** `masks.*` commands (add / remove / set / moveVertex / translate / addVertex /
   removeVertex / toggleVertexSmooth / select / list); keyframe commands take `"mask": n`. The
   Program monitor overlay drags vertices, Bézier handles, the whole mask and the feather /
@@ -593,13 +609,15 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 | Format | Encoder | Container |
 |---|---|---|
 | `h264` | `filmcraft-h264enc` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `filmcraft-aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
-| `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ) | MOV |
+| `av1` | `filmcraft-av1enc` (rav1e speed 10, one-pass average bitrate, keyframe distance; 8-bit 4:2:0 BT.709) + `filmcraft-aac` | MP4 only (`av01` / `av1C`, `av01` compatible brand) |
+| `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ 10-bit 4:2:2; 4444 / 4444 XQ 12-bit 4:4:4, with `alpha` the straight alpha of the sequence, transparent where nothing is drawn; HDR and MXF ProRes stay opaque, and alpha exports render on the CPU) | MOV (`ap4h` / `ap4x` for 4444) |
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24-bit | MXF OP1a (`filmcraft-mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
 | `mxf-opatom` | as `mxf-op1a` | Avid-style MXF OP-Atom: clip-wrapped picture at `path`, one mono PCM file per channel (`<stem>_A1.mxf` …, `Report::extra_files`) |
 | `png`, `tiff`, `bmp` | `image` | numbered stills `<name>000.<ext>`, `<name>001.<ext>` … |
 | `gif`, `wav`, `aiff` | built in / `image` | GIF / RIFF WAVE (`WAVE_FORMAT_EXTENSIBLE` for 5.1) / AIFF (16- or 24-bit PCM) |
+| `flac` | `filmcraft-flac` (16- or 24-bit, lossless) | native FLAC stream (`.flac`, STREAMINFO with total samples and MD5) |
 
 - **Settings.** `ExportSettings` (serde, camelCase, every field optional) holds Video (frame size or
   Match Source, frame rate, Scale to Fit / Fill / Stretch, pixel aspect, field order — progressive
@@ -610,7 +628,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
   H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
-  DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
+  ProRes 4444 / 4444 XQ (with or without alpha), DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF / FLAC). User presets and favourites persist in
   `<data dir>/export-presets.json` (`export.presets.*`).
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
   or ranges add several items); `export.queue.start` encodes ready items one after another as
@@ -671,7 +689,7 @@ Protocol reference: [control-protocol.md](control-protocol.md). Agent guide: [ag
 
 ## 8. Not built yet
 
-The layer table reserves names for crates that don't exist yet: `riff`, `mjpeg`,
+The layer table reserves names for crates that don't exist yet: `mjpeg`,
 `keyframe`, `effects`, `audio` and `playback`. (`platform` exists but holds only OS media FFI;
 other OS integration stays in `apps/filmcraft`.)
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects

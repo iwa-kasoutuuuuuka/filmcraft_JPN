@@ -23,7 +23,8 @@ fn pick_clip(s: &mut Session) -> ClipId {
 fn lumetri_text(s: &Session, clip: ClipId, p: &str) -> String {
     let q = s.active_sequence().unwrap();
     let (_, it) = q.find_item(clip).unwrap();
-    let e = it.effects.iter().find(|e| e.effect == "lumetri").unwrap();
+    // (no Lumetri: an undone command that had added it)
+    let Some(e) = it.effects.iter().find(|e| e.effect == "lumetri") else { return String::new() };
     match e.param(p).map(|v| &v.value) {
         Some(ParamValue::Text(t)) => t.clone(),
         _ => String::new(),
@@ -148,11 +149,12 @@ fn apply_match_grades_the_clip_towards_the_reference() {
         .iter()
         .any(|w| e.param(w).and_then(|p| p.value.as_vec2()).is_some_and(|v| v.x.abs() + v.y.abs() > 1e-3));
     assert!(moved, "{r}");
-    // one undo step
+    // one undo step: the clip as before (without the Lumetri the match added)
     s.execute("edit.undo", json!({})).unwrap();
     let q = s.active_sequence().unwrap();
-    let e = q.find_item(clip).unwrap().1.effects.iter().find(|e| e.effect == "lumetri").unwrap();
-    assert_eq!(e.param("wheel_midtones").and_then(|p| p.value.as_vec2()).map(|v| v.x), Some(0.0));
+    let midtones =
+        q.find_item(clip).unwrap().1.effects.iter().find(|e| e.effect == "lumetri").and_then(|e| e.param("wheel_midtones").and_then(|p| p.value.as_vec2()));
+    assert!(midtones.is_none_or(|v| v.x == 0.0), "{midtones:?}");
     // a reference inside the clip itself is refused
     let inside = s.playhead();
     assert!(s.execute("lumetri.applyMatch", json!({"referenceTime": inside.0})).is_err());

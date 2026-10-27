@@ -633,7 +633,11 @@ impl Decoder {
 /// Decode a frame job and publish its results.
 fn run_job(job: FrameJob, pool: &Pool, stats: &Mutex<DecodeStats>) {
     let mut st = DecodeStats::default();
-    match decode_frame(&job, pool, &mut st) {
+    // A panic (a decoder bug on hostile input) must still publish a result: the slots are waited
+    // for by later frames and the output, which would otherwise block forever.
+    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_frame(&job, pool, &mut st)))
+        .unwrap_or_else(|_| Err(Error::Invalid("internal decoder error")));
+    match decoded {
         Ok((rf, pic)) => {
             if let Some(ps) = &job.picture {
                 ps.set(pic.map(Arc::new).ok_or(Error::Invalid("shown frame without picture")));

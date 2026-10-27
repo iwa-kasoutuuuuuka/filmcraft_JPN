@@ -595,7 +595,8 @@ pub fn parse(text: &str) -> Result<Document> {
             continue;
         };
         let tc = tc.split('.').next().unwrap_or(tc);
-        let parts: Vec<i64> = tc.split([':', ';']).filter_map(|p| p.parse().ok()).collect();
+        // at most three digits per field, as in SCC: hostile values would overflow the frame math
+        let parts: Vec<i64> = tc.split([':', ';']).filter(|p| (1..=3).contains(&p.len())).filter_map(|p| p.parse().ok()).collect();
         let [h, m, s, f] = parts[..] else {
             return Err(Error::Syntax { line: n + 1, msg: format!("bad timecode \"{tc}\"") });
         };
@@ -629,10 +630,10 @@ pub fn parse(text: &str) -> Result<Document> {
         let mut last = 0;
         for (f, start, a, b) in dtv {
             d.pair(f, start, a, b);
-            last = f + 1;
+            last = f.saturating_add(1);
         }
         if let Some((s, t)) = d.open.take() {
-            d.cues.push((s, last.max(s + 1), t));
+            d.cues.push((s, last.max(s.saturating_add(1)), t));
         }
         doc.cues = d.cues.into_iter().map(|(s, e, text)| Cue { start: rate.0.tick_of(s), end: rate.0.tick_of(e), text, ..Default::default() }).collect();
     }
@@ -690,5 +691,21 @@ mod tests {
         let got: Vec<(i64, i64, &str)> = back.cues.iter().map(|c| (RATE.frame_at(c.start), RATE.frame_at(c.end), c.text.as_str())).collect();
         assert_eq!(got, vec![(60, 120, "Hello, world!"), (120, 200, "Second caption\nwith two lines"), (260, 300, "Café “q” ♪")]);
         assert!(parse("garbage").is_err());
+    }
+
+    /// Regression: timecode fields of any length overflowed the frame arithmetic.
+    #[test]
+    fn hostile_timecode_fields_are_rejected() {
+        let doc = Document { cues: vec![cue(60, 120, "Hi")], ..Default::default() };
+        let s = write(&doc, true);
+        let data = s.lines().last().and_then(|l| l.split_once(char::from(9))).map(|(_, d)| d.to_string()).unwrap();
+        for tc in ["9223372036854775807:00:00:00", "00:00:00:9223372036854775807", "999999999999:99999999:9999999:999999"] {
+            let bad = [s.as_str(), tc, &data].join(" ");
+            let r = std::panic::catch_unwind(|| parse(&bad).is_err());
+            assert_eq!(r.ok(), Some(true), "{tc}");
+        }
+        // frames near i64::MAX in the decoders saturate
+        let r = std::panic::catch_unwind(|| scc::decode_pairs([(i64::MAX, 0x94, 0x20), (i64::MAX, 0xc8, 0xe9)], RATE));
+        assert!(r.is_ok());
     }
 }

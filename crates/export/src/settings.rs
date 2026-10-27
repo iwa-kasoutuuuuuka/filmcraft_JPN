@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ExportSettings, Format};
 
+/// Largest output frame side (presets and damaged projects can carry any size).
+const MAX_SIDE: u32 = 16_384;
+
 /// How the sequence picture is fitted into a different output frame size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,7 +129,7 @@ impl MxfVideoCodec {
     }
 }
 
-/// Audio codec. `Auto` = AAC in MP4, PCM in QuickTime / WAV / AIFF.
+/// Audio codec. `Auto` = AAC in MP4, PCM in QuickTime / WAV / AIFF, FLAC in `.flac`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AudioCodec {
@@ -134,6 +137,8 @@ pub enum AudioCodec {
     Auto,
     Aac,
     Pcm,
+    /// FLAC (lossless): the `.flac` audio-only format only.
+    Flac,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -146,7 +151,7 @@ pub struct AudioSettings {
     pub channels: u32,
     /// AAC bitrate.
     pub bitrate_kbps: u32,
-    /// PCM sample size: 16 or 24.
+    /// PCM / FLAC sample size: 16 or 24.
     pub bits: u16,
 }
 
@@ -352,14 +357,14 @@ impl ExportSettings {
     /// Output size, rate, audio format and bitrate for a sequence of `seq_w`×`seq_h` at `seq_rate`.
     pub fn resolve(&self, seq_w: u32, seq_h: u32, seq_rate: FrameRate, seq_sr: u32) -> Resolved {
         let (mut w, mut h) = match self.frame_size {
-            Some((w, h)) => (w.max(2), h.max(2)),
-            None => (((seq_w as f32 * self.scale).round() as u32).max(2), ((seq_h as f32 * self.scale).round() as u32).max(2)),
+            Some((w, h)) => (w.clamp(2, MAX_SIDE), h.clamp(2, MAX_SIDE)),
+            None => (((seq_w as f32 * self.scale).round() as u32).clamp(2, MAX_SIDE), ((seq_h as f32 * self.scale).round() as u32).clamp(2, MAX_SIDE)),
         };
         if !self.is_image_sequence() && self.format != Format::Gif {
             w &= !1;
             h &= !1;
         }
-        let rate = self.frame_rate.filter(|r| r.num > 0 && r.den > 0).unwrap_or(seq_rate);
+        let rate = self.frame_rate.filter(|r| r.num > 0 && r.den > 0).unwrap_or(seq_rate).sane();
         let fps = rate.num as f64 / rate.den as f64;
         let target = match self.adaptive_bitrate {
             Some(bpp) if bpp > 0.0 => ((w as f64 * h as f64 * fps * bpp as f64) / 1000.0).round() as u32,
@@ -368,7 +373,7 @@ impl ExportSettings {
         .max(100);
         let max = match self.bitrate_mode {
             BitrateMode::Cbr => target,
-            _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or(target * 3 / 2),
+            _ => self.max_bitrate_kbps.filter(|m| *m >= target).unwrap_or(target.saturating_mul(3) / 2),
         };
         let keyint = self.keyframe_distance.filter(|k| *k > 0).unwrap_or_else(|| (fps * 2.0).round().max(1.0) as u32);
         let channels = match self.audio.channels {
@@ -391,9 +396,15 @@ impl ExportSettings {
     /// The audio codec actually used.
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
+            (Format::Flac, _) => AudioCodec::Flac,
+            // FLAC is only written as a .flac file
+            (_, AudioCodec::Flac) if self.format.is_delivery() || self.format == Format::Av1 => AudioCodec::Aac,
+            (_, AudioCodec::Flac) => AudioCodec::Pcm,
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
-            (Format::H264, _) if self.multiplexer == Multiplexer::Mp4 => AudioCodec::Aac,
-            (_, AudioCodec::Auto) if self.format == Format::H264 => AudioCodec::Aac,
+            (Format::H264 | Format::Hevc, _) if self.multiplexer == Multiplexer::Mp4 => AudioCodec::Aac,
+            // AV1 goes in MP4 only, with AAC (no PCM in MP4)
+            (Format::Av1, _) => AudioCodec::Aac,
+            (_, AudioCodec::Auto) if self.format.is_delivery() => AudioCodec::Aac,
             (_, AudioCodec::Auto) => AudioCodec::Pcm,
             (_, c) => c,
         }
@@ -406,12 +417,23 @@ impl ExportSettings {
 
     /// Whether the format carries video.
     pub fn has_video(&self) -> bool {
-        !matches!(self.format, Format::Wav | Format::Aiff)
+        !self.format.is_audio_only()
+    }
+
+    /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): ProRes 4444 /
+    /// 4444 XQ in QuickTime. (MXF ProRes stays opaque.)
+    pub fn supports_alpha(&self) -> bool {
+        self.format == Format::ProRes && crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444
+    }
+
+    /// Whether exported frames keep their straight alpha instead of being flattened over black.
+    pub fn keeps_alpha(&self) -> bool {
+        self.alpha && self.supports_alpha()
     }
 
     /// File extension of the output.
     pub fn extension(&self) -> &'static str {
-        if self.format == Format::H264 && self.multiplexer == Multiplexer::Mov { "mov" } else { self.format.extension() }
+        if self.format.is_delivery() && self.multiplexer == Multiplexer::Mov { "mov" } else { self.format.extension() }
     }
 
     /// Estimated output size in bytes for `duration` of a sequence (`seq_w`×`seq_h` at `seq_rate`).
@@ -421,7 +443,7 @@ impl ExportSettings {
         let fps = r.rate.num as f64 / r.rate.den as f64;
         let px = r.width as f64 * r.height as f64;
         let video_bps = match self.video_format() {
-            Format::H264 => r.target_kbps as f64 * 1000.0,
+            Format::H264 | Format::Hevc | Format::Av1 => r.target_kbps as f64 * 1000.0,
             Format::ProRes => crate::prores_profile(&self.prores_profile).nominal_mbps_1080p30() * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97,
             Format::DnxHr => {
                 // nominal 1080p29.97 data rates of the DNxHR profiles (Mb/s)
@@ -437,11 +459,13 @@ impl ExportSettings {
             Format::PngSequence => px * 4.0 * 0.45 * 8.0 * fps,
             Format::TiffSequence | Format::BmpSequence => px * if self.format == Format::BmpSequence { 3.0 } else { 4.0 } * 8.0 * fps,
             Format::Gif => px * 0.6 * 8.0 * fps,
-            Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
+            Format::Wav | Format::Aiff | Format::Flac | Format::MxfOp1a | Format::MxfOpAtom => 0.0,
         };
-        let audio_bps = if self.has_audio() || matches!(self.format, Format::Wav | Format::Aiff) {
+        let audio_bps = if self.has_audio() || self.format.is_audio_only() {
             match self.audio_codec() {
                 AudioCodec::Aac => self.audio.bitrate_kbps as f64 * 1000.0,
+                // lossless compression of mixed programme material: roughly 60% of PCM
+                AudioCodec::Flac => r.sample_rate as f64 * r.channels as f64 * if self.audio.bits >= 24 { 24.0 } else { 16.0 } * 0.6,
                 _ => r.sample_rate as f64 * r.channels as f64 * if self.audio.bits >= 24 { 24.0 } else { 16.0 },
             }
         } else {
@@ -485,13 +509,33 @@ impl ExportSettings {
                     };
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
+                Format::Hevc => {
+                    // the hardware encoders encode in one pass
+                    v += &match self.bitrate_mode {
+                        BitrateMode::Cbr => format!(", Main, CBR, {}", mbps(r.target_kbps)),
+                        _ => format!(", Main, VBR, Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
+                    };
+                    v += &format!(", keyframe every {} frames", r.keyint);
+                }
+                Format::Av1 => {
+                    v += &format!(
+                        ", AV1 Main 8-bit 4:2:0 (rav1e speed {}), average {}, keyframe every {} frames",
+                        crate::av1_out::AV1_SPEED,
+                        mbps(r.target_kbps),
+                        r.keyint
+                    );
+                }
                 Format::ProRes => {
                     use filmcraft_prores::Profile;
                     v += match crate::prores_profile(&self.prores_profile) {
                         Profile::Proxy => ", ProRes 422 Proxy",
                         Profile::Lt => ", ProRes 422 LT",
                         Profile::Standard => ", ProRes 422",
-                        _ => ", ProRes 422 HQ",
+                        Profile::Hq => ", ProRes 422 HQ",
+                        Profile::P4444 if self.keeps_alpha() => ", ProRes 4444 with alpha",
+                        Profile::P4444 => ", ProRes 4444",
+                        Profile::P4444Xq if self.keeps_alpha() => ", ProRes 4444 XQ with alpha",
+                        Profile::P4444Xq => ", ProRes 4444 XQ",
                     }
                 }
                 Format::DnxHr => v += &format!(", DNxHR {}", if self.dnx_profile.is_empty() { "HQ".into() } else { self.dnx_profile.to_ascii_uppercase() }),
@@ -500,7 +544,7 @@ impl ExportSettings {
             }
             v
         };
-        let audio = if self.has_audio() || matches!(self.format, Format::Wav | Format::Aiff) {
+        let audio = if self.has_audio() || self.format.is_audio_only() {
             let ch = match r.channels {
                 1 => "Mono",
                 6 => "5.1",
@@ -508,14 +552,15 @@ impl ExportSettings {
             };
             match self.audio_codec() {
                 AudioCodec::Aac => format!("AAC, {} kbps, {} Hz, {ch}", self.audio.bitrate_kbps, r.sample_rate),
+                AudioCodec::Flac => format!("FLAC (lossless) {}-bit, {} Hz, {ch}", if self.audio.bits >= 24 { 24 } else { 16 }, r.sample_rate),
                 _ => format!("Uncompressed {}-bit PCM, {} Hz, {ch}", if self.audio.bits >= 24 { 24 } else { 16 }, r.sample_rate),
             }
         } else {
             "No audio".to_string()
         };
         let container = match self.format {
-            Format::H264 if self.multiplexer == Multiplexer::Mov => "QuickTime",
-            Format::H264 => "MP4",
+            Format::H264 | Format::Hevc if self.multiplexer == Multiplexer::Mov => "QuickTime",
+            Format::H264 | Format::Hevc | Format::Av1 => "MP4",
             Format::ProRes | Format::DnxHr | Format::Mjpeg => "QuickTime",
             Format::MxfOp1a | Format::MxfOpAtom => self.mxf_video_codec.label(),
             Format::PngSequence | Format::TiffSequence | Format::BmpSequence => "Image sequence",

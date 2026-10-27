@@ -126,6 +126,7 @@ pub(crate) fn layer_defs() -> Vec<EffectDef> {
                 bo("underline", "Underline", false, X),
                 fl("box_width", "Text Box Width", 0.0, (0.0, 100_000.0), (0.0, 3840.0), "", X),
                 bo("vertical", "Vertical Text", false, X),
+                bo("ruby", "Ruby (Furigana)", false, X),
             ],
         ),
         layer_def(
@@ -196,6 +197,9 @@ pub struct TextProps {
     pub box_width: f32,
     /// Vertical text (characters stacked top to bottom; columns right to left).
     pub vertical: bool,
+    /// Ruby (furigana) in the Aozora Bunko notation (`漢字《かんじ》`, `｜base《reading》`) is set
+    /// as ruby instead of being drawn as typed.
+    pub ruby: bool,
     /// Per-character style overrides as *byte* ranges of `text` (sorted, non-overlapping).
     pub runs: Vec<(std::ops::Range<usize>, crate::graphic_design::CharStyle)>,
 }
@@ -287,6 +291,7 @@ pub fn eval_layer(e: &EffectInstance, t: Tick, frame: (u32, u32)) -> Option<Laye
                 underline: bb(e, "underline", t),
                 box_width: ff(e, "box_width", t).max(0.0),
                 vertical: bb(e, "vertical", t),
+                ruby: bb(e, "ruby", t),
             }
         }),
         SHAPE_LAYER => {
@@ -371,6 +376,7 @@ fn layer_instance(id: &str) -> EffectInstance {
         post_fader: false,
         essential: false,
         layer: None,
+        plugin: None,
     })
 }
 

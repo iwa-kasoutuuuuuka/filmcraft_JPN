@@ -34,7 +34,7 @@ impl Geometry {
             // the sequence size times `scale`, rendered directly (even-size crop/pad at the edge)
             return Geometry { w, h, render_scale: w as f32 / sw, content: None, offset: (0, 0) };
         }
-        let par = settings.pixel_aspect.map(|(n, d)| n.max(1) as f32 / d.max(1) as f32).unwrap_or(1.0);
+        let par = settings.pixel_aspect.map(|(n, d)| (n.max(1) as f32 / d.max(1) as f32).clamp(0.1, 10.0)).unwrap_or(1.0);
         let disp_w = w as f32 * par;
         let (fx, fy) = (disp_w / sw, h as f32 / sh);
         let (sx, sy) = match settings.scaling {
@@ -42,8 +42,8 @@ impl Geometry {
             Scaling::ScaleToFill => (fx.max(fy), fx.max(fy)),
             Scaling::StretchToFill => (fx, fy),
         };
-        let cw = (sw * sx / par).round().max(1.0) as usize;
-        let ch = (sh * sy).round().max(1.0) as usize;
+        let cw = ((sw * sx / par).round().max(1.0) as usize).min(filmcraft_render::MAX_FRAME_SIDE);
+        let ch = ((sh * sy).round().max(1.0) as usize).min(filmcraft_render::MAX_FRAME_SIDE);
         let render_scale = if settings.max_render_quality { 1.0f32.max(sy).max(sx / par) } else { sy.max(sx / par) }.clamp(0.01, 4.0);
         Geometry { w, h, render_scale, content: Some((cw, ch)), offset: ((w as i64 - cw as i64) / 2, (h as i64 - ch as i64) / 2) }
     }
@@ -61,11 +61,16 @@ pub(crate) struct Pipeline {
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
+    /// Keep the picture's straight alpha instead of flattening it over black
+    /// ([`ExportSettings::keeps_alpha`]; SDR only, HDR frames stay opaque).
+    alpha: bool,
     out_tf: Option<filmcraft_color::OutputTransform>,
     effects: ExportEffects,
     overlay: Option<Image>,
     start_tc: i64,
     drop_frame: bool,
+    /// The host's renderer, where this export can use it ([`crate::FrameRenderer`]).
+    gpu: Option<Arc<dyn crate::FrameRenderer>>,
 }
 
 impl Pipeline {
@@ -82,7 +87,16 @@ impl Pipeline {
         } else {
             None
         };
+        // the GPU renders what the CPU's `render_sequence` would hand over unchanged: an SDR
+        // picture at the output size, without overlays drawn on it afterwards
+        let direct =
+            geom.content.is_none() && geom.offset == (0, 0) && filmcraft_render::output_size(q, geom.render_scale) == (r.width as usize, r.height as usize);
+        let plain = !hdr_out && overlay.is_none() && !effects.name_overlay.enabled && !effects.timecode_overlay.enabled;
+        // the GPU renderer composites over black: an export that keeps alpha renders on the CPU
+        let alpha = settings.keeps_alpha() && !hdr_out;
+        let gpu = (settings.gpu_rendering && direct && plain && !alpha).then(crate::renderer).flatten();
         Ok(Pipeline {
+            gpu,
             seq_rate: q.settings.frame_rate,
             start_tc: q.start_timecode,
             drop_frame: q.settings.drop_frame,
@@ -94,16 +108,29 @@ impl Pipeline {
             geom,
             opts,
             hdr_out,
+            alpha,
             out_tf,
             effects,
             overlay,
         })
     }
 
-    /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
-    /// R'G'B' floats (3 per pixel).
+    /// Output frame `f` as sRGB RGBA8 at the output size (flattened over black unless the export
+    /// keeps alpha, then straight alpha), or for HDR exports the encoded R'G'B' floats (3 per
+    /// pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
+        if let Some(r) = &self.gpu
+            && let Some((w, h, mut rgba)) = r.render_rgba8(&self.project, self.seq, t, self.opts, sources)
+            && (w, h) == (self.w, self.h)
+            && rgba.len() == w as usize * h as usize * 4
+        {
+            let lim = &self.effects.video_limiter;
+            if lim.enabled {
+                limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
+            }
+            return (rgba, Vec::new());
+        }
         let img = filmcraft_render::render_sequence(&self.project, self.seq, t, self.opts, sources);
         let mut img = self.place(img);
         self.overlays(&mut img, t);
@@ -120,7 +147,7 @@ impl Pipeline {
             }
             return (Vec::new(), out);
         }
-        let mut rgba = img.over_black_rgba8();
+        let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         if lim.enabled {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }

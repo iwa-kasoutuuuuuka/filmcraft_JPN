@@ -216,7 +216,14 @@ pub fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
+/// The 1/5/15-minute load average: macOS `sysctl`, Linux `/proc/loadavg`; Windows has none.
 pub fn load_avg() -> String {
+    if cfg!(windows) {
+        return "n/a".into();
+    }
+    if let Ok(l) = std::fs::read_to_string("/proc/loadavg") {
+        return l.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+    }
     Command::new("sysctl")
         .args(["-n", "vm.loadavg"])
         .output()
@@ -626,7 +633,7 @@ fn parse_args() -> Args {
             "--json" => a.json = it.next(),
             "--help" | "-h" => {
                 println!(
-                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
+                    "bench_playback [--scenario h264-1080,stack3,stack3-blend,stack3-fx,lumetri-grade,lumetri-hsl,lumetri-hdr,hlg-grade,keying,h264-2160,hevc-2160,vp9-2160,av1-2160,demo,after-preview,seek-storm] [--res full,half] [--cpu|--gpu] [--seconds 8] [--refresh 60] [--workers N] [--repeat N] [--json out.json]"
                 );
                 std::process::exit(0);
             }
@@ -634,10 +641,25 @@ fn parse_args() -> Args {
         }
     }
     if a.scenarios.is_empty() {
-        a.scenarios = ["h264-1080", "stack3", "stack3-blend", "stack3-fx", "h264-2160", "hevc-2160", "demo", "after-preview", "seek-storm"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        a.scenarios = [
+            "h264-1080",
+            "stack3",
+            "stack3-blend",
+            "stack3-fx",
+            "lumetri-grade",
+            "lumetri-hsl",
+            "lumetri-hdr",
+            "hlg-grade",
+            "keying",
+            "h264-2160",
+            "hevc-2160",
+            "demo",
+            "after-preview",
+            "seek-storm",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     }
     a
 }
@@ -649,6 +671,56 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
         "h264-1080" | "seek-storm" => {
             let a = import(&mut s, &fixture("a1080.mp4")?);
             build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &[], 20.0)
+        }
+        "lumetri-grade" | "lumetri-hsl" | "lumetri-hdr" | "hlg-grade" => {
+            // a typical grade: color wheels, a luma S-curve, Hue vs Sat, split tone and a Look
+            // (lumetri-hdr: the same grade in a Rec. 2100 PQ sequence; hlg-grade: on HEVC Main 10
+            // HLG media, as phones record HDR, in a Rec. 2100 HLG sequence)
+            let a = import(&mut s, &fixture(if name == "hlg-grade" { "hlg1080.mov" } else { "a1080.mp4" })?);
+            let seq = build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0)], &["lumetri"], 20.0);
+            s.edit("grade", |p, _| {
+                let q = p.sequence_mut(seq).expect("seq");
+                if name == "lumetri-hdr" {
+                    q.settings.color.working = filmcraft_color::WorkingSpace::Rec2100Pq;
+                }
+                if name == "hlg-grade" {
+                    q.settings.color.working = filmcraft_color::WorkingSpace::Rec2100Hlg;
+                }
+                for it in &mut q.video_tracks[0].items {
+                    let Some(e) = it.effect_mut("lumetri") else { continue };
+                    let curve = |pts: &[[f32; 2]]| ParamValue::Curve(pts.to_vec());
+                    for (k, v) in [
+                        ("wheel_shadows", ParamValue::Vec2(filmcraft_geom::Vec2::new(0.2, -0.3))),
+                        ("wheel_highlights", ParamValue::Vec2(filmcraft_geom::Vec2::new(-0.1, 0.2))),
+                        ("curve_luma", curve(&[[0.0, 0.03], [0.3, 0.25], [0.7, 0.8], [1.0, 0.97]])),
+                        ("hue_vs_sat", curve(&[[0.05, 0.6], [0.55, 0.35]])),
+                        ("shadow_tint", ParamValue::Color([0.45, 0.5, 0.6, 1.0])),
+                        ("look", ParamValue::Choice(1)),
+                        ("look_intensity", ParamValue::Float(60.0)),
+                    ] {
+                        if let Some(x) = e.params.get_mut(k) {
+                            x.value = v;
+                        }
+                    }
+                    // lumetri-hsl: HSL Secondary on the skin tones, with Denoise and Blur
+                    if name == "lumetri-hsl" {
+                        for (k, v) in [
+                            ("hsl_on", ParamValue::Bool(true)),
+                            ("hsl_hue", ParamValue::Float(30.0)),
+                            ("hsl_sat", ParamValue::Float(140.0)),
+                            ("hsl_denoise", ParamValue::Float(50.0)),
+                            ("hsl_blur", ParamValue::Float(20.0)),
+                        ] {
+                            if let Some(x) = e.params.get_mut(k) {
+                                x.value = v;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .ok()?;
+            seq
         }
         "stack3" | "stack3-blend" | "stack3-fx" => {
             let (a, b, c) = (fixture("a1080.mp4")?, fixture("b1080.mp4")?, fixture("c1080.mp4")?);
@@ -701,6 +773,42 @@ pub fn scenario_session(name: &str) -> Option<(Session, ItemId)> {
                 })
                 .ok()?;
             }
+            seq
+        }
+        "keying" => {
+            // Ultra Key (with Choke, Soften and spill suppression) on V2 over V1, a Video Limiter
+            // on V1
+            let (a, b) = (import(&mut s, &fixture("a1080.mp4")?), import(&mut s, &fixture("b1080.mp4")?));
+            let seq = build_sequence(&mut s, 1920, 1080, &[(a, 100.0, None, 0.0, 100.0), (b, 100.0, None, 0.0, 100.0)], &[], 20.0);
+            s.edit("keys", |p, _| {
+                let q = p.sequence_mut(seq).expect("seq");
+                let fx: [(usize, &str, Vec<(&str, ParamValue)>); 2] = [
+                    (0, "video_limiter", vec![]),
+                    (
+                        1,
+                        "ultra_key",
+                        vec![
+                            ("key_color", ParamValue::Color([0.2, 0.6, 0.3, 1.0])),
+                            ("choke", ParamValue::Float(20.0)),
+                            ("soften", ParamValue::Float(30.0)),
+                            ("spill", ParamValue::Float(50.0)),
+                        ],
+                    ),
+                ];
+                for (track, id, params) in fx {
+                    for it in &mut q.video_tracks[track].items {
+                        let mut e = find_effect(id).expect("effect").instance();
+                        for (k, v) in &params {
+                            if let Some(x) = e.params.get_mut(*k) {
+                                x.value = v.clone();
+                            }
+                        }
+                        it.effects.push(e);
+                    }
+                }
+                Ok(())
+            })
+            .ok()?;
             seq
         }
         "h264-2160" | "seek-storm-2160" => {

@@ -145,7 +145,7 @@ fn texture(u: f64, v: f64) -> f64 {
 }
 
 /// Ground-truth pose of the disc at frame `k`: translation, 1.5°/frame rotation, +1 %/frame scale.
-fn truth(k: f64) -> filmcraft_geom::Affine {
+pub(crate) fn truth(k: f64) -> filmcraft_geom::Affine {
     filmcraft_geom::Affine::motion(
         filmcraft_geom::Vec2::new(120.0 + 3.0 * k, 110.0 + 1.2 * k),
         filmcraft_geom::Vec2::new(1.0 + 0.01 * k, 1.0 + 0.01 * k),
@@ -183,7 +183,7 @@ impl filmcraft_media::MediaSource for Moving {
     }
 }
 
-fn tracking_session() -> (Session, ClipId) {
+pub(crate) fn tracking_session() -> (Session, ClipId) {
     use filmcraft_media::MediaSource;
     let rate = filmcraft_time::FrameRate::FPS_24;
     let g = filmcraft_media::generators::GeneratorSource::new(
@@ -283,4 +283,25 @@ fn tracking_runs_in_the_background_and_can_be_cancelled() {
     let n = s.execute("masks.list", json!({})).unwrap()["masks"][0]["pathKeyframes"].as_array().unwrap().len();
     assert!(n < 48, "stopped early ({n} keyframes)");
     assert!(s.execute("masks.track", json!({"direction": "backward"})).is_err(), "nothing before the first frame");
+}
+
+#[test]
+fn add_vertex_out_of_range_and_short_paths_are_refused() {
+    let (mut s, clip) = demo();
+    let it = s.active_sequence().unwrap().find_item(clip).unwrap().1.clone();
+    s.set_playhead(it.start);
+    s.execute("masks.add", json!({"effect": "opacity", "shape": "polygon", "center": [400, 400], "size": [200, 200]})).unwrap();
+    s.execute("effects.toggleAnimation", json!({"clip": clip.0, "effect": "opacity", "mask": 0, "param": "path"})).unwrap();
+    let rate = s.active_sequence().unwrap().settings.frame_rate;
+    s.set_playhead(it.start + rate.tick_of(10));
+    s.execute("masks.translate", json!({"delta": [100, -50]})).unwrap();
+    // animated path, `after` past the last vertex: indexed out of bounds before
+    assert!(s.execute("masks.addVertex", json!({"after": 4, "at": [1, 1]})).is_err());
+    assert!(s.execute("masks.addVertex", json!({"after": u64::MAX, "at": [1, 1]})).is_err());
+    // a closed path needs 3 vertices (an empty one underflowed `len() - 1`)
+    assert!(s.execute("masks.set", json!({"path": []})).is_err());
+    assert!(s.execute("masks.set", json!({"path": [[0, 0], [1, 1]]})).is_err());
+    s.execute("masks.addVertex", json!({"after": 3, "at": [1, 1]})).unwrap();
+    let l = s.execute("masks.list", json!({})).unwrap();
+    assert_eq!(l["masks"][0]["path"]["vertices"].as_array().unwrap().len(), 5);
 }

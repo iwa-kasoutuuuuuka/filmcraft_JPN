@@ -64,8 +64,8 @@ pub fn file_url_to_path(url: &str) -> String {
     if lower.as_deref() != Some("file://") {
         return url.to_string();
     }
-    let rest = &url[7..];
-    let rest = if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case("localhost") { &rest[9..] } else { rest };
+    let rest = url.get(7..).unwrap_or("");
+    let rest = if rest.get(..9).is_some_and(|s| s.eq_ignore_ascii_case("localhost")) { rest.get(9..).unwrap_or("") } else { rest };
     let decoded = percent_decode(rest);
     // file:///C:/x -> C:/x
     if decoded.len() >= 3 && decoded.starts_with('/') && is_windows_abs(&decoded[1..]) {
@@ -620,6 +620,7 @@ pub(crate) fn transition_effect(name: &str, audio: bool, report: &mut Report) ->
         post_fader: false,
         essential: false,
         layer: None,
+        plugin: None,
     })
 }
 
@@ -650,6 +651,14 @@ pub(crate) fn sanitize_reel(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: `rest[..9]` sliced inside a multi-byte character and panicked.
+    #[test]
+    fn file_url_with_multibyte_host_does_not_panic() {
+        assert_eq!(file_url_to_path("file://localhosé/a"), "//localhosé/a");
+        assert_eq!(file_url_to_path("file://ééééé/a"), "//ééééé/a");
+        assert_eq!(file_url_to_path("file://LOCALHOST/a"), "/a");
+    }
 
     #[test]
     fn urls() {

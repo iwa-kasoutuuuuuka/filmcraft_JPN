@@ -55,6 +55,11 @@ pub enum Outcome {
     },
 }
 
+/// The `warnings` of a reply for parameters a command ignored.
+fn unknown_warning(keys: &[String]) -> Vec<String> {
+    vec![format!("ignored unknown parameter(s): {} (see the command's params in command_list)", keys.join(", "))]
+}
+
 fn ok(v: Value) -> Outcome {
     Outcome::Done(json!({"ok": true, "result": v}))
 }
@@ -81,14 +86,28 @@ fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
     Ok(egui::pos2(x as f32, y as f32))
 }
 
+/// Requests that need the window laid out on screen (synthetic input, element rects, screenshots).
+const NEEDS_WINDOW: &[&str] =
+    &["ui.elements", "ui.click", "ui.move", "ui.drag", "ui.scroll", "ui.key", "ui.type", "ui.screenshot", "ui.timeline.hit", "ui.timeline.locate"];
+
 pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
+    // A minimized window lays nothing out and presents nothing: synthetic input would be dropped
+    // and screenshots never arrive. Say so instead of failing silently or timing out; restoring
+    // the window activates it, which only an explicit `ui.focus` may do.
+    if NEEDS_WINDOW.contains(&req.method.as_str()) && ctx.input(|i| i.viewport().minimized) == Some(true) {
+        return err("the window is minimized: restore it (`ui.focus`) to drive the UI; engine commands work as they are");
+    }
     match req.method.as_str() {
         "engine.execute" | "ui.menu.invoke" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().unwrap_or(json!({}));
             match crate::menus::invoke(app, ctx, id, params) {
+                // parameters the command does not take come back as warnings (they are ignored)
+                Ok(v) if !app.session.last_unknown_params.is_empty() => {
+                    Outcome::Done(json!({"ok": true, "result": v, "warnings": unknown_warning(&app.session.last_unknown_params)}))
+                }
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }
@@ -381,11 +400,18 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(Value::Null)
         }
         "ui.focus" => {
-            // Explicit request: activate the app and take keyboard focus.
+            // Explicit request: activate the app (restoring it when minimized) and take keyboard focus.
+            if ctx.input(|i| i.viewport().minimized) == Some(true) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ok(Value::Null)
         }
         "app.quit" => {
+            // `force`: quit without asking about unsaved changes (they stay in the recovery journal)
+            if p.get("force").and_then(Value::as_bool) == Some(true) {
+                app.quit_confirmed = true;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             ok(Value::Null)
         }

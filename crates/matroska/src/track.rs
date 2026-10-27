@@ -126,7 +126,10 @@ impl VideoInfo {
 
     /// Pixel aspect ratio derived from the display size (pixels or aspect-ratio units), reduced.
     pub fn pixel_aspect(&self) -> (u32, u32) {
-        let (pw, ph) = (self.pixel_width.saturating_sub(self.crop.2 + self.crop.3) as u64, self.pixel_height.saturating_sub(self.crop.0 + self.crop.1) as u64);
+        let (pw, ph) = (
+            self.pixel_width.saturating_sub(self.crop.2.saturating_add(self.crop.3)) as u64,
+            self.pixel_height.saturating_sub(self.crop.0.saturating_add(self.crop.1)) as u64,
+        );
         let (Some(dw), Some(dh)) = (self.display_width, self.display_height) else { return (1, 1) };
         if pw == 0 || ph == 0 || dw == 0 || dh == 0 || !matches!(self.display_unit, 0 | 3) {
             return (1, 1);
@@ -273,14 +276,15 @@ impl Track {
 
     /// Timebase ticks → nanoseconds.
     pub fn ticks_to_ns(&self, t: i64) -> i64 {
-        (t as i128 * self.timebase.0 as i128 * 1_000_000_000 / self.timebase.1 as i128) as i64
+        let n = (t as i128).saturating_mul(self.timebase.0 as i128).saturating_mul(1_000_000_000);
+        (n / (self.timebase.1 as i128).max(1)).clamp(i64::MIN as i128, i64::MAX as i128) as i64
     }
 
     /// Nanoseconds → timebase ticks (floor).
     pub fn ns_to_ticks(&self, ns: i64) -> i64 {
         let n = ns as i128 * self.timebase.1 as i128;
-        let d = self.timebase.0 as i128 * 1_000_000_000;
-        n.div_euclid(d) as i64
+        let d = (self.timebase.0 as i128 * 1_000_000_000).max(1);
+        n.div_euclid(d).clamp(i64::MIN as i128, i64::MAX as i128) as i64
     }
 
     /// Index of the last sample with `pts <= t` (in file order), or the first sample.
@@ -343,5 +347,24 @@ mod rotation_tests {
         assert_eq!(with_roll(0, 0.0, 180.0, 0.0).display_rotation(), None, "pitch flip");
         assert_eq!(with_roll(0, 0.0, 0.0, 45.0).display_rotation(), None, "not a quarter turn");
         assert_eq!(with_roll(0, 0.0, 0.0, f64::NAN).display_rotation(), None, "malformed angle");
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::VideoInfo;
+
+    /// Regression: hostile crop values overflowed `crop.2 + crop.3`.
+    #[test]
+    fn pixel_aspect_with_huge_crop() {
+        let v = VideoInfo {
+            pixel_width: 100,
+            pixel_height: 100,
+            crop: (u32::MAX, u32::MAX, u32::MAX, u32::MAX),
+            display_width: Some(4),
+            display_height: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(v.pixel_aspect(), (1, 1));
     }
 }

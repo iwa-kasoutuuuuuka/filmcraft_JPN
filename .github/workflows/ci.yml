@@ -1,0 +1,66 @@
+# The quality gates of CLAUDE.md / docs/contributing.md on every push and pull request:
+# fmt, clippy, tests, layers, assets and the wasm check (`cargo xtask ci`), on Linux and Windows.
+# Windows is here because path separators, verbatim paths (`\\?\C:\…`) and the Ctrl / Cmd keymap
+# behave differently there and nothing else exercises them.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Test binaries link egui + wgpu many times over; without debug info the linker stays within
+  # the runner's memory (LNK1102 / LNK1201 on Windows otherwise).
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  # The gates build every test binary with the release profile; its thin LTO and single codegen
+  # unit are for shipping builds and made test builds take hours (Windows: 3 h, Linux: past the
+  # 6 h job limit). Releases (release.yml) keep the profile from Cargo.toml.
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+  # Oracle tests (ffmpeg comparisons) fail instead of silently skipping when ffmpeg is missing.
+  FILMCRAFT_REQUIRE_ORACLES: 1
+
+jobs:
+  gates:
+    name: gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A full run takes well under an hour; a hang (a deadlocked test) fails here instead of
+    # holding the runner for GitHub's 6 h limit.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev \
+            ffmpeg
+      # ffmpeg / ffprobe are test oracles and fixture generators only (never linked or shipped).
+      # The full build: AV1 tests decode with libdav1d and make fixtures with libsvtav1, which the
+      # smaller `ffmpeg` package leaves out.
+      - name: Windows test oracles
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg-full -y --no-progress
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo xtask ci
+        run: cargo xtask ci

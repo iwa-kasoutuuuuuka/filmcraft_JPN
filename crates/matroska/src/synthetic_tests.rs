@@ -208,3 +208,65 @@ fn synthetic_file() {
     assert_eq!(d.next_packet().unwrap().unwrap().pts, 1120);
     assert!(d.file().indexed);
 }
+
+/// Regression: extreme Cluster timestamps, BlockDurations, TimestampScale and CodecDelay overflowed
+/// the timestamp arithmetic; a Cue pointing past u64 overflowed the seek offset.
+#[test]
+fn hostile_timestamps_do_not_overflow() {
+    let mut f = Vec::new();
+    let mut h = Vec::new();
+    el_str(&mut h, DOC_TYPE, "matroska");
+    el(&mut f, EBML, &h);
+    write_id(&mut f, SEGMENT);
+    write_unknown_size(&mut f, 8);
+    let mut info = Vec::new();
+    el_uint(&mut info, TIMESTAMP_SCALE, u64::MAX);
+    el(&mut f, INFO, &info);
+    let mut a = Vec::new();
+    el_uint(&mut a, TRACK_NUMBER, 1);
+    el_uint(&mut a, TRACK_TYPE, 2);
+    el_str(&mut a, CODEC_ID, "A_OPUS");
+    el_uint(&mut a, CODEC_DELAY, u64::MAX);
+    el_uint(&mut a, DEFAULT_DURATION, u64::MAX);
+    let mut tr = Vec::new();
+    el(&mut tr, TRACK_ENTRY, &a);
+    el(&mut f, TRACKS, &tr);
+    let mut cp = Vec::new();
+    el_uint(&mut cp, CUE_TRACK, 1);
+    el_uint(&mut cp, CUE_CLUSTER_POSITION, u64::MAX);
+    let mut pt = Vec::new();
+    el_uint(&mut pt, CUE_TIME, 0);
+    el(&mut pt, CUE_TRACK_POSITIONS, &cp);
+    let mut cues = Vec::new();
+    el(&mut cues, CUE_POINT, &pt);
+    el(&mut f, CUES, &cues);
+    for ts in [i64::MAX as u64, u64::MAX] {
+        write_id(&mut f, CLUSTER);
+        write_unknown_size(&mut f, 8);
+        el_uint(&mut f, TIMESTAMP, ts);
+        el(&mut f, SIMPLE_BLOCK, &block(1, i16::MAX, 0x80, &[1]));
+        // Xiph lacing, 3 frames, so the per-lace split runs
+        el(&mut f, SIMPLE_BLOCK, &block(1, i16::MIN, 0x82, &[2, 1, 1, 1, 1, 1]));
+        let mut g = Vec::new();
+        el(&mut g, BLOCK, &block(1, i16::MAX, 0x02, &[2, 1, 1, 1, 1, 1]));
+        el_uint(&mut g, BLOCK_DURATION, u64::MAX);
+        el(&mut f, BLOCK_GROUP, &g);
+    }
+    let r = std::panic::catch_unwind(|| {
+        if let Ok(file) = open_with(&f[..], &OpenOptions { index: true, verify_crc: false }) {
+            for t in &file.tracks {
+                let _ = (t.ticks_to_ns(i64::MAX), t.ticks_to_ns(i64::MIN), t.ns_to_ticks(i64::MAX), t.ns_to_ticks(i64::MIN));
+            }
+        }
+        if let Ok(mut d) = Demuxer::with_options(&f[..], OpenOptions { index: false, verify_crc: false }) {
+            let _ = d.seek(0, i64::MAX);
+            let _ = d.seek(0, 0);
+            for _ in 0..64 {
+                if !matches!(d.next_packet(), Ok(Some(_))) {
+                    break;
+                }
+            }
+        }
+    });
+    assert!(r.is_ok());
+}

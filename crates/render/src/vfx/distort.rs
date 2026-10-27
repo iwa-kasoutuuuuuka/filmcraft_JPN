@@ -4,7 +4,7 @@ use filmcraft_project::EffectInstance;
 use rayon::prelude::*;
 
 use super::*;
-use crate::effects::{warp, warp_opt};
+use crate::effects::warp_opt;
 
 /// 3×3 projective matrix, row-major, mapping (x, y, 1).
 pub(crate) type H3 = [f64; 9];
@@ -42,138 +42,6 @@ pub(crate) fn h_apply(m: &H3, x: f64, y: f64) -> Option<(f64, f64)> {
         return None;
     }
     Some(((m[0] * x + m[1] * y + m[2]) / w, (m[3] * x + m[4] * y + m[5]) / w))
-}
-
-/// Corner Pin: the layer's corners moved to four points (a projective warp).
-pub fn corner_pin(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let (w, h) = (img.w as f64, img.h as f64);
-    let q = [pv(e, "upper_left", cx, img), pv(e, "upper_right", cx, img), pv(e, "lower_right", cx, img), pv(e, "lower_left", cx, img)];
-    let ident = [Vec2::new(0.0, 0.0), Vec2::new(w, 0.0), Vec2::new(w, h), Vec2::new(0.0, h)];
-    if q.iter().zip(&ident).all(|(a, b)| (*a - *b).length() < 1e-6) {
-        return;
-    }
-    let Some(inv) = h_inverse(&square_to_quad(q)) else { return };
-    warp_opt(img, |x, y| {
-        let (u, v) = h_apply(&inv, x, y)?;
-        (u >= -1e-3 && v >= -1e-3 && u <= 1.0 + 1e-3 && v <= 1.0 + 1e-3).then_some((u * w, v * h))
-    });
-}
-
-/// Magnify (and Magnify (Legacy)): a circular or square loupe.
-pub fn magnify(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let c = pv(e, "center", cx, img);
-    let m = (fv(e, "magnification", cx) / 100.0).max(0.01) as f64;
-    let r = fv(e, "size", cx) * cx.px_scale;
-    let fe = fv(e, "feather", cx) * cx.px_scale;
-    let op = fv(e, "opacity", cx) / 100.0;
-    let square = chv(e, "shape") == 1;
-    let mode = chv(e, "mode");
-    let src = img.clone();
-    let w = img.w;
-    img.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
-        for x in 0..w {
-            let (dx, dy) = (x as f64 + 0.5 - c.x, y as f64 + 0.5 - c.y);
-            let d = if square { dx.abs().max(dy.abs()) } else { dx.hypot(dy) } as f32;
-            let k = if fe > 0.0 { ((r - d) / fe).clamp(0.0, 1.0) } else { (r - d + 0.5).clamp(0.0, 1.0) } * op;
-            if k <= 0.0 {
-                continue;
-            }
-            let s = src.sample_bilinear((c.x + dx / m) as f32, (c.y + dy / m) as f32);
-            let p = &mut row[x * 4..x * 4 + 4];
-            let base = Image::unpremul([p[0], p[1], p[2], p[3]]);
-            let sc = Image::unpremul(s);
-            let mixed = blend_simple(mode, base, sc);
-            let a = s[3];
-            let out = [mixed[0] * a, mixed[1] * a, mixed[2] * a, a];
-            for i in 0..4 {
-                p[i] += (out[i] - p[i]) * k;
-            }
-        }
-    });
-}
-
-/// Spherize: wraps the layer around a sphere of the given radius (centre magnified 2×).
-pub fn spherize(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let r = (fv(e, "radius", cx) * cx.px_scale) as f64;
-    if r < 0.5 {
-        return;
-    }
-    let c = pv(e, "center", cx, img);
-    warp(img, |x, y| {
-        let (dx, dy) = (x - c.x, y - c.y);
-        let d = dx.hypot(dy);
-        if d >= r || d < 1e-9 {
-            return (x, y);
-        }
-        let n = d / r;
-        let k = 1.0 - 0.5 * (1.0 - n * n).sqrt();
-        (c.x + dx * k, c.y + dy * k)
-    });
-}
-
-/// Turbulent Displace: fractal-noise displacement (turbulent, bulge, twist, directional), with
-/// evolution, cycling and edge pinning.
-pub fn turbulent_displace(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let kind = chv(e, "displacement");
-    let amount = fv(e, "amount", cx) * cx.px_scale;
-    if amount.abs() < 1e-4 {
-        return;
-    }
-    let size = (fv(e, "size", cx) * cx.px_scale).max(0.5);
-    let off = pv(e, "offset", cx, img);
-    let (ox, oy) = (((off.x - img.w as f64 / 2.0) / size as f64) as f32, ((off.y - img.h as f64 / 2.0) / size as f64) as f32);
-    let mut cplx = fv(e, "complexity", cx).clamp(1.0, 10.0);
-    if (3..=5).contains(&kind) {
-        cplx = (cplx * 0.5).max(1.0);
-    }
-    let seed = fv(e, "seed", cx).max(0.0) as u64;
-    let evo = fv(e, "evolution", cx) / 360.0;
-    let (ex, ey, ez) = if bv(e, "cycle") {
-        let revs = fv(e, "cycle_revs", cx).max(1.0);
-        let th = (evo.rem_euclid(revs) / revs) * std::f32::consts::TAU;
-        (th.cos() * 0.8, th.sin() * 0.8, 0.0)
-    } else {
-        (0.0, 0.0, evo)
-    };
-    let pin = chv(e, "pinning");
-    let (w, h) = (img.w as f32, img.h as f32);
-    let n = |x: f32, y: f32, ch: f32| fbm(x + ex + ch * 31.7, y + ey, ez + ch * 3.1, cplx, seed);
-    warp(img, |x, y| {
-        let (u, v) = (x as f32 / size + ox, y as f32 / size + oy);
-        let (dx, dy) = match kind {
-            0 | 3 => (n(u, v, 0.0), n(u, v, 1.0)),
-            1 | 4 | 2 | 5 => {
-                let eps = 0.05;
-                let gx = (n(u + eps, v, 0.0) - n(u - eps, v, 0.0)) / (2.0 * eps);
-                let gy = (n(u, v + eps, 0.0) - n(u, v - eps, 0.0)) / (2.0 * eps);
-                if kind == 1 || kind == 4 { (gx * 0.3, gy * 0.3) } else { (-gy * 0.3, gx * 0.3) }
-            }
-            6 => (0.0, n(u, v, 0.0)),
-            7 => (n(u, v, 0.0), 0.0),
-            _ => {
-                let q = n(u, v, 0.0);
-                (q, q)
-            }
-        };
-        let (px, py) = (x as f32, y as f32);
-        let edge = |d: f32, len: f32| smoothstep(1.0, (len * 0.1).max(2.0), d);
-        let (kx, ky) = match pin {
-            1 => {
-                let k = edge(px.min(w - px), w).min(edge(py.min(h - py), h));
-                (k, k)
-            }
-            2 => {
-                let k = edge(px.min(w - px), w);
-                (k, k)
-            }
-            3 => {
-                let k = edge(py.min(h - py), h);
-                (k, k)
-            }
-            _ => (1.0, 1.0),
-        };
-        (x - (dx * amount * kx) as f64, y - (dy * amount * ky) as f64)
-    });
 }
 
 /// 3D Rotate: rotates the layer about its centre in 3-D (X, then Y, then Z) with perspective.
@@ -378,36 +246,6 @@ fn round_rect_alpha(img: &mut Image, x0: f64, y0: f64, x1: f64, y1: f64, r: f32,
             let a = if feather > 0.0 { (-d / feather).clamp(0.0, 1.0) } else { (0.5 - d).clamp(0.0, 1.0) };
             if a < 1.0 {
                 for v in &mut row[x * 4..x * 4 + 4] {
-                    *v *= a;
-                }
-            }
-        }
-    });
-}
-
-/// Rounded Crop: crop edges with rounded corners, feather and an optional border.
-pub fn rounded_crop(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let (w, h) = (img.w as f32, img.h as f32);
-    let (l, t, r, b) = (fv(e, "left", cx) / 100.0 * w, fv(e, "top", cx) / 100.0 * h, w - fv(e, "right", cx) / 100.0 * w, h - fv(e, "bottom", cx) / 100.0 * h);
-    let rad = (fv(e, "radius", cx) * cx.px_scale).min(((r - l).min(b - t) / 2.0).max(0.0));
-    let fe = fv(e, "feather", cx) * cx.px_scale;
-    let border = fv(e, "border", cx) * cx.px_scale;
-    let bc = lin(cv(e, "border_color", cx));
-    let wi = img.w;
-    img.px.par_chunks_mut(wi * 4).enumerate().for_each(|(y, row)| {
-        for x in 0..wi {
-            let d = round_rect_sdf(x as f32 + 0.5, y as f32 + 0.5, l, t, r, b, rad);
-            let p = &mut row[x * 4..x * 4 + 4];
-            if border > 0.0 {
-                // coverage of the band −border < d < 0 just inside the edge
-                let k = (0.5 - d).clamp(0.0, 1.0) - (0.5 - d - border).clamp(0.0, 1.0);
-                if k > 0.0 {
-                    over(p, [bc[0] * k, bc[1] * k, bc[2] * k, k]);
-                }
-            }
-            let a = if fe > 0.0 { (-d / fe).clamp(0.0, 1.0) } else { (0.5 - d).clamp(0.0, 1.0) };
-            if a < 1.0 {
-                for v in p.iter_mut() {
                     *v *= a;
                 }
             }

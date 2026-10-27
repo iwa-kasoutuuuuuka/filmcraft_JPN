@@ -14,11 +14,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     for group in Tool::groups() {
         let current = if group.contains(&app.ui.tool) { app.ui.tool } else { group[0] };
         let r = Rect::from_min_size(pos2(rect.center().x - size / 2.0, y), vec2(size, size));
-        let resp = ui.interact(r, egui::Id::new(("tool", format!("{:?}", group[0]))), Sense::click()).on_hover_text(format!(
-            "{} ({})",
-            current.label(),
-            current.shortcut()
-        ));
+        let label = current.localized_label();
+        let sc = current.shortcut();
+        let tooltip = if sc.is_empty() { label.to_string() } else { format!("{label} ({sc})") };
+        let resp = ui.interact(r, egui::Id::new(("tool", format!("{:?}", group[0]))), Sense::click()).on_hover_text(tooltip);
         for tl in &group {
             app.auto.add(&format!("tools.{tl:?}"), r, tl.label());
         }
@@ -39,7 +38,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if group.len() > 1 {
             egui::Popup::context_menu(&resp).show(|ui| {
                 for tl in &group {
-                    if ui.selectable_label(app.ui.tool == *tl, format!("{}   {}", tl.label(), tl.shortcut())).clicked() {
+                    let label = tl.localized_label();
+                    let sc = tl.shortcut();
+                    let text = if sc.is_empty() { label.to_string() } else { format!("{label}   {sc}") };
+                    if ui.selectable_label(app.ui.tool == *tl, text).clicked() {
                         app.ui.tool = *tl;
                     }
                 }

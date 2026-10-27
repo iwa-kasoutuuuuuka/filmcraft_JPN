@@ -689,3 +689,86 @@ fn subclip_source_monitor_trims_and_markers() {
     s.execute("edit.undo", json!({})).unwrap();
     assert!(matches!(s.project.item(sub).unwrap().kind, ItemKind::Subclip { restrict_trims: false, .. }));
 }
+
+/// Commands that name their targets (`items`, `clips`) run without a selection step: a CLI or
+/// MCP caller has no Project panel or timeline selection to make. Unknown ids are still refused.
+#[test]
+fn explicit_targets_stand_in_for_the_selection() {
+    let mut s = demo();
+    let a = item_named(&s, "Desert_Dunes.mp4");
+    s.state.project_selection.clear();
+    s.state.selection.clear();
+    assert!(s.execute("file.newSequenceFromClip", json!({})).is_err(), "no selection, no targets");
+    assert!(s.execute("file.newSequenceFromClip", json!({"items": [999_999]})).is_err(), "unknown item");
+    s.execute("file.newSequenceFromClip", json!({"items": [a.0]})).unwrap();
+    assert!(s.state.project_selection.is_empty(), "the selection is left as it was");
+    let c = v1(&s)[0].id.0;
+    s.state.selection.clear();
+    s.execute("clip.enable", json!({"clips": [c]})).unwrap();
+    assert!(!clip(&s, c).enabled, "disabled by the explicit target");
+    assert!(s.state.selection.is_empty());
+}
+
+/// `timeline.place` onto a track that doesn't exist used to fall back to the targeted track and
+/// overwrite what was there. A track just past the last is created (one undo step with the
+/// placement); any other unknown track is an error and changes nothing.
+#[test]
+fn placing_on_a_missing_track_adds_it_or_refuses() {
+    let mut s = demo();
+    let a = item_named(&s, "Desert_Dunes.mp4");
+    s.execute("file.newSequenceFromClip", json!({"items": [a.0]})).unwrap();
+    let before = s.active_sequence().unwrap().clone();
+    assert_eq!(before.video_tracks.len(), 1, "a sequence from one clip has one video track");
+    let undo0 = s.history.undo.len();
+    let r = s.execute("timeline.place", json!({"item": a.0, "track": "V2", "seconds": 1.0})).unwrap();
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks.len(), 2, "V2 was added");
+    assert_eq!(q.video_tracks[0].items, before.video_tracks[0].items, "V1 untouched");
+    assert_eq!(q.video_tracks[1].items.len(), 1, "{r}");
+    assert_eq!(s.history.undo.len(), undo0 + 1, "one undo step");
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active_sequence().unwrap().video_tracks.len(), 1, "undo removes the added track too");
+    for bad in [json!("X1"), json!("V0"), json!("V1000"), json!(9_999_999), json!("A1")] {
+        let r = s.execute("timeline.place", json!({"item": a.0, "track": bad, "seconds": 1.0}));
+        if bad == json!("A1") {
+            // an existing track of the other kind keeps its old meaning; nothing else to check
+            continue;
+        }
+        assert!(r.is_err(), "track {bad} is refused");
+        assert_eq!(s.active_sequence().unwrap().video_tracks[0].items, before.video_tracks[0].items, "track {bad}: V1 untouched");
+    }
+}
+
+/// New synthetic items take a name, frame size and duration; Bars and Tone defaults to the 10 s
+/// its parameters document (it used to get 5 s); hostile sizes and durations are clamped (a zero
+/// or huge width used to reach the generator as is).
+#[test]
+fn synthetic_items_take_name_size_and_duration() {
+    // (name, width, height, seconds) of a new generator item
+    fn make(s: &mut Session, cmd: &str, p: serde_json::Value) -> (String, u32, u32, f64) {
+        let id = ItemId(s.execute(cmd, p).unwrap()["item"].as_u64().unwrap());
+        let name = s.project.item(id).unwrap().name.clone();
+        let src = s.media.cached(id).unwrap();
+        let info = src.info();
+        let v = info.video.as_ref().unwrap();
+        (name, v.width, v.height, info.duration.seconds())
+    }
+    let mut s = demo();
+    let (_, _, _, secs) = make(&mut s, "file.newBarsAndTone", json!({}));
+    assert!((secs - 10.0).abs() < 0.1, "Bars and Tone: 10 s by default, got {secs}");
+    for cmd in ["file.newBlackVideo", "file.newTransparentVideo", "file.newCountingLeader", "file.newColorMatte"] {
+        let (name, w, h, secs) = make(&mut s, cmd, json!({"name": "Slate", "width": 640, "height": 360, "seconds": 2.0}));
+        assert_eq!((name.as_str(), w, h), ("Slate", 640, 360), "{cmd}");
+        assert!((secs - 2.0).abs() < 0.1, "{cmd}: {secs}");
+    }
+    let id =
+        ItemId(s.execute("file.newAdjustmentLayer", json!({"name": "Grade", "width": 1280, "height": 720, "seconds": 3.0})).unwrap()["item"].as_u64().unwrap());
+    let adj = s.project.item(id).unwrap();
+    assert_eq!(adj.name, "Grade");
+    let ItemKind::AdjustmentLayer { width, height, duration, .. } = adj.kind else { panic!("adjustment layer") };
+    assert_eq!((width, height, duration), (1280, 720, Tick::from_seconds_f64(3.0)));
+    // hostile values: clamped, blank names ignored
+    let (name, w, h, secs) = make(&mut s, "file.newBlackVideo", json!({"name": "  ", "width": 0, "height": 999_999_999_999u64, "seconds": -5.0}));
+    assert_eq!((name.as_str(), w, h), ("Black Video", 16, 16_384));
+    assert!(secs > 0.0);
+}

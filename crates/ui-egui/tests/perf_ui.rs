@@ -1,6 +1,6 @@
 //! `perf.stats` through the control channel (headless app under `egui_kittest`): the control
 //! method and the command id (what MCP `command_run` sends) both return the engine's decode
-//! counters plus playback, frame-worker and UI timings.
+//! counters plus playback, frame-worker and UI timings, and the process's CPU time.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -53,6 +53,8 @@ impl Driver {
 
 #[test]
 fn perf_stats_reports_playback_frames_and_decode() {
+    // as the desktop app: the platform's CPU clocks where ui-egui has none (Windows)
+    filmcraft_ui_egui::frames::register_cpu_clocks(filmcraft_platform::cputime::process_cpu_time, filmcraft_platform::cputime::thread_cpu_time);
     let mut d = Driver::demo();
     // let the Program monitor render a few frames on the workers
     for _ in 0..50 {
@@ -73,6 +75,9 @@ fn perf_stats_reports_playback_frames_and_decode() {
     assert!(v["frames"]["decodeMs"]["p95"].is_number() && v["frames"]["renderMs"]["mean"].is_number(), "{v}");
     assert!(v["frames"]["jobs"].as_u64().unwrap() > 0, "the monitor rendered frames: {v}");
     assert_eq!(v["playback"]["playing"], json!(false));
+    if cfg!(any(windows, unix)) {
+        assert!(v["process"]["cpuS"].as_f64().is_some_and(|c| c > 0.0), "process CPU seconds: {v}");
+    }
     // the same through the command id (what MCP `command_run` sends in bridge mode)
     let c = d.ok("engine.execute", json!({"command": "perf.stats"}));
     assert!(c["frames"]["workers"].as_u64().unwrap() >= 1 && c["decode"].is_object(), "{c}");

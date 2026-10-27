@@ -30,6 +30,24 @@ use crate::{
     audio_factories, export_range, frame_span, video_factories,
 };
 
+/// Rendered frames waiting for the encoder: straight sRGB RGBA8 (or encoded R'G'B' floats for
+/// HDR), and the picture already converted by the encoder's input converter.
+type Frames = Vec<(Vec<u8>, Vec<f32>, Option<Vec<u8>>)>;
+
+/// A rendered batch: frames `f..end`, the audio mixed up to `end`, and which input converter
+/// prepared its pictures.
+struct Batch {
+    f: i64,
+    end: i64,
+    frames: Frames,
+    audio: Option<Vec<Vec<f32>>>,
+    prepared_by: Option<&'static str>,
+}
+
+/// Memory for one batch of rendered frames: two batches are alive while one renders and the
+/// other encodes, so 4K and HDR exports render fewer frames at once.
+const BATCH_BYTES: usize = 256 << 20;
+
 /// What one [`Exporter::step`] did.
 #[derive(Debug)]
 pub enum Step {
@@ -58,6 +76,8 @@ pub struct Exporter {
     measured: bool,
     /// The first pass of a two-pass encode is running.
     first_pass: bool,
+    /// The batch rendered last, encoded while the next one renders.
+    ahead: Option<Batch>,
     /// Created after the first batch (encoders may finalise their codec config then).
     mux: Option<Mp4Writer<Out>>,
     /// MXF exports write through this instead of `mux`.
@@ -71,16 +91,32 @@ pub struct Exporter {
 
 /// Whether [`Exporter`] handles a format.
 pub fn stepped(format: Format) -> bool {
-    matches!(format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
+    matches!(format, Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
 }
 
-fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
+/// The muxer is created before the first write; reaching a write without it is a logic error.
+fn mux_missing() -> ExportError {
+    ExportError::Encode("muxer not created".into())
+}
+
+/// Our own encoder for the settings (hardware encoders skipped): where a hardware encoder failed.
+fn make_software_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
     video_factories()
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .find_map(|fac| fac(settings.video_format(), w, h, rate, settings))
+        .filter_map(|fac| fac(settings.video_format(), w, h, rate, settings))
+        .find(|r| !r.as_ref().is_ok_and(|e| e.is_hardware()))
         .ok_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", settings.video_format().label())))?
+}
+
+fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
+    video_factories().read().unwrap_or_else(|e| e.into_inner()).iter().find_map(|fac| fac(settings.video_format(), w, h, rate, settings)).ok_or_else(|| {
+        match settings.video_format() {
+            Format::Hevc => ExportError::Unsupported("HEVC export needs a hardware HEVC encoder, and this system has none".into()),
+            f => ExportError::Unsupported(format!("{} encoder not available yet", f.label())),
+        }
+    })?
 }
 
 impl Exporter {
@@ -93,7 +129,7 @@ impl Exporter {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         // HDR sequences export HDR (H.264 / ProRes / DNxHR) unless SDR is asked for
         let pipe = q.settings.color;
-        let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.video_format(), Format::H264 | Format::ProRes | Format::DnxHr);
+        let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.video_format(), Format::H264 | Format::Hevc | Format::ProRes | Format::DnxHr);
         let mut settings = settings.clone();
         settings.signal = match (hdr_out, pipe.working) {
             (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
@@ -117,7 +153,9 @@ impl Exporter {
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
-        let brand = if settings.format == Format::H264 && settings.multiplexer == Multiplexer::Mp4 { Brand::Mp4 } else { Brand::Mov };
+        // AV1 goes in MP4 only
+        let brand =
+            if settings.format == Format::Av1 || (settings.format.is_delivery() && settings.multiplexer == Multiplexer::Mp4) { Brand::Mp4 } else { Brand::Mov };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
             (Some(a), AudioCodec::Aac) => {
@@ -128,18 +166,22 @@ impl Exporter {
             _ => None,
         };
         let measured = !settings.effects.loudness.enabled || audio.is_none();
+        // one frame per core, within the batch memory budget
+        let frame_bytes = (pipe.w as usize * pipe.h as usize * if hdr_out { 16 } else { 6 }).max(1);
+        let batch = rayon::current_num_threads().clamp(2, 16).min((BATCH_BYTES / frame_bytes).max(2)) as i64;
         Ok(Self {
             pipe,
             f0,
             f1,
             next: f0,
-            batch: rayon::current_num_threads().clamp(2, 16) as i64,
+            batch,
             brand,
             venc,
             aenc,
             audio,
             measured,
             first_pass: two_pass,
+            ahead: None,
             mux: None,
             mxf: None,
             seq,
@@ -177,7 +219,7 @@ impl Exporter {
         if n == 0 {
             return Ok(());
         }
-        let mux = self.mux.as_mut().expect("mux created");
+        let mux = self.mux.as_mut().ok_or_else(mux_missing)?;
         match self.aenc.as_mut() {
             Some(a) => {
                 for au in a.encode(&buf)? {
@@ -190,7 +232,7 @@ impl Exporter {
                 let mut pcm = Vec::with_capacity(n * buf.len() * bps);
                 for i in 0..n {
                     for c in &buf {
-                        let s = c[i].clamp(-1.0, 1.0);
+                        let s = c.get(i).copied().unwrap_or(0.0).clamp(-1.0, 1.0);
                         if bps == 3 {
                             pcm.extend_from_slice(&((s * 8_388_607.0).round() as i32).to_le_bytes()[..3]);
                         } else {
@@ -209,7 +251,7 @@ impl Exporter {
         if let Some(m) = self.mxf.as_mut() {
             return m.write_video(packets);
         }
-        let mux = self.mux.as_mut().expect("mux created");
+        let mux = self.mux.as_mut().ok_or_else(mux_missing)?;
         for p in packets {
             mux.write_sample(self.vt, WriteSample { data: &p.data, duration: p.duration, composition_offset: p.composition_offset, is_sync: p.key })
                 .map_err(|e| ExportError::Io(e.to_string()))?;
@@ -239,6 +281,9 @@ impl Exporter {
         let file = Out::create(&self.settings)?;
         let mut opts = WriterOptions::new(self.brand);
         opts.metadata = self.settings.metadata.udta();
+        if self.settings.format == Format::Av1 {
+            opts.compatible_brands.push(*b"av01");
+        }
         let mut mux = Mp4Writer::new(file, opts).map_err(|e| ExportError::Io(e.to_string()))?;
         let mut vcfg = TrackConfig::new(self.venc.sample_entry(), self.venc.timescale());
         vcfg.media_start = self.venc.media_start();
@@ -270,7 +315,7 @@ impl Exporter {
             if !self.settings.part_of_batch {
                 progress.set_status("Measuring loudness");
             }
-            let a = self.audio.as_mut().expect("audio");
+            let a = self.audio.as_mut().ok_or_else(|| ExportError::Encode("loudness pass without audio".into()))?;
             a.measure(&self.settings, sources, &|| progress.cancel.load(Ordering::Relaxed))?;
             if filmcraft_media::pending::take() {
                 return Ok(Step::Pending);
@@ -284,14 +329,34 @@ impl Exporter {
         }
         if self.next < self.f1 {
             let (f, end) = (self.next, (self.next + self.batch).min(self.f1));
-            let pipe = &self.pipe;
-            let frames: Vec<(Vec<u8>, Vec<f32>)> = (f..end).into_par_iter().map(|fi| pipe.frame(fi, sources)).collect();
+            // render this batch while the previous one encodes (in turn without threads)
+            let ahead = self.ahead.take();
+            // the encoder's input conversion runs with the rendering, frame-parallel (SDR)
+            let conv = if self.pipe.hdr_out { None } else { self.venc.input_converter() };
+            let prepared_by = conv.map(|c| c.id);
+            let (pipe, venc, f0) = (&self.pipe, &mut self.venc, self.f0);
+            let (w, h) = (pipe.w as usize, pipe.h as usize);
+            let (frames, encoded) = rayon::join(
+                || {
+                    (f..end)
+                        .into_par_iter()
+                        .map(|fi| {
+                            let (rgba, hdr) = pipe.frame(fi, sources);
+                            let prepared = conv.map(|c| (c.convert)(&rgba, w, h));
+                            (rgba, hdr, prepared)
+                        })
+                        .collect::<Frames>()
+                },
+                || ahead.map(|b| (encode_frames(venc.as_mut(), pipe, f0, &b), b)),
+            );
+            if let Some((packets, b)) = encoded {
+                self.commit(b, packets, progress)?;
+            }
             if self.first_pass {
                 if filmcraft_media::pending::take() {
                     return Ok(Step::Pending);
                 }
-                self.encode(&frames, f)?;
-                progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
+                self.ahead = Some(Batch { f, end, frames, audio: None, prepared_by });
                 self.next = end;
                 return Ok(Step::Progress);
             }
@@ -305,14 +370,14 @@ impl Exporter {
             if filmcraft_media::pending::take() {
                 return Ok(Step::Pending);
             }
-            let packets = self.encode(&frames, f)?;
-            if self.mux.is_none() && self.mxf.is_none() {
-                self.open_mux()?;
-            }
-            self.write_video(packets)?;
-            self.write_audio(mixed)?;
-            progress.done.fetch_add((end - f) as u64, Ordering::Relaxed);
+            self.ahead = Some(Batch { f, end, frames, audio: mixed, prepared_by });
             self.next = end;
+            return Ok(Step::Progress);
+        }
+        // the last batch rendered
+        if let Some(b) = self.ahead.take() {
+            let packets = encode_frames(self.venc.as_mut(), &self.pipe, self.f0, &b);
+            self.commit(b, packets, progress)?;
             return Ok(Step::Progress);
         }
         if self.first_pass {
@@ -337,7 +402,7 @@ impl Exporter {
         self.write_audio(mixed)?;
         if let (Some(at), Some(a)) = (self.at, self.aenc.as_mut()) {
             let fs = a.frame_size();
-            let mux = self.mux.as_mut().expect("mux created");
+            let mux = self.mux.as_mut().ok_or_else(mux_missing)?;
             for au in a.flush()? {
                 mux.write_sample(at, WriteSample { data: &au, duration: fs, composition_offset: 0, is_sync: true })
                     .map_err(|e| ExportError::Io(e.to_string()))?;
@@ -346,7 +411,11 @@ impl Exporter {
         let (bytes, extra_files) = match self.mxf.take() {
             Some(m) => m.finish(&self.settings)?,
             None => {
-                let w = self.mux.take().expect("mux created").finish().map_err(|e| ExportError::Io(e.to_string()))?;
+                let mut mux = self.mux.take().ok_or_else(mux_missing)?;
+                // the codec configuration may only be complete now (AV1: the sequence header
+                // arrives with the first packet, after rav1e's look-ahead)
+                mux.set_sample_entry(self.vt, self.venc.sample_entry()).map_err(|e| ExportError::Io(e.to_string()))?;
+                let w = mux.finish().map_err(|e| ExportError::Io(e.to_string()))?;
                 (w.finish(&self.settings)?, Vec::new())
             }
         };
@@ -366,18 +435,48 @@ impl Exporter {
         }))
     }
 
-    fn encode(&mut self, frames: &[(Vec<u8>, Vec<f32>)], f: i64) -> Result<Vec<EncodedPacket>> {
-        let mut packets = Vec::new();
-        for (k, (rgba, hdr)) in frames.iter().enumerate() {
-            let fr = EncoderFrame {
-                width: self.pipe.w,
-                height: self.pipe.h,
-                rgba,
-                hdr: self.pipe.hdr_out.then_some(hdr.as_slice()),
-                index: (f - self.f0) as u64 + k as u64,
-            };
-            packets.extend(self.venc.encode(&fr)?);
+    /// Finish an encoded batch: a hardware encoder failing before anything was written hands over
+    /// to our encoder (which encodes the batch again); then the packets and the batch's audio are
+    /// written (not in the analysis pass of a two-pass encode).
+    fn commit(&mut self, b: Batch, packets: Result<Vec<EncodedPacket>>, progress: &Progress) -> Result<()> {
+        let packets = match packets {
+            Err(e) if self.venc.is_hardware() && b.f == self.f0 && self.mux.is_none() && self.mxf.is_none() => {
+                // (no encoder of our own for the format, as HEVC: the hardware error stands)
+                let Ok(ours) = make_software_venc(&self.settings, self.pipe.w, self.pipe.h, self.pipe.rate) else { return Err(e) };
+                log::warn!("hardware encoder failed ({e}); exporting with FilmCraft's encoder");
+                crate::hw::note_hw_encode_fallback();
+                self.venc = ours;
+                encode_frames(self.venc.as_mut(), &self.pipe, self.f0, &b)?
+            }
+            r => r?,
+        };
+        if !self.first_pass {
+            if self.mux.is_none() && self.mxf.is_none() {
+                self.open_mux()?;
+            }
+            self.write_video(packets)?;
+            self.write_audio(b.audio)?;
         }
-        Ok(packets)
+        progress.done.fetch_add((b.end - b.f) as u64, Ordering::Relaxed);
+        Ok(())
     }
+}
+
+/// Encode a rendered batch (`f0`: the export's first frame). Pictures prepared by another
+/// encoder's input converter (before a hardware encoder handed over) are converted again.
+fn encode_frames(venc: &mut dyn VideoEncoder, pipe: &Pipeline, f0: i64, b: &Batch) -> Result<Vec<EncodedPacket>> {
+    let mut packets = Vec::new();
+    let usable = b.prepared_by.is_some() && venc.input_converter().map(|c| c.id) == b.prepared_by;
+    for (k, (rgba, hdr, prepared)) in b.frames.iter().enumerate() {
+        let fr = EncoderFrame {
+            width: pipe.w,
+            height: pipe.h,
+            rgba,
+            hdr: pipe.hdr_out.then_some(hdr.as_slice()),
+            index: (b.f - f0) as u64 + k as u64,
+            prepared: prepared.as_deref().filter(|_| usable),
+        };
+        packets.extend(venc.encode(&fr)?);
+    }
+    Ok(packets)
 }

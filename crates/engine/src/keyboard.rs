@@ -544,7 +544,8 @@ fn export_frame(s: &mut Session, p: &Value) -> Result<Value> {
     let path = match str_p(p, "path") {
         Some(path) => path.to_string(),
         None => {
-            let dir = s.path.as_deref().and_then(|p| std::path::Path::new(p).parent()).map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+            // next to the saved project, else where exports go (it used to be the working directory)
+            let dir = crate::export_tools::default_export_dir(s).to_string_lossy().to_string();
             let base = sanitize(&seq_name);
             let mut n = 1;
             loop {

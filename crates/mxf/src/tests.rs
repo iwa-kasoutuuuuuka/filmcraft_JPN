@@ -361,3 +361,26 @@ fn drop_frame_timecode_format() {
     let tc = Timecode { start: 90_000 + 25 * 61 + 3, rounded_base: 25, drop_frame: false };
     assert_eq!(tc.format(), "01:01:01:03");
 }
+
+/// Regression: hostile origin / start position / channel count / stored height overflowed or
+/// allocated a buffer per claimed channel.
+#[test]
+fn hostile_track_values_do_not_overflow() {
+    let (to, flags) = ipbb();
+    let f = build(7, |i| vec![i as u8; 100 + i], &to, &flags);
+    let mut m = open(&f).unwrap();
+    let v = m.track_of_kind(TrackKind::Picture).unwrap();
+    let a = m.track_of_kind(TrackKind::Sound).unwrap();
+    m.tracks[v].origin = i64::MAX;
+    m.tracks[v].start_position = i64::MAX;
+    assert_eq!(m.tracks[v].first_edit_unit(), i64::MAX);
+    let p = m.tracks[v].picture.as_mut().unwrap();
+    (p.display_height, p.frame_layout) = (u32::MAX, 1);
+    assert_eq!(p.frame_height(), u32::MAX);
+    // reading near the end of the sample range must not overflow `start + frames`
+    assert!(m.read_pcm(&f, a, u64::MAX - 1, 4).is_ok());
+    let si = m.tracks[a].sound.as_mut().unwrap();
+    (si.channels, si.bits, si.block_align) = (u32::MAX, u32::MAX, 0);
+    let _ = si.frame_bytes();
+    assert!(m.read_pcm(&f, a, 0, 16).is_err());
+}

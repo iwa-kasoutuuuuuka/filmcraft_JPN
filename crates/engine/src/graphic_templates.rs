@@ -284,7 +284,10 @@ fn set_controls(s: &mut Session, clip: ClipId, values: &serde_json::Map<String, 
                 }
             }
             (ControlKind::Slider, Value::Number(x)) => {
-                let x = x.as_f64().unwrap_or(0.0).clamp(c.min.unwrap_or(f64::MIN), c.max.unwrap_or(f64::MAX));
+                let x = x.as_f64().unwrap_or(0.0);
+                let (lo, hi) = (c.min.unwrap_or(f64::MIN), c.max.unwrap_or(f64::MAX));
+                // `f64::clamp` panics on crossed or NaN bounds, which a damaged template can carry
+                let x = if lo <= hi { x.clamp(lo, hi) } else { x };
                 props.insert(c.param.clone(), json!(x));
             }
             _ => {
@@ -415,6 +418,11 @@ fn export_controls(it: &TrackItem, layers: &[EffectInstance], p: &Value) -> Resu
                 min = min.or(Some(soft_min));
                 max = max.or(Some(soft_max));
             }
+        }
+        if let (Some(lo), Some(hi)) = (min, max)
+            && (lo > hi || lo.is_nan() || hi.is_nan())
+        {
+            return Err(bad("graphics.template.export", format!("control `{name}`: min {lo} is above max {hi}")));
         }
         out.push(TemplateControl { id, name, kind, layer: layer_uid(layer), param, min, max });
     }

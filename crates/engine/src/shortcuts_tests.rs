@@ -85,12 +85,14 @@ fn assign_reassigns_conflicts_and_undoes() {
     s.execute("shortcuts.set", json!({"command": "edit.undo", "keys": "Cmd+Z", "add": true})).unwrap();
     assert_eq!(s.shortcuts.for_command("edit.undo").iter().filter(|b| b.panel.is_none()).count(), 2);
     let r = s.execute("shortcuts.set", json!({"command": "edit.redo", "keys": "M", "keepConflicts": true})).unwrap();
-    assert_eq!(r["conflicts"].as_array().unwrap().len(), 1, "{r}");
+    // the report lists every conflict of the current platform (on Windows / Linux `Cmd` and `Ctrl`
+    // defaults collide too), so count the one made here
+    assert_eq!(r["conflicts"].as_array().unwrap().iter().filter(|c| c["keys"] == json!("M")).count(), 1, "{r}");
     let c = s.execute("shortcuts.conflicts", json!({"platform": "mac"})).unwrap();
     assert_eq!(c["conflicts"][0]["keys"], json!("M"));
     // undo / redo within the editor
     s.execute("shortcuts.undo", json!({})).unwrap();
-    assert!(s.execute("shortcuts.conflicts", json!({})).unwrap()["conflicts"].as_array().unwrap().is_empty());
+    assert!(s.execute("shortcuts.conflicts", json!({"platform": "mac"})).unwrap()["conflicts"].as_array().unwrap().is_empty());
     s.execute("shortcuts.undo", json!({})).unwrap();
     s.execute("shortcuts.undo", json!({})).unwrap();
     assert_eq!(s.shortcuts.primary("edit.undo").as_deref(), Some("Cmd+Z"));
@@ -212,4 +214,39 @@ fn list_searches_labels_and_keys() {
     assert!(v.as_array().unwrap().iter().any(|c| c["id"] == "sequence.addEdit"), "{v}");
     let v = s.execute("shortcuts.list", json!({"panel": "History", "assigned": true})).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
+}
+
+#[test]
+fn ctrl_and_cmd_defaults_do_not_collide_off_the_mac() {
+    use crate::shortcuts::resolve_platform_conflicts;
+    let bind = |c: &str, k: &str| Binding { command: c.into(), keys: k.into(), panel: None };
+    let two = || vec![bind("a.cmd", "Cmd+9"), bind("b.ctrl", "Ctrl+9"), bind("c.free", "Cmd+Alt+8")];
+    // the Mac keeps both: they are different keys there
+    let mut mac = two();
+    resolve_platform_conflicts(&mut mac, Platform::Mac);
+    assert_eq!(mac, two());
+    // Windows / Linux: Cmd keeps the key, Ctrl moves to Ctrl+Alt
+    for p in [Platform::Windows, Platform::Linux] {
+        let mut b = two();
+        resolve_platform_conflicts(&mut b, p);
+        assert_eq!(
+            b.iter().map(|x| (x.command.as_str(), x.keys.as_str())).collect::<Vec<_>>(),
+            [("a.cmd", "Cmd+9"), ("b.ctrl", "Ctrl+Alt+9"), ("c.free", "Cmd+Alt+8")]
+        );
+    }
+    // Ctrl+Alt+9 taken too: Ctrl+Alt+Shift+9; everything taken: unassigned
+    let mut b = vec![bind("a", "Cmd+9"), bind("b", "Ctrl+9"), bind("c", "Cmd+Alt+9")];
+    resolve_platform_conflicts(&mut b, Platform::Windows);
+    assert_eq!(b[1].keys, "Ctrl+Alt+Shift+9");
+    let mut b = vec![bind("a", "Cmd+9"), bind("b", "Ctrl+9"), bind("c", "Cmd+Alt+9"), bind("d", "Cmd+Alt+Shift+9")];
+    resolve_platform_conflicts(&mut b, Platform::Windows);
+    assert!(b.iter().all(|x| x.command != "b"), "{b:?}");
+    // the whole default keymap
+    for p in [Platform::Windows, Platform::Linux] {
+        let mut s = Shortcuts::new();
+        let mut b = s.builtin(crate::shortcuts::DEFAULT_PRESET).unwrap();
+        resolve_platform_conflicts(&mut b, p);
+        s.bindings = b;
+        assert!(s.conflicts(p).is_empty(), "{:?}", s.conflicts(p));
+    }
 }

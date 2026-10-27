@@ -1,0 +1,7 @@
+asset:        crates/render/assets/haarcascade_smile.xml
+title:        OpenCV smile Haar cascade (36x18, 20 stages, tilted features), mouth detector used by facedet::mouth_in
+author:       Oscar Deniz Suarez (contributor); Copyright (c) 2011 Modesto Castrillon-Santana (IUSIANI, Universidad de Las Palmas de Gran Canaria)
+source:       https://github.com/opencv/opencv (data/haarcascades/haarcascade_smile.xml)
+license:      BSD 3-clause ("Contributors License Agreement" block in the file's header comment: redistribution and use in source and binary forms permitted with the notice, the conditions and the disclaimer retained; the contributor's name may not be used to endorse or promote products)
+added:        2026-10-14 by Claude (agent)
+notes:        Copied unchanged from an OpenCV build's etc/haarcascades directory. Loaded by crates/render/src/facedet.rs with include_str!. Not modified.

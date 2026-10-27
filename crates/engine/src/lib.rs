@@ -11,11 +11,15 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod audio_plugins;
 pub mod autosave;
+pub mod autoswitch;
 pub mod captions;
+pub mod censor;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;
+pub mod creator;
 pub mod demo;
 pub mod essential_sound;
 pub mod export_tools;
@@ -45,9 +49,12 @@ pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
+pub mod silence;
 pub mod sync;
+pub mod text_style;
 pub mod transcript;
 pub mod trim;
+pub mod vertical;
 pub mod voiceover;
 
 use std::sync::Arc;
@@ -90,6 +97,21 @@ pub enum EngineError {
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
+
+/// Longest stretch of audio one operation decodes into memory at once (6 hours): a damaged
+/// project's durations must not turn into an allocation that aborts the app.
+pub(crate) const MAX_DECODE_SECONDS: i64 = 6 * 3600;
+
+/// First sample and sample count (per channel) of `start..end` at `rate` samples a second;
+/// refused above [`MAX_DECODE_SECONDS`] (counted at 192 kHz at most).
+pub(crate) fn decode_span(start: filmcraft_time::Tick, end: filmcraft_time::Tick, rate: i64) -> Result<(i64, usize)> {
+    let first = start.to_units_floor(rate);
+    let n = end.to_units_floor(rate).saturating_sub(first).max(0);
+    if n > rate.clamp(1, 192_000).saturating_mul(MAX_DECODE_SECONDS) {
+        return Err(EngineError::Other(format!("the audio is longer than {} hours", MAX_DECODE_SECONDS / 3600)));
+    }
+    Ok((first, usize::try_from(n).unwrap_or(0)))
+}
 
 /// Host services (file access, clipboard…) injected by the frontend.
 pub trait Services: Send + Sync {
@@ -313,6 +335,9 @@ pub struct Session {
     /// User preferences (`prefs.*` commands) and where they persist (None = not persisted).
     pub prefs: autosave::Preferences,
     pub prefs_path: Option<std::path::PathBuf>,
+    /// The data directory this session was given (`--data-dir`; None = the default one,
+    /// `autosave::default_data_dir`). Downloaded speech models live under it.
+    pub data_dir: Option<std::path::PathBuf>,
     /// Auto-save ring + crash-recovery journal (native frontends start it; None = off).
     pub persistence: Option<autosave::Persistence>,
     /// Schema version of the file at `path` as found on disk (older = upgraded on load; the first
@@ -338,6 +363,8 @@ pub struct Session {
     pub mask_jobs: Vec<masks::PendingTrack>,
     /// Scene Edit Detection jobs whose results are applied when they finish.
     pub scene_jobs: Vec<scene_detect::PendingScene>,
+    /// Running Auto Switch by Speaker analyses (applied by [`autoswitch::poll`]).
+    pub autoswitch_jobs: Vec<autoswitch::PendingSwitch>,
     /// Effect presets (built-in + the user's, persisted in the data directory).
     pub presets: presets::PresetLibrary,
     /// Export presets (built-in + the user's, persisted in the data directory) and favourites.
@@ -355,6 +382,10 @@ pub struct Session {
     pub browser: media_browser::BrowserState,
     /// Nesting depth of [`Session::execute`] (commands that run other commands).
     exec_depth: u32,
+    /// Parameters the last top-level command was given that it does not take (ignored). Agents
+    /// get them back as `warnings` (a misspelt key, e.g. `volume` for `volumeDb`, used to be
+    /// ignored without a word).
+    pub last_unknown_params: Vec<String>,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -420,6 +451,7 @@ impl Session {
             jobs: Vec::new(),
             prefs: Default::default(),
             prefs_path: None,
+            data_dir: None,
             persistence: None,
             loaded_schema: filmcraft_format::SCHEMA_VERSION,
             previews: Arc::new(previews::PreviewStore::temp()),
@@ -432,6 +464,7 @@ impl Session {
             media_jobs: Vec::new(),
             mask_jobs: Vec::new(),
             scene_jobs: Vec::new(),
+            autoswitch_jobs: Vec::new(),
             presets: Default::default(),
             export_presets: Default::default(),
             export_queue: Default::default(),
@@ -440,6 +473,7 @@ impl Session {
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
+            last_unknown_params: Vec::new(),
         }
     }
 
@@ -483,6 +517,7 @@ impl Session {
         self.presets.set_dir(&cfg.data_dir);
         self.export_presets.set_dir(&cfg.data_dir);
         self.prefs_path = Some(prefs_path);
+        self.data_dir = Some(cfg.data_dir.clone());
         self.apply_media_cache();
         self.persistence = Some(autosave::Persistence::start(&cfg, self.prefs.auto_save.clone())?);
         self.sync_persistence();
@@ -525,8 +560,17 @@ impl Session {
         proxies::poll(self);
         masks::poll(self);
         scene_detect::poll(self);
+        autoswitch::poll(self);
         export_tools::pump_queue(self, false);
         panels::log_jobs(self);
+        // why a stream plays in software (once per reason): otherwise playback is just slow
+        for why in filmcraft_codecs::hw::take_declined_reasons() {
+            self.log.push(
+                panels::Level::Warning,
+                "playback",
+                format!("Hardware decoding unavailable for {why}. Playback and export decode it in software, which is slower."),
+            );
+        }
         let Some(p) = self.persistence.as_mut() else { return };
         for ev in p.drain_events() {
             match ev {
@@ -589,19 +633,61 @@ impl Session {
         self.revision != self.saved_revision
     }
 
+    /// Whether `spec` can run with these parameters. Explicit targets (`clips` / `clip`, `items` /
+    /// `item`) stand in for the timeline / Project panel selection, so a CLI or MCP caller that
+    /// names its targets needs no selection step first; every other prerequisite still applies.
+    fn enabled_for(&mut self, spec: &commands::CommandSpec, params: &Value) -> std::result::Result<(), String> {
+        let first = (spec.enabled)(self);
+        if first.is_ok() {
+            return first;
+        }
+        let ids = |list: &str, one: &str| -> Option<Vec<u64>> {
+            if !spec.params.contains(&format!("\"{list}\"")) && !spec.params.contains(&format!("\"{one}\"")) {
+                return None;
+            }
+            match (params.get(list).and_then(Value::as_array), params.get(one).and_then(Value::as_u64)) {
+                (Some(a), _) => Some(a.iter().filter_map(Value::as_u64).collect::<Vec<_>>()).filter(|v| !v.is_empty()),
+                (None, Some(id)) => Some(vec![id]),
+                (None, None) => None,
+            }
+        };
+        let (clips, items) = (ids("clips", "clip"), ids("items", "item"));
+        if clips.is_none() && items.is_none() {
+            return first;
+        }
+        let saved = (self.state.selection.clone(), self.state.project_selection.clone());
+        if let Some(c) = clips {
+            self.state.selection = c.into_iter().map(ClipId).collect();
+        }
+        if let Some(i) = items {
+            self.state.project_selection = i.into_iter().map(ItemId).collect();
+        }
+        let r = (spec.enabled)(self);
+        (self.state.selection, self.state.project_selection) = saved;
+        r
+    }
+
     /// Run a command by id.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value> {
         let spec = commands::find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         if self.exec_depth == 0 && spec.journal && self.trim_play.active() {
             self.settle_trim_playback(id);
         }
-        if let Err(why) = (spec.enabled)(self) {
+        if let Err(why) = self.enabled_for(spec, &params) {
             let e = EngineError::Disabled(id.to_string(), why);
             if self.exec_depth == 0 {
                 self.log.push(panels::Level::Warning, id, e.to_string());
             }
             return Err(e);
         }
+        if self.exec_depth == 0 {
+            self.last_unknown_params = commands::unknown_params(spec, &params);
+        }
+        // One command is one undo step: the steps its nested commands push are folded into one,
+        // and a command that fails leaves nothing behind (Undo used to step through a command's
+        // parts, e.g. Add Caption's new track, or Set Look's added Lumetri)
+        let history_cmd = matches!(id, "edit.undo" | "edit.redo") || id.starts_with("history.");
+        let mark = (self.exec_depth == 0 && !history_cmd && self.history.undo.len() < self.history.limit).then_some(self.history.undo.len());
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
@@ -609,6 +695,19 @@ impl Session {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &params)))
             .unwrap_or_else(|_| Err(EngineError::Other(format!("internal error in `{id}` (see the crash log); the command did not complete"))));
         self.exec_depth -= 1;
+        if let Some(mark) = mark
+            && self.history.undo.len() > mark
+        {
+            if r.is_err() {
+                if let Some((_, before)) = self.history.undo.get(mark).cloned() {
+                    self.project = before;
+                    self.history.undo.truncate(mark);
+                    self.bump();
+                }
+            } else if self.history.undo.len() > mark + 1 {
+                clip_ops::collapse_history(self, mark, spec.label.trim_end_matches('…'));
+            }
+        }
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
             graphic_templates::sync_source_graphics(self);
@@ -872,11 +971,21 @@ mod aaf_omf_tests;
 #[cfg(test)]
 mod audio_effects_tests;
 #[cfg(test)]
+mod audio_plugins_tests;
+#[cfg(test)]
 mod autosave_tests;
+#[cfg(test)]
+mod autoswitch_tests;
+#[cfg(test)]
+mod avi_import_tests;
+#[cfg(test)]
+mod censor_tests;
 #[cfg(test)]
 mod clip_ops_tests;
 #[cfg(test)]
 mod color_tests;
+#[cfg(test)]
+mod creator_tests;
 #[cfg(test)]
 mod essential_sound_tests;
 #[cfg(test)]
@@ -922,11 +1031,17 @@ mod settings_tests;
 #[cfg(test)]
 mod shortcuts_tests;
 #[cfg(test)]
+mod silence_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_style_tests;
 #[cfg(test)]
 mod transcript_tests;
 #[cfg(test)]
 mod trim_tests;
+#[cfg(test)]
+mod vertical_tests;
 #[cfg(test)]
 mod vfx_tests;
 #[cfg(test)]

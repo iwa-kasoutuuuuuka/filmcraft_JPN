@@ -8,6 +8,9 @@
 //! * [`biquad`] — RBJ-cookbook biquads (TDF-II) with analytic magnitude response.
 //! * [`sync`] — offset between two recordings of one event (GCC-PHAT, sample-accurate).
 //! * [`channels`] — channel layouts, ITU-R BS.775 up/downmix, 5.1 mixdown types, the 5.1 panner.
+//! * [`plugin`] — the audio plug-in hosting interface (VST3): the catalogue of installed plug-ins
+//!   and [`plugin::PluginEffect`], a plug-in instance as an [`AudioEffect`]. The format hosts
+//!   themselves (FFI) live in `filmcraft-platform`.
 //!
 //! Conventions: audio is **planar f32** (`&mut [&mut [f32]]`, one slice per channel, all the same
 //! length). `process` never allocates; all buffers are sized at construction. Parameters may be
@@ -26,6 +29,7 @@ pub mod effects;
 pub mod fft;
 pub mod loudness;
 pub mod oversample;
+pub mod plugin;
 pub mod remix;
 mod smooth;
 pub mod sync;

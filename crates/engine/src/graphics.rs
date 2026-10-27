@@ -54,7 +54,7 @@ pub fn target_clip(s: &Session, p: &Value) -> Option<ClipId> {
     seq.video_tracks.iter().rev().filter_map(|tr| tr.item_at(t)).map(|it| it.id).find(|c| is_graphic(s, seq, *c))
 }
 
-fn has_graphic(s: &Session) -> std::result::Result<(), String> {
+pub(crate) fn has_graphic(s: &Session) -> std::result::Result<(), String> {
     has_seq(s)?;
     target_clip(s, &Value::Null).map(|_| ()).ok_or_else(|| "select a graphic clip".into())
 }
@@ -228,6 +228,12 @@ pub(crate) fn set_props(s: &mut Session, clip: ClipId, eidx: usize, props: &serd
                 continue;
             }
             let id = param_id(k);
+            // a layer saved before a property existed gets it now, at its default
+            if !e.params.contains_key(id)
+                && let Some(d) = filmcraft_project::find_effect(&e.effect).and_then(|d| d.param(id))
+            {
+                e.params.insert(id.to_string(), filmcraft_project::Param::new(d.default.clone()));
+            }
             let prm = e.params.get_mut(id).ok_or_else(|| bad("graphics.set", format!("no property `{k}`")))?;
             let pv = to_param(&prm.value, id, v).ok_or_else(|| bad("graphics.set", format!("`{k}`: value has the wrong type")))?;
             let old = prm.value_at(mt);

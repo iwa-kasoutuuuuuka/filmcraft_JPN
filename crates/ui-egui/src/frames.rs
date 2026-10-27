@@ -167,6 +167,17 @@ pub struct JobRecord {
     pub cancelled: bool,
 }
 
+/// A CPU clock the host provides where this crate has none of its own (Windows:
+/// `filmcraft_platform::cputime`, registered by the desktop app).
+pub type CpuClock = fn() -> Option<Duration>;
+
+static CPU_CLOCKS: std::sync::OnceLock<(CpuClock, CpuClock)> = std::sync::OnceLock::new();
+
+/// Register the host's process and thread CPU clocks (first registration wins; Unix uses its own).
+pub fn register_cpu_clocks(process: CpuClock, thread: CpuClock) {
+    let _ = CPU_CLOCKS.set((process, thread));
+}
+
 /// CPU time consumed by the calling thread (None where the platform has no thread clock).
 pub fn thread_cpu_time() -> Option<Duration> {
     #[cfg(all(unix, not(target_arch = "wasm32")))]
@@ -176,7 +187,7 @@ pub fn thread_cpu_time() -> Option<Duration> {
     }
     #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
     {
-        None
+        CPU_CLOCKS.get().and_then(|(_, thread)| thread())
     }
 }
 
@@ -189,7 +200,7 @@ pub fn process_cpu_time() -> Option<Duration> {
     }
     #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
     {
-        None
+        CPU_CLOCKS.get().and_then(|(process, _)| process())
     }
 }
 
@@ -883,7 +894,8 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
         // captions (they are not part of the preview hash), so captions are layered on live.
         let (w, h) = filmcraft_render::output_size(q, job.scale);
         let matrix = filmcraft_geom::Affine::scale(w as f64 / frame.width.max(1) as f64, h as f64 / frame.height.max(1) as f64);
-        let mut layers = vec![filmcraft_render::plan::PlanLayer { frame, matrix, opacity: 1.0, blend: filmcraft_render::Blend::Normal, fx: None }];
+        let mut layers =
+            vec![filmcraft_render::plan::PlanLayer { frame, matrix, opacity: 1.0, blend: filmcraft_render::Blend::Normal, fx: None, is_adjustment: false }];
         for o in filmcraft_render::caption_overlays(q, job.time, w, h) {
             layers.push(filmcraft_render::plan::PlanLayer {
                 frame: Arc::new(filmcraft_frame::VideoFrame::rgba_f32(o.w as u32, o.h as u32, o.px)),
@@ -891,9 +903,11 @@ fn plan_job(job: &Job, seq: ItemId, pool: &Arc<MediaPool>, services: &Arc<dyn Se
                 opacity: 1.0,
                 blend: filmcraft_render::Blend::Normal,
                 fx: None,
+                is_adjustment: false,
             });
         }
-        return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers }, true);
+        // (a preview is rendered for the monitor already: no display transform)
+        return (filmcraft_render::plan::FramePlan::Layers { width: w, height: h, layers, color: filmcraft_color::ColorPipeline::REC709 }, true);
     }
     let provider = provider(job, pool, services);
     (filmcraft_render::plan::plan_frame(&job.project, seq, job.time, opts, &provider), false)

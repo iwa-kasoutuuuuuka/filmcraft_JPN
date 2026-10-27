@@ -1,12 +1,13 @@
 //! Effects that look at other frames: Posterize Time, Echo, Auto Reframe and Warp Stabilizer.
 //!
-//! Warp Stabilizer is a 2-D (similarity / translation) stabilizer: on first use it analyses the
-//! clip — every frame decoded small, Shi–Tomasi features tracked frame to frame with pyramidal
-//! Lucas–Kanade and a RANSAC similarity fit (the mask tracker in [`crate::track`]) — and caches
-//! the per-frame steps in memory. Rendering smooths the accumulated camera path with a Gaussian
-//! (Smoothness) or holds it fixed (No Motion), warps each frame onto the smoothed path and frames
-//! the result (crop / auto-scale / synthesise edges). Perspective and Subspace Warp use the
-//! similarity model (no per-region warping).
+//! Warp Stabilizer analyses the clip on first use — every frame decoded small, Shi–Tomasi features
+//! tracked frame to frame with pyramidal Lucas–Kanade (the mask tracker in [`crate::track`]) — and
+//! caches the per-frame steps in memory. Position and Position, Scale, Rotation fit a similarity
+//! (RANSAC); Perspective fits a full projective map ([`Homography`]). Rendering smooths the
+//! accumulated camera path with a Gaussian (Smoothness) or holds it fixed (No Motion), warps each
+//! frame onto the smoothed path and frames the result (crop / auto-scale / synthesise edges).
+//! Subspace Warp reads the steps as a rotating camera (focal length estimated from the steps) and
+//! corrects pan, tilt and roll; if the steps are not rotation-like it falls back to Perspective.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -15,7 +16,7 @@ use filmcraft_project::{EffectInstance, TrackMethod};
 use rayon::prelude::*;
 
 use super::*;
-use crate::track::{Gray, Prepared, track_step};
+use crate::track::{Gray, Homography, Prepared, fit_homography, track_homography_step, track_step};
 
 /// Posterize Time: the clip shows a new frame only at the effect's frame rate.
 pub fn posterize_time(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
@@ -234,19 +235,43 @@ fn path_cache() -> &'static PathCache {
     C.get_or_init(Default::default)
 }
 
+/// A clip's analysed camera motion as projective steps (frame k → k+1), in analysis pixels.
+#[derive(Clone, Debug)]
+pub struct HomographyPath {
+    pub w: usize,
+    pub h: usize,
+    pub steps: Vec<Homography>,
+    pub fps: f64,
+    /// Focal length (pixels) when the steps fit a rotating pinhole camera well enough; `None` otherwise.
+    pub focal: Option<f64>,
+}
+
+type HomographyCache = Mutex<HashMap<u64, Arc<HomographyPath>>>;
+fn homography_cache() -> &'static HomographyCache {
+    static C: OnceLock<HomographyCache> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
 /// Forget every cached stabilizer analysis (e.g. after the media changed).
 pub fn clear_stabilizer_cache() {
     if let Ok(mut c) = path_cache().lock() {
         c.clear();
     }
+    if let Ok(mut c) = homography_cache().lock() {
+        c.clear();
+    }
 }
 
-/// Analyse (or fetch the cached analysis of) the clip `env` describes.
-pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
-    let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
-    if let Some(p) = path_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
-        return Some(p);
-    }
+/// Every frame of a clip decoded small and prepared for tracking, with the tracking region.
+struct Analysis {
+    w: usize,
+    h: usize,
+    fps: f64,
+    region: [Vec2; 4],
+    frames: Vec<Option<Prepared>>,
+}
+
+fn analyse_frames(env: &dyn FxEnv, now: f64, detailed: bool) -> Option<Analysis> {
     let fps = env.frame_rate().max(1.0);
     let n = ((env.clip_seconds() * fps).round() as usize).clamp(1, 20_000);
     let src_w = env.source_size().0.max(1) as f32;
@@ -267,15 +292,50 @@ pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed:
     let (w, h) = frames.iter().flatten().next().map(|p| (p.base().w, p.base().h))?;
     let m = 8.0;
     let region = [Vec2::new(m, m), Vec2::new(w as f64 - m, m), Vec2::new(w as f64 - m, h as f64 - m), Vec2::new(m, h as f64 - m)];
-    let steps: Vec<Affine> = (0..n.saturating_sub(1))
+    Some(Analysis { w, h, fps, region, frames })
+}
+
+/// Analyse (or fetch the cached analysis of) the clip `env` describes.
+pub fn stabilizer_path(env: &dyn FxEnv, now: f64, method: TrackMethod, detailed: bool) -> Option<Arc<StabilizerPath>> {
+    let key = env.clip_key() ^ (method as u64).wrapping_mul(0x9E37) ^ (detailed as u64).wrapping_mul(0x51_7CC1);
+    if let Some(p) = path_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return Some(p);
+    }
+    let an = analyse_frames(env, now, detailed)?;
+    let steps: Vec<Affine> = (0..an.frames.len().saturating_sub(1))
         .into_par_iter()
-        .map(|k| match (&frames[k], &frames[k + 1]) {
-            (Some(a), Some(b)) if a.base().w == b.base().w => track_step(a, b, &region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY),
+        .map(|k| match (&an.frames[k], &an.frames[k + 1]) {
+            (Some(a), Some(b)) if a.base().w == b.base().w => track_step(a, b, &an.region, method).map(|s| s.transform).unwrap_or(Affine::IDENTITY),
             _ => Affine::IDENTITY,
         })
         .collect();
-    let path = Arc::new(StabilizerPath { w, h, steps, fps });
+    let path = Arc::new(StabilizerPath { w: an.w, h: an.h, steps, fps: an.fps });
     if let Ok(mut c) = path_cache().lock() {
+        if c.len() > 64 {
+            c.clear();
+        }
+        c.insert(key, path.clone());
+    }
+    Some(path)
+}
+
+/// Analyse (or fetch the cached analysis of) the clip `env` describes, tracking projective steps.
+pub fn homography_path(env: &dyn FxEnv, now: f64, detailed: bool) -> Option<Arc<HomographyPath>> {
+    let key = env.clip_key() ^ (detailed as u64).wrapping_mul(0x51_7CC1);
+    if let Some(p) = homography_cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return Some(p);
+    }
+    let an = analyse_frames(env, now, detailed)?;
+    let steps: Vec<Homography> = (0..an.frames.len().saturating_sub(1))
+        .into_par_iter()
+        .map(|k| match (&an.frames[k], &an.frames[k + 1]) {
+            (Some(a), Some(b)) if a.base().w == b.base().w => track_homography_step(a, b, &an.region).unwrap_or(Homography::IDENTITY),
+            _ => Homography::IDENTITY,
+        })
+        .collect();
+    let focal = estimate_focal(&steps, an.w as f64, an.h as f64).filter(|&(_, fit)| fit < ROTATION_FIT_MAX).map(|(f, _)| f);
+    let path = Arc::new(HomographyPath { w: an.w, h: an.h, steps, fps: an.fps, focal });
+    if let Ok(mut c) = homography_cache().lock() {
         if c.len() > 64 {
             c.clear();
         }
@@ -319,7 +379,9 @@ pub(crate) fn corrections(path: &StabilizerPath, smooth_frames: f64, no_motion: 
         vec![mean; n]
     } else {
         let sigma = smooth_frames.max(0.01);
-        let r = (sigma * 3.0).ceil() as isize;
+        // (a window wider than the clip covers every frame already: a huge Smoothness from a
+        // project file must not make this loop run for ever)
+        let r = ((sigma * 3.0).ceil() as isize).clamp(1, n as isize);
         (0..n as isize)
             .map(|k| {
                 let mut acc = [0.0; 4];
@@ -351,13 +413,292 @@ pub(crate) fn corrections(path: &StabilizerPath, smooth_frames: f64, no_motion: 
         .collect()
 }
 
+/// Per-frame projective corrections (current frame → stabilised frame): the Perspective counterpart of
+/// [`corrections`]. Frame 0's corners are traced through the analysed motion; those four trajectories
+/// are smoothed (or held, for No Motion) and the correction for each frame is the map that carries
+/// frame 0's corners to their smoothed places, applied after undoing the frame's own motion. Unlike
+/// the similarity path this keeps the shot's perspective and removes only its wobble.
+fn homography_corrections(path: &HomographyPath, smooth_frames: f64, no_motion: bool) -> Vec<Homography> {
+    let n = path.steps.len() + 1;
+    let (w, h) = (path.w as f64, path.h as f64);
+    let canon = [Vec2::new(0.0, 0.0), Vec2::new(w, 0.0), Vec2::new(w, h), Vec2::new(0.0, h)];
+    // cum[k]: frame 0 → frame k
+    let mut cum = vec![Homography::IDENTITY; n];
+    for k in 1..n {
+        cum[k] = path.steps[k - 1].then_apply(&cum[k - 1]);
+    }
+    // where frame 0's corners sit in each frame (a corner sent to infinity stays put)
+    let traj: Vec<[Vec2; 4]> = cum.iter().map(|c| canon.map(|p| c.apply(p).unwrap_or(p))).collect();
+    let smoothed: Vec<[Vec2; 4]> = if no_motion {
+        let mut mean = [Vec2::ZERO; 4];
+        for t in &traj {
+            for c in 0..4 {
+                mean[c] = mean[c] + t[c] * (1.0 / n as f64);
+            }
+        }
+        vec![mean; n]
+    } else {
+        let sigma = smooth_frames.max(0.01);
+        // (a window wider than the clip covers every frame already: a huge Smoothness from a
+        // project file must not make this loop run for ever)
+        let r = ((sigma * 3.0).ceil() as isize).clamp(1, n as isize);
+        (0..n as isize)
+            .map(|k| {
+                let mut acc = [Vec2::ZERO; 4];
+                let mut ws = 0.0;
+                for j in -r..=r {
+                    let i = (k + j).clamp(0, n as isize - 1) as usize;
+                    let wt = (-(j as f64).powi(2) / (2.0 * sigma * sigma)).exp();
+                    for c in 0..4 {
+                        acc[c] = acc[c] + traj[i][c] * wt;
+                    }
+                    ws += wt;
+                }
+                acc.map(|v| v * (1.0 / ws))
+            })
+            .collect()
+    };
+    (0..n)
+        .map(|k| {
+            // smoothed ∘ raw⁻¹: frame k → frame 0 → where the smoothed path places frame 0
+            let to_path = fit_homography(&canon, &smoothed[k]).unwrap_or(Homography::IDENTITY);
+            cum[k].inverse().map(|raw| to_path.then_apply(&raw)).unwrap_or(Homography::IDENTITY)
+        })
+        .collect()
+}
+
+/// Resample `src` through `m` (source pixels → output pixels). Output pixels whose source lies outside
+/// the picture stay transparent, as [`Image::transformed`] leaves them.
+fn homography_warp(src: &Image, m: &Homography) -> Image {
+    let (w, h) = (src.w, src.h);
+    let mut out = Image::new(w, h);
+    let Some(inv) = m.inverse() else { return out };
+    out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+        let py = y as f64 + 0.5;
+        for x in 0..w {
+            let Some(q) = inv.apply(Vec2::new(x as f64 + 0.5, py)) else { continue };
+            if q.x < -1.0 || q.y < -1.0 || q.x > w as f64 + 1.0 || q.y > h as f64 + 1.0 {
+                continue;
+            }
+            row[x * 4..x * 4 + 4].copy_from_slice(&src.sample_bilinear(q.x as f32, q.y as f32));
+        }
+    });
+    out
+}
+
+// ------------------------------------------------------------------ rotating camera (Subspace Warp)
+
+/// Largest median fit residual (‖K⁻¹HK/s − R‖) at which the steps count as camera rotation.
+const ROTATION_FIT_MAX: f64 = 0.05;
+
+type Mat3 = [f64; 9];
+const I3: Mat3 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+
+fn mat_mul(a: &Mat3, b: &Mat3) -> Mat3 {
+    let mut c = [0.0; 9];
+    for r in 0..3 {
+        for k in 0..3 {
+            c[r * 3 + k] = (0..3).map(|j| a[r * 3 + j] * b[j * 3 + k]).sum();
+        }
+    }
+    c
+}
+
+fn transpose3(a: &Mat3) -> Mat3 {
+    [a[0], a[3], a[6], a[1], a[4], a[7], a[2], a[5], a[8]]
+}
+
+fn det3(m: &Mat3) -> f64 {
+    m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6])
+}
+
+fn inv3(m: &Mat3) -> Option<Mat3> {
+    let d = det3(m);
+    if d.abs() < 1e-12 {
+        return None;
+    }
+    let adj = [
+        m[4] * m[8] - m[5] * m[7],
+        m[2] * m[7] - m[1] * m[8],
+        m[1] * m[5] - m[2] * m[4],
+        m[5] * m[6] - m[3] * m[8],
+        m[0] * m[8] - m[2] * m[6],
+        m[2] * m[3] - m[0] * m[5],
+        m[3] * m[7] - m[4] * m[6],
+        m[1] * m[6] - m[0] * m[7],
+        m[0] * m[4] - m[1] * m[3],
+    ];
+    Some(adj.map(|v| v / d))
+}
+
+/// Pinhole intrinsics (focal `f`, principal point at the frame centre) and their inverse.
+fn intrinsics(f: f64, w: f64, h: f64) -> (Mat3, Mat3) {
+    let k = [f, 0.0, w / 2.0, 0.0, f, h / 2.0, 0.0, 0.0, 1.0];
+    let ki = [1.0 / f, 0.0, -w / (2.0 * f), 0.0, 1.0 / f, -h / (2.0 * f), 0.0, 0.0, 1.0];
+    (k, ki)
+}
+
+/// The rotation a homography implies for the camera `k` (H ≈ K R K⁻¹ up to scale), by the polar
+/// factor of K⁻¹HK. Returns it with ‖K⁻¹HK/s − R‖, which is small when H really is a rotation.
+fn implied_rotation(h: &Homography, k: &Mat3, ki: &Mat3) -> Option<(Mat3, f64)> {
+    let a0 = mat_mul(&mat_mul(ki, &h.m), k);
+    let det = det3(&a0);
+    if det <= 0.0 || !det.is_finite() {
+        return None;
+    }
+    let a = a0.map(|v| v / det.cbrt());
+    let mut r = a;
+    for _ in 0..12 {
+        // r ← (r + r⁻ᵀ) / 2 converges to the orthogonal polar factor
+        let rit = transpose3(&inv3(&r)?);
+        for i in 0..9 {
+            r[i] = 0.5 * (r[i] + rit[i]);
+        }
+    }
+    let fit = a.iter().zip(&r).map(|(x, y)| (x - y).powi(2)).sum::<f64>().sqrt();
+    Some((r, fit))
+}
+
+/// The focal length (pixels) whose pinhole camera best explains the steps as pure rotation, with the
+/// median fit residual. Searched on a log grid from half to four frame widths.
+pub(crate) fn estimate_focal(steps: &[Homography], w: f64, h: f64) -> Option<(f64, f64)> {
+    if steps.is_empty() {
+        return None;
+    }
+    let fit_at = |f: f64| {
+        let (k, ki) = intrinsics(f, w, h);
+        let mut fits: Vec<f64> = steps.iter().map(|s| implied_rotation(s, &k, &ki).map_or(f64::INFINITY, |(_, fit)| fit)).collect();
+        fits.sort_by(f64::total_cmp);
+        fits[fits.len() / 2]
+    };
+    // coarse log grid over half to four frame widths, then a finer grid around the best candidate
+    let mut best: Option<(f64, f64)> = None;
+    for i in 0..=36 {
+        let f = w * 0.5 * 8f64.powf(i as f64 / 36.0);
+        let median = fit_at(f);
+        if best.is_none_or(|(_, b)| median < b) {
+            best = Some((f, median));
+        }
+    }
+    let (coarse, _) = best?;
+    let step = coarse * 0.06 / 20.0;
+    for i in -20..=20 {
+        let f = coarse + step * i as f64;
+        if f <= 0.0 {
+            continue;
+        }
+        let median = fit_at(f);
+        if best.is_none_or(|(_, b)| median < b) {
+            best = Some((f, median));
+        }
+    }
+    best
+}
+
+/// Unit quaternion (w, x, y, z) of a rotation matrix.
+fn quat_of(r: &Mat3) -> [f64; 4] {
+    let t = r[0] + r[4] + r[8];
+    let q = if t > 0.0 {
+        let s = (t + 1.0).sqrt() * 2.0;
+        [0.25 * s, (r[7] - r[5]) / s, (r[2] - r[6]) / s, (r[3] - r[1]) / s]
+    } else if r[0] > r[4] && r[0] > r[8] {
+        let s = (1.0 + r[0] - r[4] - r[8]).sqrt() * 2.0;
+        [(r[7] - r[5]) / s, 0.25 * s, (r[1] + r[3]) / s, (r[2] + r[6]) / s]
+    } else if r[4] > r[8] {
+        let s = (1.0 + r[4] - r[0] - r[8]).sqrt() * 2.0;
+        [(r[2] - r[6]) / s, (r[1] + r[3]) / s, 0.25 * s, (r[5] + r[7]) / s]
+    } else {
+        let s = (1.0 + r[8] - r[0] - r[4]).sqrt() * 2.0;
+        [(r[3] - r[1]) / s, (r[2] + r[6]) / s, (r[5] + r[7]) / s, 0.25 * s]
+    };
+    normalise4(q)
+}
+
+fn matrix_of(q: &[f64; 4]) -> Mat3 {
+    let [w, x, y, z] = *q;
+    [
+        1.0 - 2.0 * (y * y + z * z),
+        2.0 * (x * y - w * z),
+        2.0 * (x * z + w * y),
+        2.0 * (x * y + w * z),
+        1.0 - 2.0 * (x * x + z * z),
+        2.0 * (y * z - w * x),
+        2.0 * (x * z - w * y),
+        2.0 * (y * z + w * x),
+        1.0 - 2.0 * (x * x + y * y),
+    ]
+}
+
+fn normalise4(q: [f64; 4]) -> [f64; 4] {
+    let n = q.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if n < 1e-12 { [1.0, 0.0, 0.0, 0.0] } else { q.map(|v| v / n) }
+}
+
+/// Per-frame corrections for a camera that rotates about its centre (Subspace Warp). Each step is read
+/// as a rotation, accumulated from frame 0, and the rotation path is smoothed (quaternions, Gaussian or
+/// held). Frame k's correction is the rotation from its own orientation to the smoothed one, carried
+/// back to pixels through the camera intrinsics, so it removes pan, tilt and roll while keeping the shot's
+/// framing. Translation is not modelled; a camera that moves through the scene is only partly corrected.
+fn rotation_corrections(path: &HomographyPath, f: f64, smooth_frames: f64, no_motion: bool) -> Vec<Homography> {
+    let n = path.steps.len() + 1;
+    let (k, ki) = intrinsics(f, path.w as f64, path.h as f64);
+    // rc[k]: frame 0 → frame k orientation
+    let mut rc = vec![I3; n];
+    for i in 1..n {
+        let r = implied_rotation(&path.steps[i - 1], &k, &ki).map_or(I3, |(r, _)| r);
+        rc[i] = mat_mul(&r, &rc[i - 1]);
+    }
+    // sign-continuous quaternions, so neighbours average along the short way round
+    let mut q: Vec<[f64; 4]> = rc.iter().map(quat_of).collect();
+    for i in 1..n {
+        if q[i].iter().zip(&q[i - 1]).map(|(a, b)| a * b).sum::<f64>() < 0.0 {
+            q[i] = q[i].map(|v| -v);
+        }
+    }
+    let smoothed: Vec<[f64; 4]> = if no_motion {
+        let mut mean = [0.0; 4];
+        for v in &q {
+            for c in 0..4 {
+                mean[c] += v[c] / n as f64;
+            }
+        }
+        vec![normalise4(mean); n]
+    } else {
+        let sigma = smooth_frames.max(0.01);
+        // (a window wider than the clip covers every frame already: a huge Smoothness from a
+        // project file must not make this loop run for ever)
+        let r = ((sigma * 3.0).ceil() as isize).clamp(1, n as isize);
+        (0..n as isize)
+            .map(|kk| {
+                let mut acc = [0.0; 4];
+                for j in -r..=r {
+                    let i = (kk + j).clamp(0, n as isize - 1) as usize;
+                    let wt = (-(j as f64).powi(2) / (2.0 * sigma * sigma)).exp();
+                    for c in 0..4 {
+                        acc[c] += q[i][c] * wt;
+                    }
+                }
+                normalise4(acc)
+            })
+            .collect()
+    };
+    (0..n)
+        .map(|kk| {
+            // K · R_smoothed · R_rawᵀ · K⁻¹, normalised so the bottom-right entry is 1
+            let c = mat_mul(&mat_mul(&k, &mat_mul(&matrix_of(&smoothed[kk]), &transpose3(&rc[kk]))), &ki);
+            let s = c[8];
+            if s.abs() < 1e-12 { Homography::IDENTITY } else { Homography { m: c.map(|v| v / s) } }
+        })
+        .collect()
+}
+
 /// Smallest zoom about the centre (≥ 1) that hides the borders a correction exposes.
-pub(crate) fn cover_scale(corr: &Affine, w: f64, h: f64, max: f64) -> f64 {
+pub(crate) fn cover_scale(corr: &Homography, w: f64, h: f64, max: f64) -> f64 {
     let Some(inv) = corr.inverse() else { return 1.0 };
     let (cx, cy) = (w / 2.0, h / 2.0);
     let covered = |z: f64| {
         [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].iter().all(|&(x, y)| {
-            let q = inv.apply(Vec2::new(cx + (x - cx) / z, cy + (y - cy) / z));
+            let Some(q) = inv.apply(Vec2::new(cx + (x - cx) / z, cy + (y - cy) / z)) else { return false };
             q.x >= -0.5 && q.y >= -0.5 && q.x <= w + 0.5 && q.y <= h + 0.5
         })
     };
@@ -382,15 +723,29 @@ pub(crate) fn cover_scale(corr: &Affine, w: f64, h: f64, max: f64) -> f64 {
 /// Warp Stabilizer: see the module docs.
 pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     let Some(env) = cx.env else { return };
-    let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
-    let Some(path) = stabilizer_path(env, cx.seconds, method, bv(e, "detailed")) else { return };
-    let n = path.steps.len() + 1;
-    let k = ((cx.seconds * path.fps).round().max(0.0) as usize).min(n - 1);
-    let smooth = fv(e, "smoothness", cx) as f64 / 100.0 * path.fps;
+    let no_motion = chv(e, "result") == 1;
     let crop_less = fv(e, "crop_less", cx) as f64 / 100.0;
-    let corr = corrections(&path, smooth * (0.5 + crop_less), chv(e, "result") == 1, bv(e, "preserve_scale"));
+    // analysis size, frame rate and one correction per frame (current frame → stabilised frame)
+    let method = chv(e, "method");
+    let (aw, ah, fps, corr): (f64, f64, f64, Vec<Homography>) = if method >= 2 {
+        let Some(path) = homography_path(env, cx.seconds, bv(e, "detailed")) else { return };
+        let smooth = fv(e, "smoothness", cx) as f64 / 100.0 * path.fps * (0.5 + crop_less);
+        // Subspace Warp models the camera as rotating when the steps allow it, else as a projective path
+        let corr = match (method, path.focal) {
+            (3, Some(f)) => rotation_corrections(&path, f, smooth, no_motion),
+            _ => homography_corrections(&path, smooth, no_motion),
+        };
+        (path.w as f64, path.h as f64, path.fps, corr)
+    } else {
+        let method = if chv(e, "method") == 0 { TrackMethod::Position } else { TrackMethod::PositionScaleRotation };
+        let Some(path) = stabilizer_path(env, cx.seconds, method, bv(e, "detailed")) else { return };
+        let smooth = fv(e, "smoothness", cx) as f64 / 100.0 * path.fps;
+        let affine = corrections(&path, smooth * (0.5 + crop_less), no_motion, bv(e, "preserve_scale"));
+        (path.w as f64, path.h as f64, path.fps, affine.iter().map(Homography::from_affine).collect())
+    };
+    let n = corr.len();
+    let k = ((cx.seconds * fps).round().max(0.0) as usize).min(n - 1);
     let framing = chv(e, "framing");
-    let (aw, ah) = (path.w as f64, path.h as f64);
     let max_scale = (fv(e, "max_scale", cx) as f64 / 100.0).max(1.0);
     let safe = 1.0 + fv(e, "action_safe", cx) as f64 / 100.0;
     let extra = fv(e, "additional_scale", cx) as f64 / 100.0;
@@ -400,13 +755,18 @@ pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     } * extra;
     // analysis px → layer px
     let s = img.w as f64 / aw;
-    let to_layer = Affine::scale(s, s);
-    let from_layer = Affine::scale(1.0 / s, 1.0 / s);
+    let to_layer = Homography::from_affine(&Affine::scale(s, s));
+    let from_layer = Homography::from_affine(&Affine::scale(1.0 / s, 1.0 / s));
     let (lw, lh) = (img.w as f64, img.h as f64);
-    let z = Affine::translate(lw / 2.0, lh / 2.0).then_apply(&Affine::scale(zoom, zoom)).then_apply(&Affine::translate(-lw / 2.0, -lh / 2.0));
+    let z = Homography::from_affine(
+        &Affine::translate(lw / 2.0, lh / 2.0).then_apply(&Affine::scale(zoom, zoom)).then_apply(&Affine::translate(-lw / 2.0, -lh / 2.0)),
+    );
     let m = z.then_apply(&to_layer).then_apply(&corr[k]).then_apply(&from_layer);
     let src = img.clone();
-    affine_warp(img, &m);
+    match m.to_affine() {
+        Some(a) => affine_warp(img, &a),
+        None => *img = homography_warp(&src, &m),
+    }
     match framing {
         1 => {
             // crop to the area every frame covers
@@ -422,7 +782,7 @@ pub fn warp_stabilizer(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
                     for x in 0..w {
                         let p = &mut row[x * 4..x * 4 + 4];
                         if p[3] < 0.999 {
-                            let q = inv.apply(Vec2::new(x as f64 + 0.5, y as f64 + 0.5));
+                            let Some(q) = inv.apply(Vec2::new(x as f64 + 0.5, y as f64 + 0.5)) else { continue };
                             let fill = src.sample_bilinear_clamped(q.x as f32, q.y as f32);
                             let mut b = fill;
                             over(&mut b, [p[0], p[1], p[2], p[3]]);

@@ -215,6 +215,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = bool_p(p, "sdr") {
         settings.sdr = v;
     }
+    if let Some(v) = bool_p(p, "alpha") {
+        settings.alpha = v;
+    }
     if let (Some(w), Some(h)) = (u64_p(p, "width"), u64_p(p, "height")) {
         settings.frame_size = Some((w as u32, h as u32));
     }
@@ -277,8 +280,8 @@ pub fn range_param(s: &Session, project: &Project, seq: ItemId, v: Option<&Value
     }))
 }
 
-/// Where exports go when no path is given: next to the saved project, else ~/Movies, else the
-/// home directory, else the temporary directory.
+/// Where exports go when no path is given: next to the saved project, else the home directory's
+/// video folder ([`video_dir`]), else the temporary directory.
 pub fn default_export_dir(s: &Session) -> PathBuf {
     if let Some(d) = s.path.as_deref().and_then(|p| Path::new(p).parent()).filter(|d| !d.as_os_str().is_empty()) {
         return d.to_path_buf();
@@ -288,10 +291,15 @@ pub fn default_export_dir(s: &Session) -> PathBuf {
         return PathBuf::from("/exports");
     }
     if let Ok(h) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-        let movies = Path::new(&h).join("Movies");
-        return if movies.is_dir() { movies } else { PathBuf::from(h) };
+        return video_dir(Path::new(&h));
     }
     crate::temp_dir()
+}
+
+/// The video folder in `home`: `Movies` (macOS), `Videos` (Windows, shown localised, e.g.
+/// 「ビデオ」, but named so on disk; also many Linux desktops), else `home` itself.
+pub fn video_dir(home: &Path) -> PathBuf {
+    ["Movies", "Videos"].into_iter().map(|n| home.join(n)).find(|d| d.is_dir()).unwrap_or_else(|| home.to_path_buf())
 }
 
 fn file_safe(n: &str) -> String {
@@ -305,7 +313,9 @@ fn with_extension(path: &str, settings: &ExportSettings) -> String {
     let ext = settings.extension();
     match Path::new(path).extension().and_then(|e| e.to_str()) {
         Some(e) if e.eq_ignore_ascii_case(ext) || (settings.format == Format::TiffSequence && e.eq_ignore_ascii_case("tiff")) => path.to_string(),
-        Some(_) if settings.is_image_sequence() || matches!(settings.format, Format::Aiff) => format!("{}.{ext}", path.rsplit_once('.').map_or(path, |x| x.0)),
+        Some(_) if settings.is_image_sequence() || matches!(settings.format, Format::Aiff | Format::Flac) => {
+            format!("{}.{ext}", path.rsplit_once('.').map_or(path, |x| x.0))
+        }
         _ => format!("{path}.{ext}"),
     }
 }
@@ -322,7 +332,12 @@ fn expand_home(p: &str) -> String {
 fn output_path(s: &Session, p: &Value, seq: ItemId, settings: &ExportSettings, suffix: Option<usize>) -> String {
     let name = s.project.item(seq).map(|i| i.name.clone()).unwrap_or_else(|| "Sequence".into());
     let base = match str_p(p, "path").map(expand_home) {
-        Some(x) if x.ends_with('/') || x.ends_with('\\') || Path::new(&x).is_dir() => Path::new(&x).join(file_safe(&name)).to_string_lossy().to_string(),
+        // trailing separators are dropped first: on a Windows verbatim path (`\\?\C:\dir`) a `/` is
+        // a literal character, so `dir/` + `\name` would be an invalid file name
+        Some(x) if x.ends_with('/') || x.ends_with('\\') || Path::new(&x).is_dir() => {
+            let dir = x.trim_end_matches(['/', '\\']);
+            Path::new(if dir.is_empty() { x.as_str() } else { dir }).join(file_safe(&name)).to_string_lossy().to_string()
+        }
         Some(x) => x,
         None => default_export_dir(s).join(file_safe(&name)).to_string_lossy().to_string(),
     };

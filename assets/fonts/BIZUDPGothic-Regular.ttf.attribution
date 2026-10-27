@@ -1,0 +1,8 @@
+asset:        BIZUDPGothic-Regular.ttf
+title:        BIZ UDPGothic Regular (Japanese face of the UI and the text engine)
+author:       The BIZ UDGothic Project Authors (Morisawa Inc.)
+source:       https://github.com/google/fonts (ofl/bizudpgothic), upstream https://github.com/googlefonts/morisawa-biz-ud-gothic
+license:      OFL-1.1
+license-file: assets/fonts/OFL-BIZUDPGothic.txt
+added:        2026-10-09 by Claude (agent) for n_sugimura
+notes:        Unmodified font file (version 1.051, sha256 258d7156c165f2ff774b6efee637c22c3b950de0d8a10e501137061bc8085d01), bundled via include_bytes! in the text engine (crates/text/src/fonts.rs): kana and kanji for the Japanese UI and for Japanese titles, captions and file names in any language. Chosen over Noto Sans JP because the copyright holder of that font is Adobe (AGENTS.md §1).

@@ -275,7 +275,7 @@ fn offset_p(p: &Value, rate: FrameRate) -> Tick {
 }
 
 /// Run `f` on sequence `seq_id` of `p` with an edit context (ids, media durations), then check it.
-fn seq_edit<R>(p: &mut Project, seq_id: ItemId, media: &Arc<MediaPool>, f: impl FnOnce(&mut Sequence, &mut EditCtx) -> Result<R>) -> Result<R> {
+pub(crate) fn seq_edit<R>(p: &mut Project, seq_id: ItemId, media: &Arc<MediaPool>, f: impl FnOnce(&mut Sequence, &mut EditCtx) -> Result<R>) -> Result<R> {
     let snapshot = Arc::new(p.clone());
     let snap = snapshot.clone();
     let media = media.clone();
@@ -710,7 +710,7 @@ fn angle_p(s: &Session, p: &Value, source: ItemId, cmd: &str) -> Result<u32> {
 }
 
 /// Linked audio clips of `video` that are multi-camera clips.
-fn audio_partners(q: &Sequence, video: &TrackItem) -> Vec<ClipId> {
+pub(crate) fn audio_partners(q: &Sequence, video: &TrackItem) -> Vec<ClipId> {
     let Some(l) = video.link else { return Vec::new() };
     q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|i| i.link == Some(l) && i.multicam.is_some()).map(|i| i.id).collect()
 }

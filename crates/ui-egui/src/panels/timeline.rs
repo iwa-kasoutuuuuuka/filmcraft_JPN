@@ -176,7 +176,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // ---- sequence tabs strip (top-left header block)
     // ---- animated zoom / scroll
     let empty = seq.duration().seconds() <= 0.0;
-    let dur_s = seq.duration().seconds().max(1.0);
+    // an empty sequence shows its first minute (fitting "1 s" zoomed in to single frames, so the
+    // first clip dropped "at the start" landed a frame or more in)
+    let dur_s = if empty { EMPTY_FIT_S } else { seq.duration().seconds().max(1.0) };
     {
         let v = &mut app.ui.timeline;
         if let Some(p) = v.fit_empty
@@ -363,7 +365,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // master track
     let master = Rect::from_min_max(pos2(rect.min.x, tracks_area.max.y - MASTER_H), pos2(content.max.x, tracks_area.max.y));
     painter.rect_filled(master, 0.0, t.tl_header_bg);
-    painter.text(pos2(rect.min.x + 44.0, master.center().y), Align2::LEFT_CENTER, "Mix", Tokens::ui(11.5), t.text);
+    painter.text(pos2(rect.min.x + 44.0, master.center().y), Align2::LEFT_CENTER, crate::i18n::t("Mix", "ミックス"), Tokens::ui(11.5), t.text);
     painter.text(
         pos2(rect.min.x + header_w - 12.0, master.center().y),
         Align2::RIGHT_CENTER,
@@ -437,14 +439,22 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
 
 fn empty_state(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
-    ui.painter().text(rect.center() - vec2(0.0, 12.0), Align2::CENTER_CENTER, "Drop media here to create sequence.", Tokens::ui(13.0), t.text_dim);
+    ui.painter().text(
+        rect.center() - vec2(0.0, 12.0),
+        Align2::CENTER_CENTER,
+        crate::i18n::t("Drop media here to create sequence.", "ここにメディアをドロップしてシーケンスを作成します。"),
+        Tokens::ui(13.0),
+        t.text_dim,
+    );
     let b = Rect::from_center_size(rect.center() + vec2(0.0, 20.0), vec2(170.0, 26.0));
     let resp = ui.interact(b, egui::Id::new("tl-open-demo"), Sense::click());
     app.auto.add("timeline.openDemo", b, "Open Demo Project");
     ui.painter().rect_filled(b, 13.0, if resp.hovered() { t.accent_hover } else { t.accent });
-    ui.painter().text(b.center(), Align2::CENTER_CENTER, "Open Demo Project", Tokens::semibold(12.0), Color32::WHITE);
-    if resp.clicked() {
-        let _ = app.session.execute("file.openDemoProject", json!({}));
+    ui.painter().text(b.center(), Align2::CENTER_CENTER, crate::i18n::t("Open Demo Project", "デモプロジェクトを開く"), Tokens::semibold(12.0), Color32::WHITE);
+    if resp.clicked()
+        && let Err(e) = crate::menus::invoke(app, ui.ctx(), "file.openDemoProject", json!({}))
+    {
+        app.ui.status = e;
     }
     // accept drops from the project panel
     if let Some(item) = crate::panels::dragged_project_item(ui)
@@ -693,25 +703,32 @@ pub(crate) fn request_peaks(app: &mut FilmcraftApp, item: ItemId) -> Option<Arc<
     let pending = app.tl.peaks_pending.clone();
     let dur = src.info().duration;
     let run = move || {
-        let sr = 48_000u32;
-        let total = dur.to_units_floor(sr as i64).max(0) as usize;
-        let mut out = Vec::with_capacity(total / 256 + 1);
-        let chunk = 48_000 * 4;
-        let mut s = 0usize;
-        while s < total {
-            let n = chunk.min(total - s);
-            match src.audio(s as i64, n, sr) {
-                Ok(buf) => {
-                    let ch = buf.channels.first().cloned().unwrap_or_default();
-                    for c in ch.chunks(256) {
-                        let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
-                        out.push((lo, hi));
+        // A decoder panic must still clear the pending entry, or the waveform never appears and is
+        // never retried; an empty result is drawn as silence.
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let sr = 48_000u32;
+            let total = dur.to_units_floor(sr as i64).max(0) as usize;
+            // capped: a damaged duration must not reserve gigabytes up front
+            let mut out = Vec::with_capacity((total / 256 + 1).min(1 << 20));
+            let chunk = 48_000 * 4;
+            let mut s = 0usize;
+            while s < total {
+                let n = chunk.min(total - s);
+                match src.audio(s as i64, n, sr) {
+                    Ok(buf) => {
+                        let ch = buf.channels.first().cloned().unwrap_or_default();
+                        for c in ch.chunks(256) {
+                            let (lo, hi) = c.iter().fold((0f32, 0f32), |(l, h), v| (l.min(*v), h.max(*v)));
+                            out.push((lo, hi));
+                        }
                     }
+                    Err(_) => break,
                 }
-                Err(_) => break,
+                s += n;
             }
-            s += n;
-        }
+            out
+        }))
+        .unwrap_or_default();
         peaks.lock().unwrap_or_else(|e| e.into_inner()).insert(item, Arc::new(out));
         pending.lock().unwrap_or_else(|e| e.into_inner()).retain(|i| *i != item);
     };
@@ -760,7 +777,7 @@ fn draw_transition(p: &egui::Painter, r: Rect, trn: &filmcraft_project::Transiti
 
 /// A Premiere track-header button (patch / target): blue fill when on, full track height.
 fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, show_off: bool, id: egui::Id, t: &Tokens) -> egui::Response {
-    let resp = ui.interact(r.intersect(clip), id, Sense::click());
+    let resp = ui.interact(r.intersect(clip), id, crate::widgets::visible_click(r.intersect(clip)));
     let p = ui.painter().with_clip_rect(clip);
     if on {
         p.rect_filled(r, 2.0, Color32::from_rgb(0x26, 0x5b, 0xc1));
@@ -798,7 +815,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         // 1. source patch (absent when unpatched)
         let patched = if r.kind == TrackKind::Video { tg.video_dest == Some(r.track) } else { tg.audio_dest == Some(r.track) };
         let pr = btn_rect(13.0);
-        app.auto.add(&format!("timeline.track.{label}.sourcePatch"), pr, "Source patch");
+        app.auto.add(&format!("timeline.track.{label}.sourcePatch"), pr.intersect(visible), "Source patch");
         if patch_button(ui, pr, visible, &label, patched, false, egui::Id::new(("patch", r.track.0)), t).clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
@@ -815,7 +832,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             egui::Id::new(("locked", r.track.0)),
             Some(if tr.locked { Color32::from_rgb(0xd1, 0xd1, 0xd1) } else { t.text_dim }),
         );
-        app.auto.add(&format!("timeline.track.{label}.locked"), lock_r, "Toggle Track Lock");
+        app.auto.add(&format!("timeline.track.{label}.locked"), lock_r.intersect(visible), "Toggle Track Lock");
         if lresp.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "locked": !tr.locked})));
         }
@@ -826,7 +843,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         // 3. target
         let targeted = tg.targeted.contains(&r.track);
         let trr = btn_rect(61.0);
-        app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
+        app.auto.add(&format!("timeline.track.{label}.target"), trr.intersect(visible), "Toggle track targeting");
         if patch_button(ui, trr, visible, &label, targeted, true, egui::Id::new(("target", r.track.0)), t).clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
         }
@@ -835,7 +852,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         let sr = small(x, upper_y);
         let sresp =
             crate::widgets::icon_toggle(ui, sr.intersect(visible), Icon::SyncLock, tr.sync_lock, t, egui::Id::new(("syncLock", r.track.0)), Some(t.text_dim));
-        app.auto.add(&format!("timeline.track.{label}.syncLock"), sr, "Toggle Sync Lock");
+        app.auto.add(&format!("timeline.track.{label}.syncLock"), sr.intersect(visible), "Toggle Sync Lock");
         if sresp.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
         }
@@ -851,7 +868,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 egui::Id::new(("enabled", r.track.0)),
                 Some(t.text_dim),
             );
-            app.auto.add(&format!("timeline.track.{label}.enabled"), er, "Toggle Track Output");
+            app.auto.add(&format!("timeline.track.{label}.enabled"), er.intersect(visible), "Toggle Track Output");
             if eresp.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "enabled": !tr.enabled})));
             }
@@ -866,7 +883,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 t,
                 egui::Id::new(("mute", r.track.0)),
             );
-            app.auto.add(&format!("timeline.track.{label}.muted"), mr, "Mute Track");
+            app.auto.add(&format!("timeline.track.{label}.muted"), mr.intersect(visible), "Mute Track");
             if mresp.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
             }
@@ -880,7 +897,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 t,
                 egui::Id::new(("solo", r.track.0)),
             );
-            app.auto.add(&format!("timeline.track.{label}.solo"), s2, "Solo Track");
+            app.auto.add(&format!("timeline.track.{label}.solo"), s2.intersect(visible), "Solo Track");
             if so.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "solo": !tr.solo})));
             }
@@ -893,12 +910,13 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         }
         // 5. name on the lower line (or inline when short)
         if hrect.height() >= 40.0 {
-            p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
+            p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, crate::i18n::tr_track_name(&tr.name), Tokens::ui(11.0), t.text_dim);
         }
         // resize track height by dragging the header's bottom edge
         let edge = Rect::from_min_max(pos2(hrect.min.x, hrect.max.y - 3.0), pos2(hrect.max.x, hrect.max.y + 2.0)).intersect(visible);
         if edge.height() > 0.0 {
-            let eresp = ui.interact(edge, egui::Id::new(("trackh", r.track.0)), Sense::drag());
+            let eresp = ui.interact(edge, egui::Id::new(("trackh", r.track.0)), if edge.is_positive() { Sense::drag() } else { Sense::hover() });
+            app.auto.add(&format!("timeline.track.{label}.resize"), edge.intersect(visible), "Track height");
             if eresp.hovered() || eresp.dragged() {
                 ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
             }
@@ -908,11 +926,9 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
                 *h = (*h + d).clamp(22.0, 220.0);
             }
         }
-        let resp = ui.interact(
-            Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible),
-            egui::Id::new(("hdr", r.track.0)),
-            Sense::click(),
-        );
+        let hr = Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 26.0), hrect.max).intersect(visible);
+        let resp = ui.interact(hr, egui::Id::new(("hdr", r.track.0)), crate::widgets::visible_click(hr));
+        app.auto.add(&format!("timeline.track.{label}.header"), hr.intersect(visible), "Track header (double-click: height)");
         if resp.double_clicked() {
             let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
             *h = if *h < 50.0 { 64.0 } else { 30.0 };
@@ -946,12 +962,18 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     let mut x = rect.min.x + 12.0;
     let y = rect.min.y + 26.0;
     let toggles: [(Icon, &str, bool, bool, &str); 6] = [
-        (Icon::Nest, "nest", true, true, "Insert and overwrite sequences as nests or individual clips"),
-        (Icon::Magnet, "snap", app.session.state.snapping, true, "Snap in Timeline (S)"),
-        (Icon::Link, "linked", app.session.state.linked_selection, true, "Linked Selection"),
-        (Icon::Captions, "captions", false, false, "Caption track options"),
-        (Icon::Marker, "marker", false, false, "Add Marker (M)"),
-        (Icon::Wrench, "settings", false, false, "Timeline Display Settings"),
+        (
+            Icon::Nest,
+            "nest",
+            true,
+            true,
+            crate::i18n::t("Insert and overwrite sequences as nests or individual clips", "シーケンスをネストまたは個別のクリップとして挿入および上書き"),
+        ),
+        (Icon::Magnet, "snap", app.session.state.snapping, true, crate::i18n::t("Snap in Timeline (S)", "タイムラインにスナップ (S)")),
+        (Icon::Link, "linked", app.session.state.linked_selection, true, crate::i18n::t("Linked Selection", "連結された選択")),
+        (Icon::Captions, "captions", false, false, crate::i18n::t("Caption track options", "キャプショントラックのオプション")),
+        (Icon::Marker, "marker", false, false, crate::i18n::t("Add Marker (M)", "マーカーを追加 (M)")),
+        (Icon::Wrench, "settings", false, false, crate::i18n::t("Timeline Display Settings", "タイムライン表示設定")),
     ];
     for (icon, key, on, toggle, tip) in toggles {
         let r = Rect::from_min_size(pos2(x, y), vec2(28.0, 28.0));
@@ -973,21 +995,21 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         }
         if key == "settings" {
             egui::Popup::menu(&resp).show(|ui| {
-                ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Show Video Thumbnails");
-                ui.checkbox(&mut app.ui.timeline.show_waveforms, "Show Audio Waveform");
+                ui.checkbox(&mut app.ui.timeline.show_thumbnails, crate::i18n::t("Show Video Thumbnails", "ビデオサムネイルを表示"));
+                ui.checkbox(&mut app.ui.timeline.show_waveforms, crate::i18n::t("Show Audio Waveform", "オーディオ波形を表示"));
                 ui.separator();
                 let mut te = app.session.state.show_through_edits;
-                let c = ui.checkbox(&mut te, "Show Through Edits");
+                let c = ui.checkbox(&mut te, crate::i18n::t("Show Through Edits", "フロースルー編集を表示"));
                 app.auto.add("timeline.settings.showThroughEdits", c.rect, "Show Through Edits");
                 if c.changed() {
                     let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
                 }
                 ui.separator();
-                if ui.button("Expand All Tracks").clicked() {
+                if ui.button(crate::i18n::t("Expand All Tracks", "すべてのトラックを展開")).clicked() {
                     app.ui.timeline.video_track_h = 64.0;
                     app.ui.timeline.audio_track_h = 64.0;
                 }
-                if ui.button("Minimize All Tracks").clicked() {
+                if ui.button(crate::i18n::t("Minimize All Tracks", "すべてのトラックを最小化")).clicked() {
                     app.ui.timeline.video_track_h = 26.0;
                     app.ui.timeline.audio_track_h = 26.0;
                 }
@@ -1070,9 +1092,11 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
         use filmcraft_engine::previews::BarState;
         let (c, what) = match span.state {
             BarState::None => continue,
-            BarState::Yellow => (t.render_yellow, "Unrendered: should play back in real time"),
-            BarState::Red => (t.render_red, "Unrendered: render to play back in real time"),
-            BarState::Green => (t.render_green, "Rendered preview"),
+            BarState::Yellow => (t.render_yellow, crate::i18n::t("Unrendered: should play back in real time", "未レンダリング: リアルタイムで再生可能")),
+            BarState::Red => {
+                (t.render_red, crate::i18n::t("Unrendered: render to play back in real time", "未レンダリング: リアルタイム再生にはレンダリングが必要"))
+            }
+            BarState::Green => (t.render_green, crate::i18n::t("Rendered preview", "レンダリング済みプレビュー")),
         };
         let r = Rect::from_min_max(pos2(layout.x_of(span.start), rb.min.y), pos2(layout.x_of(span.end), rb.max.y)).intersect(ruler);
         if r.width() <= 0.0 {
@@ -1219,6 +1243,9 @@ fn edge_geometry(seq: &Sequence, layout: &Layout, track: filmcraft_project::Trac
 }
 
 /// Snap `t` to nearby candidates (edits, playhead, markers, in/out). Returns snapped tick.
+/// Seconds an empty sequence's timeline shows.
+const EMPTY_FIT_S: f64 = 60.0;
+
 fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclude: &[ClipId]) -> Tick {
     if !app.session.state.snapping {
         return t;
@@ -1234,6 +1261,8 @@ fn snap(app: &mut FilmcraftApp, seq: &Sequence, layout: &Layout, t: Tick, exclud
         }
     }
     cands.push(app.session.playhead());
+    // the sequence start, as in Premiere
+    cands.push(Tick::ZERO);
     cands.extend(seq.markers.iter().map(|m| m.start));
     cands.extend(seq.mark_in);
     cands.extend(seq.mark_out);
@@ -1450,7 +1479,10 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
 
     // ---- press
     if resp.drag_started() || (resp.clicked() && app.tl.drag.is_none()) {
-        let Some(p) = resp.interact_pointer_pos() else { return };
+        // a drag starts once the pointer has moved past egui's threshold: hit-test where the
+        // button went down (an edge grabbed and pulled quickly is a trim, not a move)
+        let origin = if resp.drag_started() { ctx.input(|i| i.pointer.press_origin()).filter(|o| area.contains(*o)) } else { None };
+        let Some(p) = origin.or(resp.interact_pointer_pos()) else { return };
         let h = hit(seq, layout, p);
         let t = layout.tick_at(p.x);
         let started = match (tool, h.clone()) {
@@ -1716,43 +1748,63 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
 
-    // ---- context menu on clips
+    // right-clicking a clip outside the selection selects it first (the menu acted on whatever was
+    // selected before)
+    if resp.secondary_clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Hit::Clip { clip, .. } = hit(seq, layout, p)
+        && !app.session.state.selection.contains(&clip)
+        && let Err(e) = app.session.execute("timeline.select", json!({"clips": [clip.0]}))
+    {
+        app.ui.status = e.to_string();
+    }
+    // ---- context menu on clips (through the menu router, so commands with dialogs open them)
     resp.context_menu(|ui| {
         ui.set_min_width(200.0);
         let sel_n = app.session.state.selection.len();
+        let sel_items: Vec<filmcraft_project::TrackItem> =
+            app.session.state.selection.iter().filter_map(|c| seq.find_item(*c).map(|(_, i)| i.clone())).collect();
+        let all_enabled = sel_items.iter().all(|i| i.enabled);
+        let all_linked = !sel_items.is_empty() && sel_items.iter().all(|i| i.link.is_some());
         let items: [(&str, &str); 11] = [
-            ("Cut", "edit.cut"),
-            ("Copy", "edit.copy"),
-            ("Clear", "edit.clear"),
-            ("Ripple Delete", "edit.rippleDelete"),
-            ("Enable", "clip.enable"),
-            ("Unlink", "clip.link"),
-            ("Group", "clip.group"),
-            ("Speed/Duration…", "clip.speedDuration"),
-            ("Nest…", "clip.nest"),
-            ("Scale to Frame Size", "clip.scaleToFrameSize"),
-            ("Join Through Edits", "sequence.joinThroughEdits"),
+            (crate::i18n::t("Cut", "カット"), "edit.cut"),
+            (crate::i18n::t("Copy", "コピー"), "edit.copy"),
+            (crate::i18n::t("Clear", "消去"), "edit.clear"),
+            (crate::i18n::t("Ripple Delete", "リップル削除"), "edit.rippleDelete"),
+            // checked while the selection is enabled (a toggle, as in Premiere)
+            (if all_enabled { crate::i18n::t("✓ Enable", "✓ 有効") } else { crate::i18n::t("Enable", "有効") }, "clip.enable"),
+            (if all_linked { crate::i18n::t("Unlink", "リンク解除") } else { crate::i18n::t("Link", "リンク") }, "clip.link"),
+            (crate::i18n::t("Group", "グループ化"), "clip.group"),
+            (crate::i18n::t("Speed/Duration…", "速度・デュレーション…"), "clip.speedDuration"),
+            (crate::i18n::t("Nest…", "ネスト…"), "clip.nest"),
+            (crate::i18n::t("Scale to Frame Size", "フレームサイズに合わせてスケール"), "clip.scaleToFrameSize"),
+            (crate::i18n::t("Join Through Edits", "フロースルー編集を結合"), "sequence.joinThroughEdits"),
         ];
         for (label, cmd) in items {
-            if ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label)).clicked() {
-                if cmd == "clip.speedDuration" {
-                    app.dialog = None;
-                    let _ = app.session.execute(cmd, json!({"speed": 50.0}));
-                } else if let Err(e) = app.session.execute(cmd, json!({})) {
-                    app.ui.status = e.to_string();
+            let b = ui.add_enabled(sel_n > 0 && app.session.is_enabled(cmd), egui::Button::new(label));
+            app.auto.add(&format!("timeline.context.{cmd}"), b.rect, label);
+            if b.clicked() {
+                app.dialog = None;
+                if let Err(e) = crate::menus::invoke(app, ui.ctx(), cmd, json!({})) {
+                    app.ui.status = e;
                 }
                 ui.close();
             }
         }
         ui.separator();
-        ui.menu_button("Label", |ui| {
+        let lm = ui.menu_button(crate::i18n::t("Label", "ラベル"), |ui| {
             for l in filmcraft_project::Label::ALL {
-                if ui.button(l.name()).clicked() {
-                    let _ = app.session.execute("edit.label", json!({"label": l.name()}));
+                let b = ui.button(crate::i18n::tr(l.name()));
+                app.auto.add(&format!("timeline.context.label.{}", l.name()), b.rect, l.name());
+                if b.clicked() {
+                    if let Err(e) = app.session.execute("edit.label", json!({"label": l.name()})) {
+                        app.ui.status = e.to_string();
+                    }
                     ui.close();
                 }
             }
         });
+        app.auto.add("timeline.context.label", lm.response.rect, "Label");
     });
 
     // ---- drops: project items and effects
@@ -1770,7 +1822,13 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             ui.painter().rect_filled(r, 3.0, Color32::from_white_alpha(40));
             ui.painter().rect_stroke(r, 3.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
             if mods.command {
-                ui.painter().text(r.left_top() + vec2(4.0, -2.0), Align2::LEFT_BOTTOM, "Insert", Tokens::ui(10.0), Color32::WHITE);
+                ui.painter().text(
+                    r.left_top() + vec2(4.0, -2.0),
+                    Align2::LEFT_BOTTOM,
+                    crate::i18n::t("Insert", "インサート"),
+                    Tokens::ui(10.0),
+                    Color32::WHITE,
+                );
             }
         }
         if ctx.input(|i| i.pointer.any_released())

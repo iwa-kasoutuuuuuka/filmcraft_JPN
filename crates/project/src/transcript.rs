@@ -75,6 +75,9 @@ pub struct Transcript {
     pub words: Vec<Word>,
 }
 
+/// Most speakers one transcript may number; [`Transcript::normalize`] drops higher indices.
+pub const MAX_SPEAKERS: u32 = 256;
+
 impl Transcript {
     /// The speaker name of `word` (`"Speaker 2"` when the label list is short; `None` when the word
     /// has no speaker).
@@ -83,9 +86,17 @@ impl Transcript {
         Some(self.speakers.get(i).map(|s| s.name.clone()).unwrap_or_else(|| format!("Speaker {}", i + 1)))
     }
 
-    /// The text of all words joined by spaces.
+    /// The text of all words, with spaces between them where the script has them
+    /// ([`needs_space`]: none inside Japanese or Chinese text).
     pub fn text(&self) -> String {
-        self.words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ")
+        let mut out = String::new();
+        for w in &self.words {
+            if needs_space(&out, &w.text) {
+                out.push(' ');
+            }
+            out.push_str(&w.text);
+        }
+        out
     }
 
     /// Indices of the words overlapping the media range.
@@ -112,6 +123,12 @@ impl Transcript {
             let s = self.words[i].start;
             if self.words[i - 1].end > s {
                 self.words[i - 1].end = s.max(self.words[i - 1].start);
+            }
+        }
+        // A hostile speaker index would grow the label list without bound: drop it instead.
+        for w in &mut self.words {
+            if w.speaker.is_some_and(|s| s >= MAX_SPEAKERS) {
+                w.speaker = None;
             }
         }
         let max = self.words.iter().filter_map(|w| w.speaker).max();
@@ -142,12 +159,47 @@ impl Transcript {
     }
 }
 
+/// Kana, kanji, CJK punctuation and full-width forms: text set without spaces between words,
+/// in characters twice as wide as Latin ones.
+pub fn is_wide(c: char) -> bool {
+    matches!(c as u32, 0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x323AF)
+}
+
+/// Whether a space goes between `before` and the word `next` when words are joined into text:
+/// not at the start, and not where either side is Japanese or Chinese text (今日 + は → 今日は,
+/// 東京 + Tower → 東京Tower; hello + world → hello world).
+pub fn needs_space(before: &str, next: &str) -> bool {
+    match (before.chars().next_back(), next.chars().next()) {
+        (Some(a), Some(b)) => !a.is_whitespace() && !is_wide(a) && !is_wide(b),
+        _ => false,
+    }
+}
+
+/// Width of text in caption columns: wide characters count two, the others one.
+pub fn display_width(text: &str) -> usize {
+    text.chars().map(|c| if is_wide(c) { 2 } else { 1 }).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn w(t: &str, a: i64, b: i64) -> Word {
         Word::new(t, Tick(a), Tick(b))
+    }
+
+    #[test]
+    fn text_has_spaces_only_where_the_script_does() {
+        let t = |words: &[&str]| Transcript { words: words.iter().map(|x| w(x, 0, 1)).collect(), ..Default::default() }.text();
+        assert_eq!(t(&["Hello,", "world!"]), "Hello, world!");
+        assert_eq!(t(&["こんにちは。", "今日", "は", "東京", "の", "天気", "です。"]), "こんにちは。今日は東京の天気です。");
+        assert_eq!(t(&["東京", "Tower", "is", "tall"]), "東京Tower is tall");
+        assert_eq!(t(&["I", "love", "東京", "very", "much"]), "I love東京very much");
+        assert_eq!(t(&[]), "");
+        assert!(needs_space("a", "b") && !needs_space("", "b") && !needs_space("a", "") && !needs_space("a ", "b"));
+        assert!(!needs_space("今日", "は") && !needs_space("go", "へ") && !needs_space("。", "next"));
+        assert_eq!((display_width("abc"), display_width("日本語"), display_width("日本go。"), display_width("")), (3, 6, 8, 0));
+        assert!(is_wide('あ') && is_wide('漢') && is_wide('。') && is_wide('Ａ') && !is_wide('a') && !is_wide('é') && !is_wide('ｱ'));
     }
 
     #[test]
@@ -160,6 +212,17 @@ mod tests {
         assert_eq!(t.words[2].end, Tick(35));
         assert_eq!(t.speakers.len(), 2);
         assert_eq!(t.speaker_name(&t.words[1]).as_deref(), Some("Speaker 2"));
+        t.check().unwrap();
+    }
+
+    #[test]
+    fn normalize_drops_hostile_speaker_indices() {
+        let mut t = Transcript { words: vec![w("a", 0, 10), w("b", 10, 20)], ..Default::default() };
+        t.words[0].speaker = Some(u32::MAX);
+        t.words[1].speaker = Some(MAX_SPEAKERS - 1);
+        t.normalize();
+        assert_eq!(t.words[0].speaker, None);
+        assert_eq!(t.speakers.len(), MAX_SPEAKERS as usize);
         t.check().unwrap();
     }
 

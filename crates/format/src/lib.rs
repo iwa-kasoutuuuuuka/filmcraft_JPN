@@ -33,6 +33,8 @@
 //! - **v12** (M10.7): graphics templates, rolls / crawls, responsive design (pins, intro / outro),
 //!   per-character text styles (`TrackItem::graphic`, `EffectInstance::layer`) and source graphics
 //!   (`Project::source_graphics`). No-op step; older builds would drop these fields when saving.
+//! - **v13**: audio plug-in effects (VST3): the plug-in's identity and saved state on effect
+//!   instances (`EffectInstance::plugin`). No-op step; older builds would drop it when saving.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
@@ -53,7 +55,8 @@ pub type Migration = fn(Value) -> Result<Value, String>;
 
 /// `MIGRATIONS[i]` upgrades schema `i + 1` to `i + 2`. Append one function per schema bump; never
 /// edit a shipped one.
-pub const MIGRATIONS: &[Migration] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12];
+pub const MIGRATIONS: &[Migration] =
+    &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13];
 
 /// The schema version this build writes (and the newest it reads).
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32 + 1;
@@ -281,13 +284,19 @@ fn v11_to_v12(doc: Value) -> Result<Value, String> {
     Ok(doc)
 }
 
+/// v12 → v13: audio plug-in effects (VST3): `EffectInstance::plugin` (plug-in identity and state).
+/// Nothing to rewrite; older builds would drop the plug-in field when saving.
+fn v12_to_v13(doc: Value) -> Result<Value, String> {
+    Ok(doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn schema_version_matches_table() {
-        assert_eq!(SCHEMA_VERSION, 12);
+        assert_eq!(SCHEMA_VERSION, 13);
     }
 
     #[test]

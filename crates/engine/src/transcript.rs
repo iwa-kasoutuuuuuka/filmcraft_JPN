@@ -29,9 +29,17 @@ fn spec(id: &'static str, label: &'static str, menu: &'static [&'static str], pa
     CommandSpec { id, label, menu, shortcut: None, params, enabled, run, journal }
 }
 
-/// Where downloaded speech models live (`<data dir>/models`).
-pub fn models_dir() -> Option<std::path::PathBuf> {
-    crate::autosave::default_data_dir().map(|d| d.join("models"))
+/// Where downloaded speech models live: `<data dir>/models`, in the session's data directory
+/// (`Session::data_dir`: `--data-dir`; else the one its preferences are in), else the default one.
+/// (It used to be the default directory whatever the session was given, so a session pointed at
+/// another directory downloaded its models into the user's own.)
+pub fn models_dir(s: &Session) -> Option<std::path::PathBuf> {
+    let data = s
+        .data_dir
+        .clone()
+        .or_else(|| s.prefs_path.as_deref().and_then(std::path::Path::parent).map(std::path::Path::to_path_buf))
+        .or_else(crate::autosave::default_data_dir);
+    data.map(|d| d.join("models"))
 }
 
 /// Whether this build can transcribe with Whisper (feature `whisper`).
@@ -45,6 +53,12 @@ pub fn sequence_words(s: &Session) -> Vec<SeqWord> {
         Some(q) => tx::sequence_words(q, &s.project.transcripts),
         None => Vec::new(),
     }
+}
+
+fn has_audio_clips(s: &Session) -> std::result::Result<(), String> {
+    has_seq(s)?;
+    let q = s.active_sequence().ok_or("no sequence is open")?;
+    if q.audio_tracks.iter().any(|t| t.items.iter().any(|i| i.enabled)) { Ok(()) } else { Err("the sequence has no audio clips".into()) }
 }
 
 fn has_transcript(s: &Session) -> std::result::Result<(), String> {
@@ -127,7 +141,7 @@ fn transcriber(s: &Session, p: &Value) -> Result<Arc<dyn Transcriber>> {
             "speech-to-text is not available in this build (built without the `whisper` feature); import a transcript with transcript.set instead".into(),
         ));
     }
-    let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
+    let dir = models_dir(s).ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
     filmcraft_speech::load(&dir, model).map_err(speech_err)
 }
 
@@ -147,6 +161,7 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
         },
         diarize: bool_p(p, "diarize").unwrap_or(ma.speaker_labeling != "off"),
         max_speakers: u64_p(p, "maxSpeakers").map(|n| n.clamp(1, 32) as usize).unwrap_or(Options::default().max_speakers),
+        translate: false,
     };
     let mut done: Vec<(ItemId, Transcript)> = Vec::new();
     let mut skipped = Vec::new();
@@ -175,6 +190,67 @@ fn generate(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"items": report, "skipped": skipped}))
 }
 
+/// Sequence ▸ Transcript ▸ Create English Captions: the speech of the sequence's audio clips
+/// translated into English by the speech model, laid out as a new caption track ("English").
+/// The clips' own transcripts are not changed; the translation is not kept as a transcript.
+fn translated_captions(s: &mut Session, p: &Value) -> Result<Value> {
+    let items: Vec<ItemId> = {
+        let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+        let mut v: Vec<ItemId> = Vec::new();
+        for it in q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.enabled) {
+            if let Some(m) = media_item(s, it.item)
+                && !v.contains(&m)
+            {
+                v.push(m);
+            }
+        }
+        v
+    };
+    if items.is_empty() {
+        return Err(EngineError::Other("there are no audio clips to translate".into()));
+    }
+    let t = transcriber(s, p)?;
+    let opts = Options {
+        language: str_p(p, "language").filter(|l| !l.is_empty() && *l != "auto").map(str::to_string),
+        diarize: bool_p(p, "diarize").unwrap_or(false),
+        translate: true,
+        ..Options::default()
+    };
+    let mut english = tx::Transcripts::new();
+    for item in items {
+        let Some(audio) = item_audio(s, item) else { continue };
+        let mut tr = t.transcribe(&audio, &opts, &mut |_, _| true).map_err(speech_err)?;
+        tr.normalize();
+        english.insert(item, Arc::new(tr));
+    }
+    let words = match s.active_sequence() {
+        Some(q) => tx::sequence_words(q, &english),
+        None => Vec::new(),
+    };
+    if words.is_empty() {
+        return Err(EngineError::Other("no speech was found to translate".into()));
+    }
+    let mut q = json!({"name": str_p(p, "name").unwrap_or("English")});
+    for k in ["maxChars", "lines", "format"] {
+        if let Some(v) = p.get(k) {
+            q[k] = v.clone();
+        }
+    }
+    let n0 = s.history.undo.len();
+    let r = captions_from_words(s, &words, &q)?;
+    // the new track is the first one: mark its language
+    let tid = r["track"].as_u64();
+    s.edit("Create English Captions", |pr, st| {
+        let seq = st.active_sequence.ok_or(EngineError::NoSequence)?;
+        if let Some(t) = pr.sequence_mut(seq).and_then(|q| q.caption_tracks.iter_mut().find(|t| Some(t.id.0) == tid)) {
+            t.language = "en".into();
+        }
+        Ok(())
+    })?;
+    crate::clip_ops::collapse_history(s, n0, "Create English Captions");
+    Ok(json!({"track": r["track"], "captions": r["captions"], "words": words.len()}))
+}
+
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let item = u64_p(p, "item").map(ItemId).ok_or_else(|| bad("transcript.set", "`item` is required"))?;
     let item = media_item(s, item).ok_or_else(|| bad("transcript.set", "no such media item"))?;
@@ -182,6 +258,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let mut t: Transcript = serde_json::from_value(v).map_err(|e| bad("transcript.set", e.to_string()))?;
     if t.source.is_empty() {
         t.source = "imported".into();
+    }
+    if let Some(sp) = t.words.iter().filter_map(|w| w.speaker).find(|&sp| sp >= filmcraft_project::transcript::MAX_SPEAKERS) {
+        return Err(bad("transcript.set", format!("speaker {sp} is out of range (at most {} speakers)", filmcraft_project::transcript::MAX_SPEAKERS)));
     }
     t.normalize();
     t.check().map_err(|e| bad("transcript.set", e))?;
@@ -362,18 +441,97 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
     remove_ranges(s, "Remove Filler Words", ranges)
 }
 
+/// Longest repeated phrase `transcript.findRepeats` / `removeRepeats` accept (`maxWords`).
+const MAX_REPEAT_WORDS: u64 = 32;
+/// Longest repeated phrase looked for by default.
+const DEFAULT_REPEAT_WORDS: u64 = 8;
+
+/// Repeat options from command parameters (hostile values clamped: `minWords` 1..=8, `maxWords`
+/// `minWords`..=32, `maxGapSeconds` 0..=60).
+fn repeat_options(p: &Value) -> tx::RepeatOptions {
+    let d = tx::RepeatOptions::default();
+    let min = u64_p(p, "minWords").unwrap_or(1).clamp(1, DEFAULT_REPEAT_WORDS);
+    let max = u64_p(p, "maxWords").unwrap_or(DEFAULT_REPEAT_WORDS).clamp(min, MAX_REPEAT_WORDS);
+    let max_gap = f64_p(p, "maxGapSeconds").filter(|v| v.is_finite()).map(|v| Tick::from_seconds_f64(v.clamp(0.0, 60.0))).unwrap_or(d.max_gap);
+    let fillers = match p.get("fillers").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        None => d.fillers,
+    };
+    tx::RepeatOptions { min_words: min as usize, max_words: max as usize, max_gap, fillers }
+}
+
+fn words_text(words: &[SeqWord], r: &std::ops::Range<usize>) -> String {
+    let mut out = String::new();
+    for w in words.get(r.clone()).unwrap_or_default() {
+        if filmcraft_project::transcript::needs_space(&out, &w.text) {
+            out.push(' ');
+        }
+        out.push_str(&w.text);
+    }
+    out
+}
+
+fn secs(t: Tick) -> f64 {
+    t.0 as f64 / TICKS_PER_SECOND as f64
+}
+
+/// `transcript.findRepeats`: the retakes `removeRepeats` would remove, without editing.
+fn find_repeats(s: &mut Session, p: &Value) -> Result<Value> {
+    let words = sequence_words(s);
+    let takes = tx::find_repeat_takes(&words, &repeat_options(p));
+    let list: Vec<Value> = takes
+        .iter()
+        .filter_map(|t| {
+            let (a, b) = (words.get(t.removed.start)?, words.get(t.removed.end.checked_sub(1)?)?);
+            Some(json!({
+                "removed": words_text(&words, &t.removed),
+                "kept": words_text(&words, &t.kept),
+                "from": t.removed.start,
+                "to": t.removed.end - 1,
+                "keptFrom": t.kept.start,
+                "keptTo": t.kept.end.saturating_sub(1),
+                "start": secs(a.start),
+                "end": secs(b.end),
+            }))
+        })
+        .collect();
+    Ok(json!({"count": list.len(), "repeats": list}))
+}
+
+/// `transcript.removeRepeats`: ripple-delete the abandoned takes (one undo step).
+fn remove_repeats(s: &mut Session, p: &Value) -> Result<Value> {
+    let words = sequence_words(s);
+    let hits = tx::find_repeats(&words, &repeat_options(p));
+    let ranges = tx::filler_ranges(&words, &hits, s.sequence_rate());
+    remove_ranges(s, "Remove Repeats", ranges)
+}
+
 fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let words = sequence_words(s);
+    captions_from_words(s, &words, p)
+}
+
+/// Upper bounds for `transcript.createCaptions`' layout parameters.
+const MAX_CAPTION_CHARS: u64 = 200;
+const MAX_CAPTION_LINES: u64 = 10;
+const MAX_CAPTION_GAP_FRAMES: i64 = 1000;
+const MAX_CAPTION_SECONDS: f64 = 3600.0;
+
+/// A caption track made from `words` (sequence words whose times are those of the active
+/// sequence), laid out with the rules in `p` (`transcript.createCaptions`' parameters).
+pub(crate) fn captions_from_words(s: &mut Session, words: &[SeqWord], p: &Value) -> Result<Value> {
     let d = CaptionRules::default();
+    // hostile values are clamped into sane ranges (huge ones overflowed the layout math)
+    let secs = |k: &str| f64_p(p, k).filter(|v| v.is_finite()).map(|v| Tick::from_seconds_f64(v.clamp(0.0, MAX_CAPTION_SECONDS)));
     let rules = CaptionRules {
-        max_chars: u64_p(p, "maxChars").map(|n| n as usize).unwrap_or(d.max_chars),
-        lines: u64_p(p, "lines").map(|n| n as usize).unwrap_or(d.lines),
-        min_duration: f64_p(p, "minSeconds").map(Tick::from_seconds_f64).unwrap_or(d.min_duration),
-        max_duration: f64_p(p, "maxSeconds").map(Tick::from_seconds_f64).unwrap_or(d.max_duration),
-        gap_frames: p.get("gapFrames").and_then(Value::as_i64).unwrap_or(d.gap_frames),
+        max_chars: u64_p(p, "maxChars").map(|n| n.clamp(1, MAX_CAPTION_CHARS) as usize).unwrap_or(d.max_chars),
+        lines: u64_p(p, "lines").map(|n| n.clamp(1, MAX_CAPTION_LINES) as usize).unwrap_or(d.lines),
+        min_duration: secs("minSeconds").unwrap_or(d.min_duration),
+        max_duration: secs("maxSeconds").unwrap_or(d.max_duration),
+        gap_frames: p.get("gapFrames").and_then(Value::as_i64).map(|n| n.clamp(0, MAX_CAPTION_GAP_FRAMES)).unwrap_or(d.gap_frames),
         break_pause: d.break_pause,
     };
-    let blocks = tx::caption_blocks(&words, &rules, s.sequence_rate());
+    let blocks = tx::caption_blocks(words, &rules, s.sequence_rate());
     let format = str_p(p, "format").and_then(CaptionFormat::from_name).unwrap_or_default();
     let name = str_p(p, "name").unwrap_or("Transcript").to_string();
     let n = blocks.len();
@@ -388,8 +546,8 @@ fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"track": tid.0, "captions": n}))
 }
 
-fn models(_: &mut Session, _: &Value) -> Result<Value> {
-    let dir = models_dir();
+fn models(s: &mut Session, _: &Value) -> Result<Value> {
+    let dir = models_dir(s);
     Ok(json!({
         "available": filmcraft_speech::available(),
         "default": filmcraft_speech::models::DEFAULT_MODEL,
@@ -404,10 +562,10 @@ fn models(_: &mut Session, _: &Value) -> Result<Value> {
 
 /// Download a catalogue model into `<data dir>/models` (feature `speech-download`). Hosts show
 /// the size, source and licence (`transcript.models`) and ask before running this.
-fn download_model(_: &mut Session, p: &Value) -> Result<Value> {
+fn download_model(s: &mut Session, p: &Value) -> Result<Value> {
     let id = str_p(p, "model").unwrap_or(filmcraft_speech::models::DEFAULT_MODEL);
     let m = filmcraft_speech::models::find(id).ok_or_else(|| speech_err(SpeechError::UnknownModel(id.into())))?;
-    let dir = models_dir().ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
+    let dir = models_dir(s).ok_or_else(|| EngineError::Other("no data directory for speech models".into()))?;
     #[cfg(feature = "speech-download")]
     {
         filmcraft_speech::models::download(&dir, m, &mut |_, _, _| true).map_err(speech_err)?;
@@ -426,7 +584,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "transcript.generate",
             "Transcribe…",
             &["Sequence", "Transcript"],
-            r#"{"items":[id]?,"model":"whisper-base"?,"language":"en|auto"?,"diarize":bool?,"maxSpeakers":n?}"#,
+            r#"{"items":[id]?,"model":"whisper-base"?,"language":"auto"|"ja"|"en"|ISO 639-1?,"diarize":bool?,"maxSpeakers":n?}"#,
             always,
             generate,
             true,
@@ -467,6 +625,33 @@ pub fn commands() -> Vec<CommandSpec> {
             true,
         ),
         spec("transcript.removeFillers", "Remove Filler Words", &["Sequence", "Transcript"], r#"{"fillers":[str]?}"#, has_transcript, remove_fillers, true),
+        spec(
+            "transcript.findRepeats",
+            "Find Repeats",
+            &["Sequence", "Transcript"],
+            r#"{"minWords":1..8?,"maxWords":n<=32?,"maxGapSeconds":f?,"fillers":[str]?}"#,
+            has_transcript,
+            find_repeats,
+            false,
+        ),
+        spec(
+            "transcript.removeRepeats",
+            "Remove Repeats",
+            &["Sequence", "Transcript"],
+            r#"{"minWords":1..8?,"maxWords":n<=32?,"maxGapSeconds":f?,"fillers":[str]?}"#,
+            has_transcript,
+            remove_repeats,
+            true,
+        ),
+        spec(
+            "transcript.createTranslatedCaptions",
+            "Create English Captions…",
+            &["Sequence", "Transcript"],
+            r#"{"language":"ja|auto"?,"model":"whisper-base"?,"maxChars":n?,"lines":1|2?,"format":str?,"name":str="English"}"#,
+            has_audio_clips,
+            translated_captions,
+            true,
+        ),
         spec(
             "transcript.createCaptions",
             "Create Captions from Transcript…",

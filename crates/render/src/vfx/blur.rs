@@ -80,26 +80,6 @@ pub fn bokeh(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
     *img = if down > 1.0 { work.transformed(fw, fh, &Affine::scale(fw as f64 / work.w as f64, fh as f64 / work.h as f64)) } else { work };
 }
 
-/// Blur one channel of an image (0..3) with a Gaussian.
-fn blur_channel(img: &mut Image, ch: usize, sx: f32, sy: f32, repeat: bool) {
-    if sx <= 0.3 && sy <= 0.3 {
-        return;
-    }
-    let mut plane = Image { w: img.w, h: img.h, px: img.px.as_chunks::<4>().0.iter().flat_map(|p| [p[ch], 0.0, 0.0, 0.0]).collect() };
-    gaussian(&mut plane, sx, sy, repeat);
-    img.px.par_chunks_mut(4).zip(plane.px.par_chunks(4)).for_each(|(p, q)| p[ch] = q[0]);
-}
-
-/// Channel Blur: independent Gaussian blur per R, G, B and alpha.
-pub fn channel_blur(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let dims = chv(e, "dimensions");
-    let repeat = bv(e, "repeat_edge");
-    for (ch, id) in ["red", "green", "blue", "alpha"].iter().enumerate() {
-        let s = fv(e, id, cx) * cx.px_scale * 0.5;
-        blur_channel(img, ch, if dims == 2 { 0.0 } else { s }, if dims == 1 { 0.0 } else { s }, repeat);
-    }
-}
-
 /// Mix between a stack of increasingly blurred copies by a per-pixel amount 0..1.
 fn variable_blur(img: &mut Image, max_sigma: f32, amount: impl Fn(usize, usize) -> f32 + Sync) {
     if max_sigma <= 0.3 {
@@ -186,10 +166,4 @@ pub fn focus(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
             }
         });
     }
-}
-
-/// Reduce Interlace Flicker: a vertical-only softening across fields.
-pub fn interlace_flicker(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
-    let s = fv(e, "softness", cx) * cx.px_scale.max(0.25);
-    gaussian(img, 0.0, s, true);
 }

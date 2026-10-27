@@ -59,7 +59,11 @@ impl BridgeClient {
             match res {
                 Ok(v) => {
                     return if v.get("ok").and_then(Value::as_bool) == Some(true) {
-                        Ok(v.get("result").cloned().unwrap_or(Value::Null))
+                        // warnings (e.g. ignored parameters) travel with the result
+                        Ok(match v.get("warnings").filter(|w| w.as_array().is_some_and(|a| !a.is_empty())) {
+                            Some(w) => serde_json::json!({"result": v.get("result").cloned().unwrap_or(Value::Null), "warnings": w}),
+                            None => v.get("result").cloned().unwrap_or(Value::Null),
+                        })
                     } else {
                         Err(AutomationError::App(v.get("error").and_then(Value::as_str).unwrap_or("error").to_string()))
                     };

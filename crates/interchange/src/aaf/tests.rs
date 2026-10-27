@@ -265,3 +265,46 @@ fn store_round_trips_every_stored_form() {
     // a data value longer than a property can hold is an error, not a panic
     assert!(store::write(&Obj::new(ids::ROOT).data_prop(1, vec![0; 70_000]), filmcraft_cfb::Version::V4).is_err());
 }
+
+/// Regression: a weak collection index claiming 2^32 − 1 zero-size keys pushed billions of keys.
+#[test]
+fn weak_collection_with_zero_size_keys_is_rejected() {
+    let key = [0xA7u8; 16];
+    let root = Obj::new(ids::ROOT).with(0x0007, Value::WeakVec(path::DATA_DEFS.to_vec(), 0x1B01, vec![key.to_vec()]));
+    let mut bytes = store::write(&root, filmcraft_cfb::Version::V3).unwrap();
+    let at = bytes.windows(16).position(|w| w == key).expect("index key in the file");
+    // index stream: count u32, tag u16, key pid u16, key size u8, keys
+    bytes[at - 9..at - 5].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes[at - 1] = 0;
+    let t = std::time::Instant::now();
+    assert!(store::read(&bytes).is_err());
+    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// Regression: StoredHeight × 2 for field layouts and the tape timecode start + offset overflowed.
+#[test]
+fn hostile_stored_height_and_timecode_do_not_overflow() {
+    fn poison(o: &mut Obj) {
+        if o.get(pid::STORED_HEIGHT).is_some() {
+            o.set(pid::STORED_HEIGHT, Value::Data(u32::MAX.to_le_bytes().to_vec()));
+            o.set(pid::FRAME_LAYOUT, Value::Data(vec![1]));
+        }
+        if o.get(pid::TC_START).is_some() {
+            o.set(pid::TC_START, Value::Data(i64::MAX.to_le_bytes().to_vec()));
+        }
+        for (_, v) in &mut o.props {
+            match v {
+                Value::Strong(c) => poison(c),
+                Value::StrongVec(v) | Value::StrongSet(v, _) => v.iter_mut().for_each(poison),
+                _ => {}
+            }
+        }
+    }
+    let (p, s) = project();
+    let (bytes, _) = export(&p, s, &AafOptions::default()).unwrap();
+    let mut root = store::read(&bytes).unwrap();
+    poison(&mut root);
+    let bytes = store::write(&root, filmcraft_cfb::Version::V4).unwrap();
+    let r = std::panic::catch_unwind(|| import(&bytes, &crate::ImportOptions::default()).map(|_| ()));
+    assert!(r.is_ok());
+}

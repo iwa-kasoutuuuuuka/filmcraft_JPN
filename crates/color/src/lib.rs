@@ -20,7 +20,7 @@ pub use grade::GradeSpace;
 pub use log::LogCurve;
 pub use lut::{Lut, Lut1d, Lut3d, LutFormat};
 pub use spaces::{ColorPipeline, ColorSpace, Curve, Gamut, WorkingSpace};
-pub use transform::{DecodeTable, InputTransform, OutputTransform, REFERENCE_WHITE_NITS, ToneMap};
+pub use transform::{DecodeTable, InputTransform, OutputStages, OutputTransform, REFERENCE_WHITE_NITS, ToneMap};
 
 /// YUV ↔ RGB matrix coefficients.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -86,6 +86,20 @@ pub enum Primaries {
     Bt601_525,
     Bt2020,
     P3D65,
+}
+
+impl Primaries {
+    /// From an ISO/IEC 23091-2 `colour_primaries` code (None: unspecified or unsupported).
+    pub fn from_code(c: u8) -> Option<Primaries> {
+        match c {
+            1 => Some(Primaries::Bt709),
+            5 => Some(Primaries::Bt601_625),
+            6 | 7 => Some(Primaries::Bt601_525),
+            9 => Some(Primaries::Bt2020),
+            12 => Some(Primaries::P3D65),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

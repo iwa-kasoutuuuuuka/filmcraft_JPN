@@ -152,3 +152,85 @@ fn type_tool_edit_style_and_move() {
     d.ok("ui.set", json!({"tool": "Selection"}));
     d.shot("shape-layer");
 }
+
+/// Japanese input on the Program monitor's text tool: the input method's composition shows at
+/// the caret without changing the layer, keys while composing belong to the input method, and the
+/// committed text is typed (it was dropped: converted Japanese never reached the layer).
+#[test]
+fn input_method_composition_types_japanese_into_a_text_layer() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.exec("playhead.set", json!({"seconds": 2}));
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.2, "y": pic[1] + pic[3] * 0.35}));
+    d.ok("ui.type", json!({"text": "Sky "}));
+    let ime = |d: &mut Driver, ev: egui::ImeEvent| {
+        d.harness.input_mut().events.push(egui::Event::Ime(ev));
+        d.frames(2);
+    };
+    ime(&mut d, egui::ImeEvent::Preedit { text: "ゆうひ".into(), active_range_chars: None });
+    let list = d.exec("graphics.list", json!({}));
+    assert_eq!(list["layers"][0]["text"], "Sky ", "composition is not typed yet: {list}");
+    let pre = d.ok("ui.elements", json!({"prefix": "program.textEdit.preedit"}));
+    assert_eq!(pre[0]["label"], "ゆうひ", "the composition shows at the caret");
+    // Enter while composing converts in the input method: no new line in the layer
+    d.harness.input_mut().events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    d.frames(2);
+    ime(&mut d, egui::ImeEvent::Commit("夕日".into()));
+    let list = d.exec("graphics.list", json!({}));
+    assert_eq!(list["layers"][0]["text"], "Sky 夕日", "{list}");
+    assert!(d.ok("ui.elements", json!({"prefix": "program.textEdit.preedit"})).as_array().unwrap().is_empty(), "composition ended");
+    // typing continues after the committed text
+    d.ok("ui.type", json!({"text": "!"}));
+    assert_eq!(d.exec("graphics.list", json!({}))["layers"][0]["text"], "Sky 夕日!");
+}
+
+/// The input method around the text tool: the clause being converted is kept for drawing, the
+/// candidate window is placed at the caret (not over the whole layer), a platform that reports the
+/// commit again as typed text does not type it twice, and an edit that ends while composing types
+/// the marked text instead of losing it.
+#[test]
+fn input_method_clause_caret_area_and_ending_while_composing() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.exec("playhead.set", json!({"seconds": 2}));
+    d.ok("ui.set", json!({"tool": "Type"}));
+    d.frames(3);
+    let pic = d.rect("program.picture");
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.2, "y": pic[1] + pic[3] * 0.35}));
+    d.ok("ui.type", json!({"text": "A big title line"}));
+    let ime = |d: &mut Driver, evs: Vec<egui::Event>| {
+        d.harness.input_mut().events.extend(evs);
+        d.frames(2);
+    };
+    ime(&mut d, vec![egui::Event::Ime(egui::ImeEvent::Preedit { text: "きょうは".into(), active_range_chars: Some(0..2) })]);
+    let state = d.ok("ui.inspect", json!({}));
+    let ed = &state["ui"]["gfx_edit"];
+    assert_eq!(ed["preedit_clause"], json!([0, 2]), "the converted clause is kept: {ed}");
+    // the candidate window goes to the caret and composition, not the layer's whole box
+    let out = d.harness.output().platform_output.ime.expect("the text tool asks for the input method");
+    let layer = d.rect("program.textEdit");
+    let plate = d.rect("program.textEdit.preedit");
+    assert!(out.rect.width() < layer[2] as f32, "IME area {:?} is narrower than the layer {layer:?}", out.rect);
+    assert!(out.rect.contains(egui::pos2(plate[0] as f32 + 1.0, plate[1] as f32 + 1.0)), "IME area {:?} covers the composition {plate:?}", out.rect);
+    // commit reported twice (as IME commit and as text): typed once
+    ime(&mut d, vec![egui::Event::Ime(egui::ImeEvent::Commit("今日は".into())), egui::Event::Text("今日は".into())]);
+    let list = d.exec("graphics.list", json!({}));
+    assert_eq!(list["layers"][0]["text"], "A big title line今日は", "{list}");
+    // compose again, then end the edit by clicking empty picture with the Type tool: the marked
+    // text is typed into the layer it was composed in
+    ime(&mut d, vec![egui::Event::Ime(egui::ImeEvent::Preedit { text: "はれ".into(), active_range_chars: None })]);
+    d.ok("ui.click", json!({"x": pic[0] + pic[2] * 0.6, "y": pic[1] + pic[3] * 0.8}));
+    d.frames(3);
+    let list = d.exec("graphics.list", json!({}));
+    let texts: Vec<&str> = list["layers"].as_array().unwrap().iter().filter_map(|l| l["text"].as_str()).collect();
+    assert!(texts.contains(&"A big title line今日ははれ"), "the marked text was kept: {texts:?}");
+}

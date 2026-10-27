@@ -8,3 +8,6 @@ publish = false
 [dependencies]
 serde_json = { workspace = true }
 filmcraft-testkit = { workspace = true }
+# `cargo xtask parity` reads the effect registry and the GPU effect list (both plain data, no GPU).
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }

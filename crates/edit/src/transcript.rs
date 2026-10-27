@@ -18,6 +18,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use filmcraft_project::transcript::{display_width, needs_space};
 use filmcraft_project::{Caption, ClipId, ItemId, Sequence, TrackId, Transcript};
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 
@@ -191,27 +192,81 @@ pub fn find_pauses(words: &[SeqWord], min: Tick, keep: Tick, rate: FrameRate) ->
 }
 
 /// The default filler words and phrases (configurable in preferences and per command).
-pub const DEFAULT_FILLERS: &[&str] = &["um", "uh", "umm", "uhm", "erm", "er", "ah", "hmm", "mm", "mhm"];
+/// English and Japanese hesitations. Only sounds that are never a word of their own are listed:
+/// あの (that), まあ (well) and なんか (something) are left out, they are fillers only sometimes.
+pub const DEFAULT_FILLERS: &[&str] = &[
+    "um",
+    "uh",
+    "umm",
+    "uhm",
+    "erm",
+    "er",
+    "ah",
+    "hmm",
+    "mm",
+    "mhm",
+    "えー",
+    "えーと",
+    "えっと",
+    "えーっと",
+    "あー",
+    "あのー",
+    "うーん",
+    "んー",
+    "うー",
+    "えーっ",
+];
+
+/// A word or filler as compared: [`normalize_word`](filmcraft_project::transcript::normalize_word),
+/// with the wave dash read as the long-vowel mark and a run of long-vowel marks as one
+/// (えーーと, え〜と and えーと are the same filler).
+fn filler_form(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars().map(|c| if matches!(c, '〜' | '～') { 'ー' } else { c }) {
+        if !(c == 'ー' && out.ends_with('ー')) {
+            out.push(c);
+        }
+    }
+    filmcraft_project::transcript::normalize_word(&out)
+}
 
 /// Filler words: word index ranges matching one of `fillers` (each a word or a phrase such as
-/// "you know"; case and punctuation ignored).
+/// "you know"; case and punctuation ignored). A filler without spaces also matches a run of
+/// words that spell it (the recogniser splits Japanese into pieces: え / ー / と is えーと).
 pub fn find_fillers(words: &[SeqWord], fillers: &[String]) -> Vec<std::ops::Range<usize>> {
-    let norm: Vec<String> = words.iter().map(SeqWord::normalized).collect();
-    let mut phrases: Vec<Vec<String>> = fillers
-        .iter()
-        .map(|f| f.split_whitespace().map(filmcraft_project::transcript::normalize_word).filter(|s| !s.is_empty()).collect::<Vec<_>>())
-        .filter(|p| !p.is_empty())
-        .collect();
-    // longest phrases first, so "you know" wins over a lone "you"
-    phrases.sort_by_key(|p| std::cmp::Reverse(p.len()));
+    let norm: Vec<String> = words.iter().map(|w| filler_form(&w.text)).collect();
+    let mut phrases: Vec<Vec<String>> =
+        fillers.iter().map(|f| f.split_whitespace().map(filler_form).filter(|s| !s.is_empty()).collect::<Vec<_>>()).filter(|p| !p.is_empty()).collect();
+    // longest phrases first, so "you know" wins over a lone "you" (and えーと over えー)
+    phrases.sort_by_key(|p| std::cmp::Reverse((p.len(), p.iter().map(|w| w.chars().count()).sum::<usize>())));
+    // how many words from `i` spell `f` together (at least one, none of them empty)
+    let spelled = |i: usize, f: &str| -> Option<usize> {
+        let mut acc = String::new();
+        for (k, w) in norm.get(i..)?.iter().enumerate().take(8) {
+            if w.is_empty() {
+                return None;
+            }
+            acc.push_str(w);
+            if acc == f {
+                return Some(k + 1);
+            }
+            if !f.starts_with(acc.as_str()) {
+                return None;
+            }
+        }
+        None
+    };
     let mut out = Vec::new();
     let mut i = 0;
     while i < norm.len() {
-        let hit = phrases.iter().find(|p| i + p.len() <= norm.len() && p.iter().enumerate().all(|(k, w)| norm[i + k] == *w));
+        let hit = phrases.iter().find_map(|p| match p.as_slice() {
+            [one] => spelled(i, one),
+            _ => (i + p.len() <= norm.len() && p.iter().enumerate().all(|(k, w)| norm.get(i + k) == Some(w))).then_some(p.len()),
+        });
         match hit {
-            Some(p) => {
-                out.push(i..i + p.len());
-                i += p.len();
+            Some(n) => {
+                out.push(i..i + n);
+                i += n;
             }
             None => i += 1,
         }
@@ -237,6 +292,133 @@ pub fn filler_ranges(words: &[SeqWord], hits: &[std::ops::Range<usize>], rate: F
         }
         if e > s {
             out.push(TimeRange::from_bounds(s, e));
+        }
+    }
+    out
+}
+
+/// Options for [`find_repeats`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepeatOptions {
+    /// Shortest repeated phrase, in words.
+    pub min_words: usize,
+    /// Longest repeated phrase looked for, in words.
+    pub max_words: usize,
+    /// Takes are only compared within a run of words without a pause this long (nor a speaker
+    /// change).
+    pub max_gap: Tick,
+    /// Filler words (see [`find_fillers`]): skipped when comparing takes, so "we went, um, we
+    /// went" is a repeat, and never a repeat on their own.
+    pub fillers: Vec<String>,
+}
+
+impl Default for RepeatOptions {
+    fn default() -> Self {
+        Self { min_words: 1, max_words: 8, max_gap: Tick(2 * TICKS_PER_SECOND), fillers: DEFAULT_FILLERS.iter().map(|f| f.to_string()).collect() }
+    }
+}
+
+/// A repeated take found by [`find_repeat_takes`]: the abandoned take(s) and the take kept.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepeatTake {
+    /// Word index range to remove: the false start(s) and anything said between them and the
+    /// restart.
+    pub removed: std::ops::Range<usize>,
+    /// Word index range of the restart that matched (the take kept).
+    pub kept: std::ops::Range<usize>,
+}
+
+/// Retakes: word index ranges of abandoned takes ("so the the plan", "we went to the — we went to
+/// the store", 今日は、今日はですね), keeping the last take. See [`find_repeat_takes`].
+pub fn find_repeats(words: &[SeqWord], opts: &RepeatOptions) -> Vec<std::ops::Range<usize>> {
+    find_repeat_takes(words, opts).into_iter().map(|t| t.removed).collect()
+}
+
+fn is_kana(c: char) -> bool {
+    matches!(c, '\u{3041}'..='\u{309f}' | '\u{30a0}'..='\u{30ff}')
+}
+
+/// How many abandoned words may come between an `n`-word phrase and its restart.
+fn repeat_slack(n: usize) -> usize {
+    // A one- or two-word repeat must be immediate ("the the"); longer phrases may be followed by
+    // an abandoned word or two before the restart ("I was going to Tu- I was going to say").
+    n.saturating_sub(2) / 2
+}
+
+/// Retakes with the take kept for each. Within each run of words of one speaker without a pause of
+/// `max_gap` (filler words and punctuation-only words skipped), a phrase of `min_words..=max_words`
+/// words that is said again right after it (one or two words: immediately; longer phrases may have
+/// a few abandoned words before the restart) is an abandoned take: it and the words up to the
+/// restart are removed. The longest phrase wins; takes are found left to right and a chain of
+/// takes (three tries) removes all but the last. Words are compared normalised (case and
+/// punctuation ignored) and by spelling, so a phrase split into different words by the recogniser
+/// still matches (今日は = 今日 / は). A single word must have two characters or more (Japanese
+/// particles such as の don't count) unless it is a one-letter Latin word ("I I think").
+pub fn find_repeat_takes(words: &[SeqWord], opts: &RepeatOptions) -> Vec<RepeatTake> {
+    let min_words = opts.min_words.clamp(1, 64);
+    let max_words = opts.max_words.clamp(min_words, 64);
+    let fillers: Vec<String> = opts.fillers.iter().map(|f| filler_form(f)).filter(|f| !f.is_empty()).collect();
+    let mut out: Vec<RepeatTake> = Vec::new();
+    for para in paragraphs(words, opts.max_gap.max(Tick(1))) {
+        // the words compared: (word index, normalised form)
+        let toks: Vec<(usize, String)> = para
+            .filter_map(|i| {
+                let w = words.get(i)?;
+                let n = w.normalized();
+                (!n.is_empty() && !fillers.contains(&filler_form(&w.text))).then_some((i, n))
+            })
+            .collect();
+        // how many tokens from `j` spell `target` (case-folded words concatenated)
+        let spelled = |j: usize, target: &str| -> Option<usize> {
+            let mut acc = String::new();
+            for (k, (_, t)) in toks.get(j..)?.iter().enumerate().take(max_words.saturating_mul(4)) {
+                acc.push_str(t);
+                if acc == target {
+                    return Some(k + 1);
+                }
+                if !target.starts_with(acc.as_str()) {
+                    return None;
+                }
+            }
+            None
+        };
+        let mut i = 0;
+        while i < toks.len() {
+            let mut hit = None;
+            for n in (min_words..=max_words).rev() {
+                let Some(take) = toks.get(i..i.saturating_add(n)) else { continue };
+                let target: String = take.iter().map(|(_, t)| t.as_str()).collect();
+                let chars = target.chars().count();
+                if chars < 2 && !(n == 1 && target.chars().all(|c| c.is_ascii_alphabetic())) {
+                    continue;
+                }
+                // a kana pair said twice is usually one reduplicated word split by the
+                // recogniser (いろ / いろ, どん / どん), not a restart
+                if n == 1 && chars <= 2 && target.chars().all(is_kana) {
+                    continue;
+                }
+                let first = i + n;
+                if let Some((j, m)) = (first..=first + repeat_slack(n)).find_map(|j| spelled(j, &target).map(|m| (j, m))) {
+                    hit = Some((j, m));
+                    break;
+                }
+            }
+            let Some((j, m)) = hit else {
+                i += 1;
+                continue;
+            };
+            let (Some((a, _)), Some((b, _)), Some((last, _))) = (toks.get(i), toks.get(j), toks.get(j + m - 1)) else { break };
+            let take = RepeatTake { removed: *a..*b, kept: *b..*last + 1 };
+            match out.last_mut() {
+                // a chain: the previous restart was abandoned too
+                Some(prev) if prev.removed.end == take.removed.start => {
+                    prev.removed.end = take.removed.end;
+                    prev.kept = take.kept;
+                }
+                _ => out.push(take),
+            }
+            // the restart may itself be abandoned (three takes)
+            i = j;
         }
     }
     out
@@ -313,8 +495,164 @@ pub struct CaptionBlock {
     pub words: std::ops::Range<usize>,
 }
 
-/// Lay words out as caption blocks: words fill lines of at most `max_chars` (a longer single word
-/// gets a line of its own) and blocks of `lines` lines; a new block starts at a speaker change,
+fn is_hiragana(c: char) -> bool {
+    matches!(c as u32, 0x3041..=0x309F)
+}
+fn is_katakana(c: char) -> bool {
+    matches!(c as u32, 0x30A0..=0x30FF | 0xFF66..=0xFF9F)
+}
+fn is_kanji(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x323AF) || matches!(c, '々' | '〆' | 'ヶ')
+}
+
+/// Whether a caption line may break between two adjacent words of a transcript.
+///
+/// Where the script has spaces, at every space. In Japanese, the recogniser's words are smaller
+/// than words (東 / 京 / の / 天 / 気 / に / つ / いて), so the usual line-breaking conventions are
+/// applied to keep a phrase together, without a dictionary:
+///
+/// - after punctuation (。、！？) a line may always break;
+/// - a word starting with hiragana stays with the word before it (particles, verb endings:
+///   天気 + に + ついて), and so do the long-vowel mark and closing punctuation;
+/// - kanji stays with kanji and katakana with katakana (compounds: 東 + 京, スカイ + ツリー);
+/// - nothing breaks right after an honorific prefix (お + 話), which itself starts a phrase.
+pub fn may_break_between(prev: &str, next: &str) -> bool {
+    let (Some(a), Some(b)) = (prev.chars().next_back(), next.chars().next()) else { return true };
+    if needs_space(prev, next) || matches!(a, '。' | '、' | '！' | '？' | '!' | '?' | '.' | ',' | '」' | '）' | '・') {
+        return true;
+    }
+    if matches!(prev, "お" | "ご") {
+        return false;
+    }
+    // (the prefix itself starts a phrase: it does not hang on to the word before it)
+    if matches!(next, "お" | "ご") {
+        return true;
+    }
+    if is_hiragana(b) || matches!(b, 'ー' | '」' | '）' | '。' | '、' | '！' | '？') {
+        return false;
+    }
+    // letters or digits written up against the katakana / kanji after them are one compound
+    // (MP4ファイル, 4K動画, Windowsパソコン); half- or full-width, not kana (also "alphanumeric")
+    let latin = |c: char| c.is_ascii_alphanumeric() || matches!(c, '０'..='９' | 'Ａ'..='Ｚ' | 'ａ'..='ｚ');
+    if latin(a) && (is_katakana(b) || is_kanji(b)) {
+        return false;
+    }
+    !((is_kanji(a) && is_kanji(b)) || (is_katakana(a) && is_katakana(b)))
+}
+
+/// Japanese particles a phrase ends with (は, を, から, について…).
+const PARTICLES: &[&str] = &[
+    "は",
+    "が",
+    "を",
+    "に",
+    "で",
+    "と",
+    "も",
+    "へ",
+    "や",
+    "の",
+    "から",
+    "まで",
+    "より",
+    "には",
+    "では",
+    "とは",
+    "にも",
+    "でも",
+    "について",
+    "ので",
+    "のに",
+    "けど",
+    "けれど",
+    "なら",
+    "ながら",
+    "として",
+    "によって",
+];
+/// Words that continue the word before them even after a particle-like ending (で + す is です,
+/// に + ついて is について, と + いう is という…).
+const CONTINUATIONS: &[&str] =
+    &["ついて", "は", "も", "の", "ので", "のに", "いう", "よる", "よって", "より", "して", "おいて", "とって", "かけて", "ら", "り", "き", "しか"];
+
+/// Whether a phrase that has to be broken (it is wider than a line) is best broken between
+/// `prev` and `next`: after a particle (わたしは / きのう, ものを / たべました), unless the next word
+/// continues it. Used only inside a unit [`may_break_between`] keeps together.
+pub fn soft_break_between(prev: &str, next: &str) -> bool {
+    let Some(b) = next.chars().next() else { return false };
+    // small kana, the long-vowel mark and ん never start a word
+    if matches!(b, 'ょ' | 'ゃ' | 'ゅ' | 'っ' | 'ぁ' | 'ぃ' | 'ぅ' | 'ぇ' | 'ぉ' | 'ー' | 'ん') {
+        return false;
+    }
+    // a particle that is a word of its own may also be the first piece of a longer word the
+    // recogniser split (で + す, で + した, と + て…): not before what would end such a word
+    if prev.chars().count() == 1 && matches!(b, 'す' | 'し' | 'ま' | 'た' | 'て' | 'ね' | 'よ' | 'わ' | 'さ' | 'か' | 'ぞ' | 'ぜ') {
+        return false;
+    }
+    if CONTINUATIONS.contains(&next) || PARTICLES.contains(&next) {
+        return false;
+    }
+    // a particle of its own, or one ending a longer hiragana word (ものを, わたしは); not a single
+    // character that is part of a noun written in kana (もの ends in の but is not one)
+    PARTICLES.contains(&prev) || (prev.chars().count() >= 3 && PARTICLES.iter().any(|p| p.chars().count() == 1 && prev.ends_with(p)) && !prev.ends_with("もの"))
+}
+
+/// The units captions are laid out in, as word index ranges: runs of words no line may break
+/// inside ([`may_break_between`]). A speaker change, a pause that starts a new caption and a unit
+/// wider than a line end a unit anyway; a unit that is too wide is broken after its last
+/// particle when it has one ([`soft_break_between`]), else at the line width.
+fn caption_units(words: &[SeqWord], rules: &CaptionRules, max_chars: usize) -> Vec<std::ops::Range<usize>> {
+    let mut units: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut width = 0usize;
+    // the last word of the current unit a soft break may come before
+    let mut soft: Option<usize> = None;
+    let width_of = |r: std::ops::Range<usize>| words.get(r).unwrap_or_default().iter().map(|w| display_width(&w.text)).sum::<usize>();
+    for (i, w) in words.iter().enumerate() {
+        let len = display_width(&w.text);
+        let together =
+            i > 0 && words.get(i - 1).is_some_and(|p| !may_break_between(&p.text, &w.text) && p.speaker == w.speaker && w.start - p.end < rules.break_pause);
+        match units.last_mut() {
+            Some(u) if together && width + len <= max_chars => {
+                if words.get(i - 1).is_some_and(|p| soft_break_between(&p.text, &w.text)) {
+                    soft = Some(i);
+                }
+                u.end = i + 1;
+                width += len;
+            }
+            Some(u) if together && soft.is_some_and(|k| k > u.start && width_of(k..i + 1) <= max_chars) => {
+                // too wide: the part after the last particle goes on with this word
+                let k = soft.unwrap_or(i);
+                u.end = k;
+                units.push(k..i + 1);
+                width = width_of(k..i + 1);
+                soft = words.get(i - 1).is_some_and(|p| soft_break_between(&p.text, &w.text)).then_some(i).filter(|s| *s > k);
+            }
+            _ => {
+                units.push(i..i + 1);
+                width = len;
+                soft = None;
+            }
+        }
+    }
+    units
+}
+
+/// The text of a unit: its words joined as [`Transcript::text`] joins them.
+fn unit_text(words: &[SeqWord], u: &std::ops::Range<usize>) -> String {
+    let mut out = String::new();
+    for w in words.get(u.clone()).unwrap_or_default() {
+        if needs_space(&out, &w.text) {
+            out.push(' ');
+        }
+        out.push_str(&w.text);
+    }
+    out
+}
+
+/// Lay words out as caption blocks: words fill lines of at most `max_chars` columns (a longer
+/// single word gets a line of its own; Japanese and Chinese characters are two columns wide, are
+/// joined without spaces, and break only between phrases, see [`may_break_between`]) and blocks
+/// of `lines` lines; a new block starts at a speaker change,
 /// at a pause of `break_pause`, after `max_duration`, or after sentence-ending punctuation once the
 /// block is past half full. Times are snapped to frames, blocks never overlap and keep
 /// `gap_frames` between them.
@@ -322,30 +660,38 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
     let max_chars = rules.max_chars.max(1);
     let max_lines = rules.lines.max(1);
     let cap_chars = max_chars * max_lines;
-    let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+    // what is laid out: phrases (Japanese words that belong together), one word each elsewhere
+    let units = caption_units(words, rules, max_chars);
+    let texts: Vec<String> = units.iter().map(|u| unit_text(words, u)).collect();
+    let mut unit_groups: Vec<std::ops::Range<usize>> = Vec::new();
     let mut a = 0;
     let mut lines: Vec<usize> = vec![0];
-    for i in 0..words.len() {
-        let w = &words[i];
-        let len = w.text.chars().count();
+    for (i, (u, text)) in units.iter().zip(&texts).enumerate() {
+        let (Some(w), Some(last)) = (words.get(u.start), words.get(u.end.saturating_sub(1))) else { continue };
+        let len = display_width(text);
         if i > a {
-            let prev = &words[i - 1];
+            let (Some(prev), Some(first)) = (units.get(i - 1).and_then(|p| words.get(p.end.saturating_sub(1))), units.get(a).and_then(|f| words.get(f.start)))
+            else {
+                continue;
+            };
+            // the space before the unit, where the script has one
+            let sp = usize::from(needs_space(&prev.text, text));
             let cur = *lines.last().unwrap_or(&0);
-            let fits_line = cur + 1 + len <= max_chars;
+            let fits_line = cur + sp + len <= max_chars;
             let fits = fits_line || lines.len() < max_lines;
             let used: usize = lines.iter().sum::<usize>() + lines.len() - 1;
-            let sentence_end = prev.text.ends_with(['.', '?', '!']) && used * 2 >= cap_chars;
+            let sentence_end = prev.text.ends_with(['.', '?', '!', '。', '？', '！']) && used * 2 >= cap_chars;
             let brk =
-                !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || w.end - words[a].start > rules.max_duration || sentence_end;
+                !fits || w.speaker != prev.speaker || w.start - prev.end >= rules.break_pause || last.end - first.start > rules.max_duration || sentence_end;
             if brk {
-                groups.push(a..i);
+                unit_groups.push(a..i);
                 a = i;
                 lines = vec![len];
                 continue;
             }
             if fits_line {
                 if let Some(l) = lines.last_mut() {
-                    *l += 1 + len;
+                    *l += sp + len;
                 }
             } else {
                 lines.push(len);
@@ -354,24 +700,32 @@ pub fn caption_blocks(words: &[SeqWord], rules: &CaptionRules, rate: FrameRate) 
             lines = vec![len];
         }
     }
-    if a < words.len() {
-        groups.push(a..words.len());
+    if a < units.len() {
+        unit_groups.push(a..units.len());
     }
     // text, frame-snapped times
     let fd = rate.frame_duration();
     let gap = Tick(fd.0 * rules.gap_frames.max(0));
     let mut out: Vec<CaptionBlock> = Vec::new();
-    for g in groups {
+    for ug in unit_groups {
+        let (Some(first), Some(last)) = (units.get(ug.start), units.get(ug.end.saturating_sub(1))) else { continue };
+        let g = first.start..last.end;
+        if g.is_empty() || g.end > words.len() {
+            continue;
+        }
         let mut text_lines: Vec<String> = vec![String::new()];
-        for w in &words[g.clone()] {
+        for t in texts.get(ug.clone()).unwrap_or_default() {
             let Some(l) = text_lines.last_mut() else { break };
+            let sp = needs_space(l, t);
             if l.is_empty() {
-                l.push_str(&w.text);
-            } else if l.chars().count() + 1 + w.text.chars().count() <= max_chars {
-                l.push(' ');
-                l.push_str(&w.text);
+                l.push_str(t);
+            } else if display_width(l) + usize::from(sp) + display_width(t) <= max_chars {
+                if sp {
+                    l.push(' ');
+                }
+                l.push_str(t);
             } else {
-                text_lines.push(w.text.clone());
+                text_lines.push(t.clone());
             }
         }
         let start = rate.snap(words[g.start].start);

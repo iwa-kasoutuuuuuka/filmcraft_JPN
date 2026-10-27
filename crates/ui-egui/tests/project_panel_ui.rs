@@ -460,6 +460,9 @@ fn footer_buttons_are_wired() {
     d.wait_for("project.newItem.file.newColorMatte");
     let n0 = d.app().session.project.items.len();
     d.click("project.newItem.file.newColorMatte");
+    // the Color Matte dialog (colour, name, size, duration) opens first
+    d.wait_for("colorMatte.ok");
+    d.click("colorMatte.ok");
     assert_eq!(d.app().session.project.items.len(), n0 + 1);
     d.click("project.button.project.delete");
     assert_eq!(d.app().session.project.items.len(), n0, "Clear removes the selected new matte");

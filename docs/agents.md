@@ -29,6 +29,12 @@ To register the server by hand, or for another MCP client, use the absolute bina
 claude mcp add filmcraft-headless -- /abs/path/filmcraft/target/release/filmcraft-cli mcp --demo
 ```
 
+**Antigravity.** The workspace file `.agents/mcp_config.json` registers the same two servers
+(Antigravity reads it from the open folder; the global file is `~/.gemini/config/mcp_config.json`,
+reachable from the agent panel via **…** ▸ **MCP Servers** ▸ **Manage MCP Servers** ▸ **View raw
+config**). The format is the same `mcpServers` object; if the relative binary path does not
+resolve on your setup, point `command` at the absolute path of `target/release/filmcraft-cli`.
+
 ```json
 { "mcpServers": { "filmcraft": { "command": "/abs/path/filmcraft-cli", "args": ["mcp", "--bridge", "127.0.0.1:9876"] } } }
 ```

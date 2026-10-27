@@ -29,9 +29,9 @@ SUBCOMMANDS
   export <out> [--preset name] [--format f] [--range r] [--start s --end s] [--settings json]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
-                                a format (h264|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
+                                a format (h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
-                                range in seconds; --settings is ExportSettings JSON merged over the
+                                range in seconds (--range 2,5.5 or --start 2 --end 5.5); --settings is ExportSettings JSON merged over the
                                 preset; --queue adds to the export queue and runs it instead
   export --list-presets [query] list export presets (name, category, format) as JSON
   render --seconds S --out f.png [--scale 0.5]   render one Program frame to PNG
@@ -91,6 +91,8 @@ impl Backend {
         // user export presets (and other per-user libraries) from the data directory
         if let Some(dir) = a.opt("--data-dir").map(std::path::PathBuf::from).or_else(filmcraft_engine::autosave::default_data_dir) {
             s.export_presets.set_dir(&dir);
+            // speech models are looked up and downloaded under the same directory
+            s.data_dir = Some(dir.clone());
         }
         if let Some(p) = a.opt("--project") {
             if let Err(e) = s.execute("file.open", json!({"path": p})) {
@@ -104,7 +106,13 @@ impl Backend {
 
     async fn exec(&mut self, id: &str, params: Value) -> Result<Value, String> {
         match self {
-            Backend::Local(s) => s.execute(id, params).map_err(|e| e.to_string()),
+            Backend::Local(s) => {
+                let r = s.execute(id, params).map_err(|e| e.to_string());
+                if r.is_ok() && !s.last_unknown_params.is_empty() {
+                    eprintln!("warning: {id}: ignored unknown parameter(s): {}", s.last_unknown_params.join(", "));
+                }
+                r
+            }
             Backend::Bridge(b) => b.call("engine.execute", json!({"command": id, "params": params})).await.map_err(|e| e.to_string()),
         }
     }
@@ -145,6 +153,7 @@ fn format_for(path: &str) -> Option<&'static str> {
         "tif" | "tiff" => "tiff",
         "bmp" => "bmp",
         "aif" | "aiff" => "aiff",
+        "flac" => "flac",
         _ => return None,
     })
 }
@@ -155,8 +164,15 @@ async fn main() {
         println!("filmcraft-cli {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    // `--help` / `-h` anywhere (the argument parser would take them for options)
+    if std::env::args().skip(1).any(|a| a == "--help" || a == "-h") {
+        print!("{HELP}");
+        return;
+    }
     // OS hardware video decoders (VideoToolbox on macOS) in front of our own, as in the desktop app.
     let _ = filmcraft_platform::register();
+    // Audio plug-in hosts (VST3 on Windows): projects with plug-in effects export with them.
+    let _ = filmcraft_platform::register_audio_plugins();
     let a = Args::parse(std::env::args().skip(1));
     let Some(cmd) = a.pos(0) else { usage("missing subcommand") };
     match cmd {
@@ -209,7 +225,9 @@ async fn main() {
             } else {
                 for c in &list {
                     let s = |k: &str| c[k].as_str().unwrap_or("").to_string();
-                    println!("{:<32} {:<34} {:<14} {}", s("id"), s("label"), s("shortcut"), s("params"));
+                    // `Cmd` is ⌘ on macOS and Ctrl elsewhere (the JSON keeps the canonical name)
+                    let shortcut = if cfg!(target_os = "macos") { s("shortcut") } else { s("shortcut").replace("Cmd", "Ctrl") };
+                    println!("{:<32} {:<34} {:<14} {}", s("id"), s("label"), shortcut, s("params"));
                 }
             }
         }
@@ -230,6 +248,8 @@ async fn main() {
             } else {
                 std::fs::read_to_string(script).unwrap_or_else(|e| fail(format!("{script}: {e}")))
             };
+            // Windows PowerShell 5 (`-Encoding UTF8`) and many Windows editors start UTF-8 with a BOM
+            let text = text.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(text);
             let mut b = Backend::open(&a);
             let mut failed = 0;
             for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
@@ -262,6 +282,7 @@ async fn main() {
                 other => usage(format!("inspect: unknown `{other}` (project | sequence)")),
             };
             print(&a, &v);
+            b.finish(&a).await;
         }
         "import" => {
             let paths: Vec<String> =
@@ -306,7 +327,16 @@ async fn main() {
                 }
             }
             if let Some(r) = a.opt("--range") {
-                p["range"] = json!(r);
+                // `START,END` in seconds is a custom range; otherwise a named one
+                match r.split_once(',').map(|(s0, s1)| (s0.trim().parse::<f64>(), s1.trim().parse::<f64>())) {
+                    Some((Ok(s0), Ok(s1))) => {
+                        p["range"] = json!("custom");
+                        p["startSeconds"] = json!(s0);
+                        p["endSeconds"] = json!(s1);
+                    }
+                    Some(_) => usage(format!("--range {r}: expected START,END in seconds, or entire | inOut | workArea")),
+                    None => p["range"] = json!(r),
+                }
             }
             if let (Some(s0), Some(s1)) = (a.opt("--start"), a.opt("--end")) {
                 p["range"] = json!("custom");
@@ -338,6 +368,7 @@ async fn main() {
                 }
                 Err(e) => fail(format!("export: {e}")),
             }
+            b.finish(&a).await;
         }
         "render" => {
             if a.opt("--bridge").is_some() {
@@ -354,6 +385,7 @@ async fn main() {
             let png = filmcraft_automation::png_rgba(img.w as u32, img.h as u32, img.over_black_rgba8(), 0).unwrap_or_else(|e| fail(e));
             std::fs::write(out, png).unwrap_or_else(|e| fail(format!("{out}: {e}")));
             eprintln!("rendered {}x{} in {:.1} ms → {out}", img.w, img.h, dt.as_secs_f64() * 1000.0);
+            Backend::Local(s).finish(&a).await;
         }
         "mcp" => {
             let server = match a.opt("--bridge") {

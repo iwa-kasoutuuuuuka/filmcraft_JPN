@@ -14,8 +14,19 @@ struct U {
     p0: vec4<f32>,   // opacity, kind (0 rgba8 srgb straight, 1 rgba16f premul linear, 2 yuv), taps, transfer (0 srgb, 1 linear, 2 pq, 3 hlg)
     p1: vec4<f32>,   // y_off y_scale c_off c_scale (code units)
     p2: vec4<f32>,   // kr kb code_scale footprint
-    p3: vec4<f32>,   // blend mode (index into filmcraft_render::Blend::ALL), unused ×3
+    p3: vec4<f32>,   // blend mode (index into filmcraft_render::Blend::ALL), BT.2020 luma weights (HLG OOTF)
+    cm0: vec4<f32>,  // gamut matrix into the working gamut, row 0 (w: on) — YUV / RGBA8 sources
+    cm1: vec4<f32>,  // row 1
+    cm2: vec4<f32>,  // row 2
 };
+
+// The decoded (linear) colour in the working gamut (`plan::input_matrix`).
+fn to_working(c: vec3<f32>) -> vec3<f32> {
+    if u.cm0.w == 0.0 {
+        return c;
+    }
+    return vec3(dot(u.cm0.xyz, c), dot(u.cm1.xyz, c), dot(u.cm2.xyz, c));
+}
 
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var tex0: texture_2d<f32>;
@@ -43,7 +54,13 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 
 fn load4(t: texture_2d<f32>, p: vec2<f32>) -> vec4<f32> {
     let d = vec2<i32>(textureDimensions(t));
-    let q = p - 0.5;
+    // `p` is an interpolated varying: at a pixel centre it is off by a few ULP (up to ~8e-6 near 64),
+    // which would mix ~4e-6 of the neighbour into the pixel. Alpha-dividing effects (Invert Alpha)
+    // amplify that into a visible colour on transparent pixels, so a centre hit within 1e-4 of a
+    // pixel snaps to the exact pixel (as the CPU's integer sampling does).
+    var q = p - 0.5;
+    let r = round(q);
+    q = select(q, r, abs(q - r) < vec2(1e-4));
     let i = vec2<i32>(floor(q));
     let f = q - floor(q);
     let a = textureLoad(t, clamp(i, vec2(0), d - 1), 0);
@@ -59,10 +76,13 @@ fn srgb_to_linear(v: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, v <= vec3(0.04045));
 }
 
+// ST 2084 in working units (1.0 = 203 cd/m², `decode_channel`).
 fn pq_eotf(e: vec3<f32>) -> vec3<f32> {
-    let m1 = 0.1593017578125; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.8515625; let c3 = 18.6875;
-    let p = pow(max(e, vec3(0.0)), vec3(1.0 / m2));
-    return pow(max(p - c1, vec3(0.0)) / (c2 - c3 * p), vec3(1.0 / m1)) * 100.0;
+    let m1 = 0.15930176; let m2 = 78.84375; let c1 = 0.8359375; let c2 = 18.851563; let c3 = 18.6875;
+    // the signal clamps to 0..1 as the CPU's decode table does (out-of-gamut YCbCr gives R'G'B'
+    // past 1, beyond which the formula breaks down)
+    let p = pow(clamp(e, vec3(1e-12), vec3(1.0)), vec3(1.0 / m2));
+    return pow(max(p - c1, vec3(0.0)) / (c2 - c3 * p), vec3(1.0 / m1)) * (10000.0 / 203.0);
 }
 
 fn hlg_inv(e: vec3<f32>) -> vec3<f32> {
@@ -72,11 +92,23 @@ fn hlg_inv(e: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, e <= vec3(0.5));
 }
 
+// HLG: scene light (inverse OETF), then the BT.2100 OOTF of a 1000 cd/m² display (γ 1.2) in
+// working units (`InputTransform::apply`).
+fn hlg_display(v: vec3<f32>) -> vec3<f32> {
+    let e = hlg_inv(clamp(v, vec3(0.0), vec3(1.0)));
+    let ys = max(dot(u.p3.yzw, e), 0.0);
+    var g = 0.0;
+    if ys > 0.0 {
+        g = (1000.0 / 203.0) * pow(ys, 0.2);
+    }
+    return e * g;
+}
+
 fn to_linear(v: vec3<f32>) -> vec3<f32> {
     let t = u32(u.p0.w);
     if t == 1u { return v; }
     if t == 2u { return pq_eotf(v); }
-    if t == 3u { return hlg_inv(v); }
+    if t == 3u { return hlg_display(v); }
     return srgb_to_linear(clamp(v, vec3(0.0), vec3(1.0)));
 }
 
@@ -86,7 +118,7 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     if kind == 0u {
         // rgba8 sRGB texture: loads are already linear, straight alpha
         let c = load4(tex0, p);
-        return vec4(c.rgb * c.a, c.a);
+        return vec4(to_working(c.rgb) * c.a, c.a);
     }
     if kind == 1u {
         return load4(tex0, p);
@@ -103,7 +135,7 @@ fn sample(p: vec2<f32>) -> vec4<f32> {
     let R = y + 2.0 * (1.0 - kr) * r;
     let B = y + 2.0 * (1.0 - kb) * b;
     let G = (y - kr * R - kb * B) / kg;
-    return vec4(to_linear(vec3(R, G, B)), 1.0);
+    return vec4(to_working(to_linear(vec3(R, G, B))), 1.0);
 }
 
 // The layer's premultiplied linear colour at this pixel, opacity applied.
@@ -290,6 +322,79 @@ fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
 
 @group(0) @binding(0) var accum: texture_2d<f32>;
 
+// Working → monitor of an HDR / wide-gamut pipeline (`OutputTransform::display`, see
+// `display_uniforms`).
+struct D {
+    tone: vec4<f32>,   // on, PQ(src peak), PQ(dst peak) / PQ(src peak), knee start
+    peaks: vec4<f32>,  // src peak, dst peak (cd/m²)
+    m0: vec4<f32>,     // gamut matrix row 0 (w: on)
+    m1: vec4<f32>,
+    m2: vec4<f32>,
+    desat: vec4<f32>,  // target luma weights (w: on)
+};
+@group(0) @binding(1) var<uniform> disp: D;
+
+fn pq_inv1(y: f32) -> f32 {
+    let m1 = 0.15930176; let m2 = 78.84375;
+    let p = pow(max(y, 1e-12), m1);
+    return pow((0.8359375 + 18.851563 * p) / (1.0 + 18.6875 * p), m2);
+}
+fn pq_eotf1(e: f32) -> f32 {
+    let m1 = 0.15930176; let m2 = 78.84375;
+    let p = pow(max(e, 1e-12), 1.0 / m2);
+    return pow(max(p - 0.8359375, 0.0) / (18.851563 - 18.6875 * p), 1.0 / m1);
+}
+
+// `bt2390_eetf` (cd/m²).
+fn eetf(nits: f32) -> f32 {
+    let src = disp.peaks.x; let dst = disp.peaks.y;
+    if dst >= src || nits <= 0.0 {
+        return min(max(nits, 0.0), max(src, dst));
+    }
+    let smax = disp.tone.y; let max_lum = disp.tone.z; let ks = disp.tone.w;
+    let e1 = min(pq_inv1(clamp(nits / 10000.0, 0.0, 1.0)) / smax, 1.0);
+    var e2 = e1;
+    if e1 >= ks {
+        let t = (e1 - ks) / (1.0 - ks);
+        let t2 = t * t; let t3 = t2 * t;
+        e2 = (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * max_lum;
+    }
+    return pq_eotf1(e2 * smax) * 10000.0;
+}
+
+// `OutputTransform::apply` on a straight working colour.
+fn to_display(c0: vec3<f32>) -> vec3<f32> {
+    var c = c0;
+    if disp.tone.x != 0.0 {
+        let m = max(max(c.r, c.g), c.b);
+        if m > 0.0 {
+            let nits = m * 203.0;
+            var k = 1.0;
+            if nits >= disp.peaks.x {
+                k = disp.peaks.y / 203.0 / m;
+            } else if nits > 1e-6 {
+                k = eetf(nits) / nits;
+            }
+            c = c * k;
+        }
+    }
+    if disp.m0.w != 0.0 {
+        c = vec3(dot(disp.m0.xyz, c), dot(disp.m1.xyz, c), dot(disp.m2.xyz, c));
+    }
+    if disp.desat.w != 0.0 {
+        let mn = min(min(c.r, c.g), c.b);
+        if mn < 0.0 {
+            let y = dot(disp.desat.xyz, c);
+            if y <= 0.0 {
+                return vec3(0.0);
+            }
+            let t = y / (y - mn);
+            c = max(vec3(y) + (c - vec3(y)) * t, vec3(0.0));
+        }
+    }
+    return c;
+}
+
 @vertex
 fn vs_full(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     let x = f32((vi << 1u) & 2u) * 2.0 - 1.0;
@@ -299,7 +404,13 @@ fn vs_full(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_full(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = clamp(textureLoad(accum, vec2<i32>(pos.xy), 0).rgb, vec3(0.0), vec3(1.0));
+    let px = textureLoad(accum, vec2<i32>(pos.xy), 0);
+    var rgb = px.rgb;
+    // HDR / wide gamut: the monitor conversion on the straight colour (as `map_rgb` on the CPU)
+    if (disp.tone.x != 0.0 || disp.m0.w != 0.0 || disp.desat.w != 0.0) && px.a > 1e-6 {
+        rgb = to_display(rgb / px.a) * px.a;
+    }
+    let c = clamp(rgb, vec3(0.0), vec3(1.0));
     let lo = c * 12.92;
     let hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
     return vec4(select(hi, lo, c <= vec3(0.0031308)), 1.0);

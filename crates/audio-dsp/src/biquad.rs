@@ -50,7 +50,7 @@ impl Coeffs {
     /// RBJ cookbook design. `freq` in Hz (clamped below Nyquist), `q` > 0, `gain_db` used by
     /// peaking and shelving types (shelves use `q` as the shelf "Q", S=1 ≙ Q=1/√2).
     pub fn design(kind: FilterType, sample_rate: f64, freq: f64, q: f64, gain_db: f64) -> Coeffs {
-        let f = freq.clamp(1.0, sample_rate * 0.49);
+        let f = freq.clamp(1.0, (sample_rate * 0.49).max(1.0));
         let q = q.max(1e-3);
         let w0 = 2.0 * PI * f / sample_rate;
         let (sn, cs) = w0.sin_cos();
@@ -146,6 +146,20 @@ mod tests {
     use crate::testutil::*;
 
     const SR: f64 = 48000.0;
+
+    /// A damaged project's 0–2 Hz sample rate put the clamp's upper bound below 1 Hz (a panic).
+    #[test]
+    fn tiny_sample_rate_does_not_panic() {
+        for sr in [0.0, 1.0, 2.0, f64::NAN] {
+            let _ = Coeffs::design(FilterType::LowPass, sr, 1000.0, 0.7, 0.0);
+        }
+        for sr in [0.0f32, 1.0, 2.0] {
+            let _ = crate::effects::util::OnePole::alpha(1000.0, sr);
+            let _ = crate::effects::util::AllPass1::coef(1000.0, sr);
+        }
+        let p = crate::design::prototype(crate::design::Family::Elliptic, 4, f64::NAN, f64::NAN);
+        let _ = crate::design::realize(&p, crate::design::Band::LowPass, 1000.0, 2000.0, 0.0);
+    }
 
     fn measured_db(c: &Coeffs, freq: f64) -> f64 {
         let n = SR as usize;

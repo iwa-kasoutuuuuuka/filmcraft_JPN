@@ -1,0 +1,7 @@
+asset:        crates/render/assets/haarcascade_profileface.xml
+title:        OpenCV profile face Haar cascade (20x20, 26 stages), used by Morph Cut face detection
+author:       David Bradley and Princeton University (model); Intel Corporation (copyright notice, 2000)
+source:       https://github.com/opencv/opencv (data/haarcascades/haarcascade_profileface.xml)
+license:      BSD-style "Intel License Agreement" for Open Source Computer Vision Library (licence text in the file's header comment; keep the notice and disclaimer on redistribution; do not use Intel's name to endorse derived products)
+added:        2026-10-13 by Claude (agent)
+notes:        Copied unchanged from an OpenCV build's etc/haarcascades directory. Loaded by crates/render/src/facedet.rs with include_str!. Not modified.

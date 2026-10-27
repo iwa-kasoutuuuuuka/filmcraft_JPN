@@ -97,12 +97,50 @@ impl PanelKind {
             PanelKind::Timecode => "Timecode",
         }
     }
+    /// The title in the UI language.
+    pub fn localized_title(self) -> &'static str {
+        if crate::i18n::is_japanese() { self.japanese_title() } else { self.title() }
+    }
+    fn japanese_title(self) -> &'static str {
+        match self {
+            PanelKind::Project => "プロジェクト",
+            PanelKind::MediaBrowser => "メディアブラウザー",
+            PanelKind::Libraries => "ライブラリ",
+            PanelKind::Info => "情報",
+            PanelKind::Effects => "エフェクト",
+            PanelKind::Markers => "マーカー",
+            PanelKind::History => "ヒストリー",
+            PanelKind::Source => "ソース",
+            PanelKind::EffectControls => "エフェクトコントロール",
+            PanelKind::AudioClipMixer => "オーディオクリップミキサー",
+            PanelKind::Metadata => "メタデータ",
+            PanelKind::Program => "プログラム",
+            PanelKind::Timeline => "タイムライン",
+            PanelKind::Tools => "ツール",
+            PanelKind::AudioMeters => "オーディオメーター",
+            PanelKind::AudioTrackMixer => "オーディオトラックミキサー",
+            PanelKind::LumetriColor => "Lumetri カラー",
+            PanelKind::LumetriScopes => "Lumetri スコープ",
+            PanelKind::EssentialGraphics => "エッセンシャルグラフィックス",
+            PanelKind::EssentialSound => "エッセンシャルサウンド",
+            PanelKind::Properties => "プロパティ",
+            PanelKind::Text => "テキスト",
+            PanelKind::Events => "イベント",
+            PanelKind::Progress => "進行状況",
+            PanelKind::ReferenceMonitor => "リファレンスモニター",
+            PanelKind::Timecode => "タイムコード",
+        }
+    }
     pub fn id(self) -> String {
         format!("{self:?}")
     }
     pub fn from_name(s: &str) -> Option<PanelKind> {
         let n = s.to_ascii_lowercase().replace([' ', '_', '-'], "");
-        Self::ALL.iter().copied().find(|p| format!("{p:?}").to_ascii_lowercase() == n || p.title().to_ascii_lowercase().replace(' ', "") == n)
+        Self::ALL.iter().copied().find(|p| {
+            format!("{p:?}").to_ascii_lowercase() == n
+                || p.title().to_ascii_lowercase().replace(' ', "") == n
+                || p.japanese_title().replace(' ', "") == s.replace(' ', "")
+        })
     }
     /// Window-menu shortcut (Premiere: Shift+1..9).
     pub fn window_shortcut(self) -> Option<&'static str> {
@@ -420,12 +458,17 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
         let text_y = strip.min.y + 16.0;
         for (i, p) in g.panels.iter().enumerate() {
             let is_active = i == g.active;
-            let galley = painter.layout_no_wrap(p.title().to_string(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
+            let display_title = p.localized_title();
+            let galley = painter.layout_no_wrap(display_title.to_string(), Tokens::ui(12.0), if is_active { t.tab_text_active } else { t.tab_text });
             let menu_w = if is_active { 20.0 } else { 0.0 };
             let w = galley.size().x + 16.0 + menu_w;
             if x + w > strip.max.x - 20.0 && i > g.active {
                 let r = Rect::from_min_size(pos2(strip.max.x - 22.0, strip.min.y + 6.0), vec2(18.0, 20.0));
                 let resp = ui.interact(r, egui::Id::new(("tab-overflow", g.path.clone())), Sense::click());
+                // (named after the group's active panel: one overflow button per group)
+                if let Some(active) = active_panel {
+                    reg.add(&format!("panel.tabOverflow.{}", active.id()), r, "more tabs");
+                }
                 icons::paint(&painter, r.shrink(4.0).translate(vec2(-2.0, 0.0)), Icon::ChevronRight, t.tab_text);
                 icons::paint(&painter, r.shrink(4.0).translate(vec2(2.0, 0.0)), Icon::ChevronRight, t.tab_text);
                 if resp.clicked() {
@@ -482,7 +525,7 @@ pub fn draw_group_chrome(ui: &mut egui::Ui, g: &Group, focused: PanelKind, t: &T
 
 /// Placeholder body for panels that are not implemented yet.
 pub fn placeholder(ui: &mut egui::Ui, rect: Rect, t: &Tokens, text: &str) {
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, Tokens::ui(12.0), t.text_faint);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, crate::i18n::tr_ui(text), Tokens::ui(12.0), t.text_faint);
 }
 
 #[cfg(test)]

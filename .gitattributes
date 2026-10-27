@@ -1,0 +1,15 @@
+# Line endings: LF in the repository and in every working tree, whatever `core.autocrlf` says, so a
+# Windows checkout does not turn whole files into CRLF diffs (and `cargo fmt --check` agrees on
+# every OS).
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch binary assets and test streams.
+*.png  binary
+*.ico  binary
+*.icns binary
+*.ttf  binary
+*.h264 binary

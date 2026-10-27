@@ -369,7 +369,7 @@ fn parse_block_elem<S: ByteSource + ?Sized>(
             Ok(Some(BlockRef {
                 track,
                 block_offset: h.pos,
-                ts: cluster_ts + rel as i64,
+                ts: cluster_ts.saturating_add(rel as i64),
                 frames,
                 block_duration: None,
                 keyframe: flags & 0x80 != 0,
@@ -398,7 +398,7 @@ fn parse_block_elem<S: ByteSource + ?Sized>(
             Ok(Some(BlockRef {
                 track,
                 block_offset: h.pos,
-                ts: cluster_ts + rel as i64,
+                ts: cluster_ts.saturating_add(rel as i64),
                 frames,
                 block_duration: dur,
                 keyframe: !has_ref,
@@ -411,18 +411,27 @@ fn parse_block_elem<S: ByteSource + ?Sized>(
     }
 }
 
+/// Start of lace `i` of `n` within a block lasting `total` ns, saturating instead of overflowing.
+fn lace_ns(total: u128, i: u128, n: u128) -> i128 {
+    let v = total.checked_mul(i).map_or_else(|| (total / n.max(1)).saturating_mul(i), |p| p / n.max(1));
+    v.min(i128::MAX as u128) as i128
+}
+
 /// Expand a block into frames with per-lace timestamps.
 fn expand(b: &BlockRef, t: &Track, scale: u64, skip: u16, out: &mut impl Extend<FrameRef>) {
     let n = b.frames.len() as u64;
     // total block duration in ns
     let block_ns: Option<u128> = match (b.block_duration, t.default_duration_ns) {
         (Some(d), _) => Some(d as u128 * scale as u128),
-        (None, Some(dd)) => Some(dd as u128 * n as u128),
+        (None, Some(dd)) => Some((dd as u128).saturating_mul(n as u128)),
         _ => None,
     };
     let scale_i = scale as i128;
     // round half away from zero
-    let to_ticks = |ns: i128| -> i64 { (if ns >= 0 { (ns + scale_i / 2) / scale_i } else { (ns - scale_i / 2) / scale_i }) as i64 };
+    let to_ticks = |ns: i128| -> i64 {
+        let t = if ns >= 0 { ns.saturating_add(scale_i / 2) / scale_i } else { ns.saturating_sub(scale_i / 2) / scale_i };
+        t.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+    };
     // CodecDelay is subtracted from every timestamp (RFC 9559 §5.1.4.1.25); in ticks it is rounded
     // once, so tick timestamps stay on the block grid.
     let delay_ns = t.codec_delay_ns as i128;
@@ -430,20 +439,20 @@ fn expand(b: &BlockRef, t: &Track, scale: u64, skip: u16, out: &mut impl Extend<
     let base_ns = b.ts as i128 * scale_i;
     out.extend(b.frames.iter().enumerate().skip(skip as usize).map(|(i, &(offset, size))| {
         let (start, end) = match block_ns {
-            Some(total) => ((total * i as u128 / n as u128) as i128, Some((total * (i as u128 + 1) / n as u128) as i128)),
+            Some(total) => (lace_ns(total, i as u128, n as u128), Some(lace_ns(total, i as u128 + 1, n as u128))),
             None => (0, None),
         };
-        let pts_ns = base_ns + start - delay_ns;
-        let pts = to_ticks(base_ns + start) - delay_ticks;
-        let duration = end.map_or(0, |e| (to_ticks(e) - to_ticks(start)).max(0) as u64);
+        let pts_ns = base_ns.saturating_add(start).saturating_sub(delay_ns);
+        let pts = to_ticks(base_ns.saturating_add(start)).saturating_sub(delay_ticks);
+        let duration = end.map_or(0, |e| to_ticks(e).saturating_sub(to_ticks(start)).max(0) as u64);
         FrameRef {
             track: b.track,
             offset,
             size,
             pts,
-            pts_ns: pts_ns as i64,
+            pts_ns: pts_ns.clamp(i64::MIN as i128, i64::MAX as i128) as i64,
             duration,
-            duration_ns: end.map_or(0, |e| (e - start).max(0) as u64),
+            duration_ns: end.map_or(0, |e| e.saturating_sub(start).clamp(0, u64::MAX as i128) as u64),
             keyframe: b.keyframe,
             discardable: b.discardable,
             invisible: b.invisible,
@@ -996,7 +1005,7 @@ impl<S: ByteSource> Demuxer<S> {
     }
 
     fn seek_via_cue(&mut self, track: usize, ticks: i64, cluster_position: u64) -> Result<Option<SeekPoint>> {
-        let abs = self.file.segment_data_start + cluster_position;
+        let Some(abs) = self.file.segment_data_start.checked_add(cluster_position) else { return Ok(None) };
         let mut io = Io::new(&self.src, &mut self.cache);
         let Some(h) = io.header(abs, self.file.segment_end)? else { return Ok(None) };
         if h.id != CLUSTER {

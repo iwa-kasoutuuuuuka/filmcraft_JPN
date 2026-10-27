@@ -175,3 +175,104 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+/// Speech models belong to the session's data directory. Before, `transcript.models` and
+/// `transcript.downloadModel` used the default directory even for a session started with another
+/// one (`--data-dir`), so its downloads landed in the user's own application data.
+#[test]
+fn models_live_in_the_sessions_data_directory() {
+    let dir = crate::media_test_util::tmp_dir("speech-models-dir");
+    let (mut s, _, _) = session();
+    s.prefs_path = Some(dir.join("preferences.json"));
+    assert_eq!(crate::transcript::models_dir(&s), Some(dir.join("models")));
+    let m = s.execute("transcript.models", json!({})).unwrap();
+    assert_eq!(std::path::Path::new(m["dir"].as_str().unwrap()), dir.join("models"), "{m}");
+    assert!(m["models"].as_array().unwrap().iter().all(|x| x["installed"] == false), "nothing is installed in a fresh directory");
+    // an explicit data directory (the CLI's `--data-dir`) wins over where the preferences are
+    let other = crate::media_test_util::tmp_dir("speech-models-dir-2");
+    s.data_dir = Some(other.clone());
+    assert_eq!(crate::transcript::models_dir(&s), Some(other.join("models")));
+    // a session without a data directory of its own uses the default one
+    s.data_dir = None;
+    s.prefs_path = None;
+    assert_eq!(crate::transcript::models_dir(&s), crate::autosave::default_data_dir().map(|d| d.join("models")));
+}
+
+#[test]
+fn hostile_speakers_and_caption_rules_are_refused_or_clamped() {
+    let (mut s, item, _) = session();
+    // a huge speaker index grew the label list to 4 billion entries
+    let t = json!({"words": [{"text": "a", "start": 0, "end": 1000, "speaker": u32::MAX}]});
+    assert!(s.execute("transcript.set", json!({"item": item.0, "transcript": t})).is_err());
+    s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+    // extreme layout values overflowed the caption maths
+    for p in [
+        json!({"maxChars": u64::MAX, "lines": u64::MAX, "gapFrames": i64::MAX, "minSeconds": 1e300, "maxSeconds": 1e300}),
+        json!({"maxChars": 0, "lines": 0, "gapFrames": i64::MIN, "minSeconds": -1e300, "maxSeconds": -1e300}),
+    ] {
+        s.execute("transcript.createCaptions", p).unwrap();
+        s.active_sequence().unwrap().check().unwrap();
+    }
+}
+
+/// Retakes on the first A1 clip's media: "So the the plan. We went to the — we went to the store."
+fn set_retakes(s: &mut Session, item: ItemId) {
+    let sin = s.active_sequence().unwrap().audio_tracks[0].items[0].source_in;
+    let sec = |x: f64| (sin + Tick::from_seconds_f64(x)).0;
+    let texts = ["So", "the", "the", "plan.", "We", "went", "to", "the", "—", "we", "went", "to", "the", "store."];
+    let words: Vec<_> =
+        texts.iter().enumerate().map(|(i, t)| json!({"text": t, "start": sec(0.2 + i as f64 * 0.3), "end": sec(0.45 + i as f64 * 0.3)})).collect();
+    s.execute("transcript.set", json!({"item": item.0, "transcript": {"language": "en", "words": words}})).unwrap();
+}
+
+#[test]
+fn find_and_remove_repeats() {
+    let (mut s, item, _) = session();
+    set_retakes(&mut s, item);
+    let before = s.active_sequence().unwrap().duration();
+    let n = words(&mut s).len();
+    let r = s.execute("transcript.findRepeats", json!({})).unwrap();
+    assert_eq!(r["count"], 2, "{r}");
+    assert_eq!(r["repeats"][0]["removed"], "the");
+    assert_eq!(r["repeats"][0]["kept"], "the");
+    assert_eq!((r["repeats"][0]["from"].as_u64(), r["repeats"][0]["to"].as_u64()), (Some(1), Some(1)));
+    assert_eq!(r["repeats"][1]["removed"], "We went to the —");
+    assert_eq!(r["repeats"][1]["kept"], "we went to the");
+    assert!(r["repeats"][1]["end"].as_f64().unwrap() > r["repeats"][1]["start"].as_f64().unwrap());
+    // finding edits nothing
+    assert_eq!(words(&mut s).len(), n);
+    assert_eq!(s.active_sequence().unwrap().duration(), before);
+
+    let r = s.execute("transcript.removeRepeats", json!({})).unwrap();
+    assert_eq!(r["removed"], 2, "{r}");
+    assert_eq!(words(&mut s), ["So", "the", "plan.", "we", "went", "to", "the", "store."]);
+    let after = s.active_sequence().unwrap().duration();
+    assert!(after < before - Tick::from_seconds_f64(1.2), "{before:?} → {after:?}");
+    s.active_sequence().unwrap().check().unwrap();
+    assert_eq!(s.execute("transcript.findRepeats", json!({})).unwrap()["count"], 0);
+    // one undo step
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(words(&mut s).len(), n);
+    assert_eq!(s.active_sequence().unwrap().duration(), before);
+    // only the long restart
+    let r = s.execute("transcript.removeRepeats", json!({"minWords": 2})).unwrap();
+    assert_eq!(r["removed"], 1, "{r}");
+    assert_eq!(words(&mut s).len(), n - 5);
+}
+
+#[test]
+fn hostile_repeat_params_are_clamped() {
+    let (mut s, item, _) = session();
+    assert!(s.execute("transcript.removeRepeats", json!({})).is_err(), "no transcript yet");
+    set_retakes(&mut s, item);
+    for p in [
+        json!({"minWords": u64::MAX, "maxWords": u64::MAX, "maxGapSeconds": 1e300}),
+        json!({"minWords": 0, "maxWords": 0, "maxGapSeconds": -1e300}),
+        json!({"minWords": 9, "maxWords": 2, "fillers": [""]}),
+        json!({"minWords": "x", "maxWords": -3, "maxGapSeconds": "nan", "fillers": 7}),
+    ] {
+        s.execute("transcript.findRepeats", p.clone()).unwrap();
+        s.execute("transcript.removeRepeats", p).unwrap();
+        s.active_sequence().unwrap().check().unwrap();
+    }
+}

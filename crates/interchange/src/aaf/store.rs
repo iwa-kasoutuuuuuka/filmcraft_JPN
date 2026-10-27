@@ -468,6 +468,11 @@ impl R<'_> {
                         return Err(bad("short weak collection index"));
                     };
                     let size = size as usize;
+                    // a hostile count with zero-size keys would push billions of empty keys
+                    let fits = (count as usize).checked_mul(size).and_then(|n| n.checked_add(9)).is_some_and(|n| n <= idx.len());
+                    if (size == 0 && count > 0) || !fits {
+                        return Err(bad("short weak collection index"));
+                    }
                     let mut keys = Vec::new();
                     for k in 0..count as usize {
                         keys.push(idx.get(9 + k * size..9 + (k + 1) * size).ok_or_else(|| bad("short weak collection index"))?.to_vec());

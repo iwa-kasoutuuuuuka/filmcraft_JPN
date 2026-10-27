@@ -6,20 +6,25 @@
 //! clip whose enabled standard effects all have a GPU implementation ([`crate::gpufx`]) carries
 //! them as a [`LayerFx`]: their parameters evaluated at the frame's time, run by the GPU on the
 //! clip's working image before Motion places it, in the CPU's order (effects → Motion → Opacity /
-//! blend). Anything the shaders don't cover yet — other standard effects, masks, adjustment
-//! layers, nested sequences, non-dissolve transitions — is rendered on the CPU for that layer (or
-//! the whole frame) and handed over as a pre-composited image, so the GPU path is always exact
-//! with respect to the CPU reference.
+//! blend). Effect masks and a clip's Opacity masks travel with the [`LayerFx`] as flattened
+//! polygons ([`FlatMask`]): the GPU mixes each masked effect with the image before it by the
+//! masks' coverage. Anything the shaders don't cover yet — other standard effects, masks with
+//! more than [`MAX_GPU_MASK_POINTS`] points, opacity masks of adjustment layers, nested
+//! sequences, non-dissolve transitions — is rendered on the CPU for that layer (or the whole
+//! frame) and handed over as a pre-composited image, so the GPU path is always exact with respect
+//! to the CPU reference.
 
 use std::sync::Arc;
 
-use filmcraft_frame::VideoFrame;
+use filmcraft_color::{ColorPipeline, ColorSpace};
+use filmcraft_frame::{PixelData, VideoFrame};
 use filmcraft_geom::Affine;
 use filmcraft_media::FrameRequest;
 use filmcraft_project::{ItemId, ItemKind, Project, Sequence, TrackItem};
 use filmcraft_time::Tick;
 
 use crate::gpufx::FxOp;
+use crate::mask::FlatMask;
 use crate::{Blend, RenderOptions, SourceProvider, motion_matrix, output_size};
 
 /// One layer for the GPU, bottom to top.
@@ -34,22 +39,69 @@ pub struct PlanLayer {
     pub blend: Blend,
     /// Standard effects to run on the frame before it is placed (None: draw the frame directly).
     pub fx: Option<Arc<LayerFx>>,
+    /// Whether this is an adjustment layer (effects run on the composite below it).
+    pub is_adjustment: bool,
 }
 
 /// The GPU effect stage of a layer: the frame is decoded into a working image of `size` (the
 /// frame box-decimated by `decimation`, as the CPU decodes it), `ops` run on it in order, and the
 /// result is placed with the layer's matrix, opacity and blend mode.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayerFx {
     pub size: (u32, u32),
     pub decimation: u32,
     pub ops: Vec<FxOp>,
+    /// `masks[i]` limits `ops[i]` to the masks' coverage, in working-image pixels (missing or
+    /// empty: the op applies everywhere).
+    pub masks: Vec<Vec<FlatMask>>,
+    /// The masks of the clip's Opacity effect: they scale the result of the ops.
+    pub opacity_masks: Vec<FlatMask>,
+    /// The colour pipeline the frame is decoded into ([`decode_working`]: its curve, the HLG OOTF
+    /// and [`input_matrix`] for an HDR / wide-gamut pipeline).
+    pub color: ColorPipeline,
+}
+
+/// Polygon points of all the masks of a layer the GPU evaluates per pixel; a layer with more is
+/// rendered on the CPU, whose row algorithm does not look at every edge for every pixel.
+pub const MAX_GPU_MASK_POINTS: usize = 2048;
+/// Masks of a layer the GPU evaluates (same reason).
+pub const MAX_GPU_MASKS: usize = 32;
+
+impl LayerFx {
+    /// The stage on the CPU: the reference the GPU effect stage is tested against.
+    pub fn apply(&self, img: &mut crate::Image) {
+        for (i, op) in self.ops.iter().enumerate() {
+            match self.masks.get(i).and_then(|m| crate::mask::coverage(m, img.w, img.h)) {
+                Some(cov) => {
+                    let original = img.clone();
+                    op.apply(img);
+                    crate::mask::mix(img, &original, &cov);
+                }
+                None => op.apply(img),
+            }
+        }
+        if let Some(cov) = crate::mask::coverage(&self.opacity_masks, img.w, img.h) {
+            crate::mask::scale_by(img, &cov);
+        }
+    }
+
+    /// Whether the masks are few enough for the GPU ([`MAX_GPU_MASK_POINTS`], [`MAX_GPU_MASKS`]).
+    pub fn masks_fit_gpu(&self) -> bool {
+        let all = || self.masks.iter().flatten().chain(&self.opacity_masks);
+        all().count() <= MAX_GPU_MASKS && all().map(|m| m.pts.len()).sum::<usize>() <= MAX_GPU_MASK_POINTS
+    }
 }
 
 impl PlanLayer {
     /// A layer drawing `frame` directly.
     pub fn new(frame: Arc<VideoFrame>, matrix: Affine, opacity: f32, blend: Blend) -> Self {
-        Self { frame, matrix, opacity, blend, fx: None }
+        Self { frame, matrix, opacity, blend, fx: None, is_adjustment: false }
+    }
+
+    /// An adjustment layer: runs `fx` on the composite below it and blends the result.
+    pub fn adjustment(matrix: Affine, opacity: f32, blend: Blend, fx: Arc<LayerFx>) -> Self {
+        let dummy = Arc::new(VideoFrame::rgba_f32(1, 1, vec![0.0; 4]));
+        Self { frame: dummy, matrix, opacity, blend, fx: Some(fx), is_adjustment: true }
     }
 
     /// Size of the picture the matrix places: the working image with effects, else the frame.
@@ -63,8 +115,11 @@ impl PlanLayer {
 
 #[derive(Clone)]
 pub enum FramePlan {
-    /// Draw these layers over black.
-    Layers { width: usize, height: usize, layers: Vec<PlanLayer> },
+    /// Draw these layers over black. `color` is the sequence's colour pipeline: YUV / RGBA8
+    /// frames are converted into its working gamut ([`input_matrix`]), and a pipeline that is not
+    /// plain (HDR or wide gamut) is converted for the monitor at the end
+    /// (`colorman::to_display`).
+    Layers { width: usize, height: usize, layers: Vec<PlanLayer>, color: ColorPipeline },
     /// The CPU produced the final image (fallback).
     Image(crate::Image),
 }
@@ -74,15 +129,41 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
 }
 
 fn simple_transition(id: &str) -> bool {
-    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white" | "morph_cut")
+    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
 }
 
-/// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
-/// every enabled standard effect unmasked and with a GPU implementation; empty without effects or
-/// with effects off). None: the clip is rendered on the CPU.
+fn gpu_adjustment_ok(_project: &Project, seq: &Sequence, item: &TrackItem, t: Tick, opts: RenderOptions) -> bool {
+    if !opts.effects {
+        return true;
+    }
+    if item.has_opacity_masks() {
+        return false;
+    }
+    let mt = item.effect_time_at(t);
+    let size = (seq.settings.width, seq.settings.height);
+    let m = motion_matrix(seq, item, size, mt);
+    if !near_identity(&m) {
+        return false;
+    }
+    let mut masks = LayerFx::default();
+    for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic)) {
+        if !e.enabled {
+            continue;
+        }
+        if !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
+            return false;
+        }
+        masks.masks.push(crate::mask::prepare(&e.masks, mt, opts.scale));
+    }
+    masks.masks_fit_gpu()
+}
+
+/// The standard effects of a media clip if the GPU can draw it (any blend mode, every enabled
+/// standard effect with a GPU implementation; empty without effects or with effects off). None:
+/// the clip is rendered on the CPU.
 fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) -> Option<Vec<&'a filmcraft_project::EffectInstance>> {
     let is_media = project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }));
-    if !is_media || item.has_opacity_masks() {
+    if !is_media {
         return None;
     }
     if !opts.effects {
@@ -93,8 +174,7 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
         if !e.enabled {
             continue;
         }
-        let masked = e.masks.iter().any(|m| m.mode != filmcraft_project::MaskMode::None);
-        if masked || !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
+        if !crate::gpufx::GPU_EFFECTS.contains(&e.effect.as_str()) {
             return None;
         }
         chain.push(e);
@@ -106,8 +186,12 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
 pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOptions, sources: &dyn SourceProvider) -> FramePlan {
     let Some(seq) = project.sequence(seq_id) else { return FramePlan::Image(crate::Image::new(1, 1)) };
     let (w, h) = output_size(seq, opts.scale);
-    // HDR / wide-gamut sequences composite and convert on the CPU.
-    if !seq.settings.color.is_plain() {
+    // HDR / wide-gamut sequences composite on the GPU too (BT.709 / sRGB media decoded there,
+    // everything else converted on the CPU per layer), except where the CPU composites outside
+    // the working space: working-space output (exports), captions (drawn after the display
+    // transform) and blend modes other than Normal (checked below).
+    let pipe = seq.settings.color;
+    if !pipe.is_plain() && (opts.working_output || (opts.captions && !crate::caption_overlays(seq, t, w, h).is_empty())) {
         return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
     }
     // Whole-frame fallback: adjustment layers or complex transitions anywhere at t.
@@ -122,6 +206,7 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
         }
         if let Some(it) = tr.item_at(t)
             && project.item(it.item).is_some_and(|p| matches!(p.kind, ItemKind::AdjustmentLayer { .. }))
+            && !gpu_adjustment_ok(project, seq, it, t, opts)
         {
             return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
         }
@@ -173,7 +258,59 @@ pub fn plan_frame(project: &Project, seq_id: ItemId, t: Tick, opts: RenderOption
             ));
         }
     }
-    FramePlan::Layers { width: w, height: h, layers }
+    if !pipe.is_plain() && layers.iter().any(|l| l.blend != Blend::Normal) {
+        return FramePlan::Image(crate::render_sequence(project, seq_id, t, opts, sources));
+    }
+    FramePlan::Layers { width: w, height: h, layers, color: pipe }
+}
+
+/// The gamut matrix from a GPU-decoded frame's own primaries into the working gamut of a
+/// non-plain `pipe` (None: nothing to convert). The compositor applies it after decoding YUV and
+/// RGBA8 frames, as `colorman::decode` does on the CPU; RGBA float frames (CPU-rendered layers,
+/// effect results, transition colours) are in the working space already.
+pub fn input_matrix(pipe: &ColorPipeline, frame: &VideoFrame) -> Option<[[f32; 3]; 3]> {
+    if pipe.is_plain() || matches!(frame.data, PixelData::RgbaF32(_)) {
+        return None;
+    }
+    let (src, wg) = (ColorSpace::from_info(&frame.color).gamut(), pipe.working_gamut());
+    (src != wg).then(|| filmcraft_color::spaces::to_f32(&filmcraft_color::spaces::gamut_matrix(src, wg)))
+}
+
+/// Whether the GPU decodes a frame into the working space itself. Plain pipeline: the default
+/// (transfer-only) decode of BT.709 / sRGB / linear media. HDR / wide-gamut pipeline: those, and
+/// PQ / HLG YUV media, whose input transform is exact on the GPU (curve, HLG OOTF, gamut matrix:
+/// [`filmcraft_color::InputTransform::gpu_exact`]). Everything else (log, other gamuts, tone
+/// mapping on input, Interpret Footage overrides) is converted on the CPU.
+fn gpu_decodes(pipe: &ColorPipeline, cs: ColorSpace, frame: &VideoFrame) -> bool {
+    if pipe.is_plain() {
+        return !crate::colorman::needs_management(pipe, cs, frame);
+    }
+    let yuv = matches!(frame.data, PixelData::Yuv8 { .. } | PixelData::Yuv16 { .. });
+    let space = match cs {
+        ColorSpace::Rec709 | ColorSpace::Srgb | ColorSpace::Linear709 => !matches!(frame.data, PixelData::RgbaF32(_)),
+        ColorSpace::Rec2100Pq | ColorSpace::Rec2100Hlg => yuv,
+        _ => false,
+    };
+    space && cs == ColorSpace::from_info(&frame.color) && crate::colorman::input_transform(cs, frame.color.range, pipe, None).gpu_exact()
+}
+
+/// A frame decoded (box-decimated by `n`) into the working space of `pipe`, as the GPU decodes
+/// it: the CPU reference of the compositor. A plain pipeline uses the frame's own transfer; an
+/// HDR / wide-gamut one its colour space's input transform (as `colorman::decode` without an
+/// Interpret Footage override). Float frames are in the working space already.
+pub fn decode_working(pipe: &ColorPipeline, frame: &VideoFrame, n: usize) -> crate::Image {
+    if pipe.is_plain() || matches!(frame.data, PixelData::RgbaF32(_)) {
+        let (w, h, px) = frame.to_linear_f32_decimated(n);
+        return crate::Image { w, h, px };
+    }
+    let range = if matches!(frame.data, PixelData::Rgba8(_)) { filmcraft_color::Range::Full } else { frame.color.range };
+    let t = crate::colorman::input_transform(ColorSpace::from_info(&frame.color), range, pipe, None);
+    let (w, h, px) = frame.to_linear_f32_decimated_with(n, Some(&t.table));
+    let mut img = crate::Image { w, h, px };
+    if t.has_pixel_stage() {
+        img.map_rgb(|c, _, _| t.apply(c));
+    }
+    img
 }
 
 /// Push the layer(s) of `item`. `blend` overrides the item's own blend mode: inside a transition
@@ -227,6 +364,36 @@ fn push_item(
         }
         return;
     }
+    // Adjustment layer with GPU effects: operates on the composite below it
+    if let Some(pi) = project.item(item.item)
+        && matches!(pi.kind, ItemKind::AdjustmentLayer { .. })
+    {
+        if !opts.effects {
+            return;
+        }
+        let (w, h) = output_size(seq, opts.scale);
+        let cx = crate::effects::FxCtx {
+            t: mt,
+            px_scale: opts.scale,
+            seconds: (t - item.start).seconds(),
+            timecode: "",
+            clip_name: &item.name,
+            project: Some(project),
+            env: None,
+            working: seq.settings.color.working,
+        };
+        let enabled = || item.effects.iter().filter(|e| e.enabled && e.def().is_some_and(|d| !d.intrinsic));
+        let ops: Option<Vec<FxOp>> = enabled().map(|e| FxOp::eval(e, &cx, w, h).filter(FxOp::gpu_ok)).collect();
+        if let Some(ops) = ops
+            && (!ops.is_empty() || bl != Blend::Normal)
+        {
+            // (in sequence pixels, as the CPU applies them; `gpu_adjustment_ok` checked their number)
+            let masks = enabled().map(|e| crate::mask::prepare(&e.masks, mt, opts.scale)).collect();
+            let fx = LayerFx { size: (w as u32, h as u32), decimation: 1, ops, masks, opacity_masks: Vec::new(), color: ColorPipeline::REC709 };
+            out.push(PlanLayer::adjustment(Affine::IDENTITY, op * extra_opacity, bl, Arc::new(fx)));
+        }
+        return;
+    }
     if let Some(chain) = gpu_chain(project, item, opts) {
         let Some(src) = sources.source(item.item) else { return };
         let Some(size) = crate::source_size(project, item.item) else { return };
@@ -237,9 +404,10 @@ fn push_item(
         let cs = crate::colorman::source_space(project, item.item, &frame);
         // log / HDR / wide-gamut media is converted on the CPU (below), and so are blended
         // in-between frames (Frame Blending / Optical Flow on speed-changed clips)
-        let plain =
-            !crate::colorman::needs_management(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
-        if plain && !chain.is_empty() {
+        let plain = gpu_decodes(&seq.settings.color, cs, &frame) && crate::interpolation_blend(item, t, src.info().frame_rate()).is_none();
+        // (the Opacity effect's masks apply with effects off too, like on the CPU)
+        let opacity_masks = item.effect("opacity").filter(|_| item.has_opacity_masks());
+        if plain && (!chain.is_empty() || opacity_masks.is_some()) {
             // GPU effect stage: the working image the CPU would decode (`base_layer`), the
             // effects evaluated for it, placed as `item_layer` places it
             let n = crate::decimation(frame.width as f32, size.0 as f32 * want);
@@ -257,12 +425,19 @@ fn push_item(
                 working: seq.settings.color.working,
             };
             let ops: Option<Vec<FxOp>> = chain.iter().map(|e| FxOp::eval(e, &cx, lw, lh).filter(FxOp::gpu_ok)).collect();
-            if let Some(ops) = ops {
+            let fx = ops.map(|ops| LayerFx {
+                size: (lw as u32, lh as u32),
+                decimation: n as u32,
+                color: seq.settings.color,
+                ops,
+                masks: chain.iter().map(|e| crate::mask::prepare(&e.masks, mt, px_scale)).collect(),
+                opacity_masks: opacity_masks.map(|e| crate::mask::prepare(&e.masks, mt, px_scale)).unwrap_or_default(),
+            });
+            if let Some(fx) = fx.filter(LayerFx::masks_fit_gpu) {
                 let m = Affine::scale(opts.scale as f64, opts.scale as f64)
                     .then_apply(&motion)
                     .then_apply(&Affine::scale(1.0 / px_scale as f64, 1.0 / px_scale as f64));
-                let fx = LayerFx { size: (lw as u32, lh as u32), decimation: n as u32, ops };
-                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)) });
+                out.push(PlanLayer { frame, matrix: m, opacity: op * extra_opacity, blend: bl, fx: Some(Arc::new(fx)), is_adjustment: false });
                 return;
             }
         } else if plain {
@@ -295,11 +470,8 @@ fn near_identity(m: &Affine) -> bool {
 /// A layer's working image with its effects applied, on the CPU (the reference for the GPU
 /// effect stage).
 pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
-    let (w, h, px) = frame.to_linear_f32_decimated(fx.decimation.max(1) as usize);
-    let mut img = crate::Image { w, h, px };
-    for op in &fx.ops {
-        op.apply(&mut img);
-    }
+    let mut img = decode_working(&fx.color, frame, fx.decimation.max(1) as usize);
+    fx.apply(&mut img);
     img
 }
 
@@ -307,21 +479,72 @@ pub fn effect_image(frame: &VideoFrame, fx: &LayerFx) -> crate::Image {
 pub fn execute_cpu(plan: &FramePlan) -> crate::Image {
     match plan {
         FramePlan::Image(img) => img.clone(),
-        FramePlan::Layers { width, height, layers } => {
+        FramePlan::Layers { width, height, layers, color } => {
             let mut canvas = crate::Image::new(*width, *height);
             for l in layers {
-                let src = match &l.fx {
-                    Some(fx) => effect_image(&l.frame, fx),
-                    None => crate::Image { w: l.frame.width as usize, h: l.frame.height as usize, px: l.frame.to_linear_f32() },
+                let src = if l.is_adjustment {
+                    let mut img = canvas.clone();
+                    if let Some(fx) = &l.fx {
+                        fx.apply(&mut img);
+                    }
+                    img
+                } else {
+                    match &l.fx {
+                        Some(fx) => effect_image(&l.frame, fx),
+                        None => decode_working(color, &l.frame, 1),
+                    }
                 };
                 let placed = if l.matrix == Affine::scale(*width as f64, *height as f64) && src.w == 1 && src.h == 1 {
                     crate::Image::filled(*width, *height, src.get(0, 0))
+                } else if l.matrix == Affine::IDENTITY && src.w == *width && src.h == *height {
+                    src
                 } else {
                     src.transformed(*width, *height, &l.matrix)
                 };
                 crate::blend::composite(&mut canvas, &placed, l.opacity, l.blend);
             }
+            crate::colorman::to_display(&mut canvas, color);
             canvas
+        }
+    }
+}
+
+#[cfg(test)]
+mod gpu_decode_tests {
+    use super::*;
+    use filmcraft_color::{ColorInfo, Matrix, Primaries, Range, Transfer, WorkingSpace};
+    use filmcraft_frame::Chroma;
+
+    fn hdr_frame(transfer: Transfer) -> VideoFrame {
+        let p = |n: usize| Arc::new(vec![512u16; n]);
+        VideoFrame {
+            width: 4,
+            height: 2,
+            data: PixelData::Yuv16 { planes: [p(8), p(2), p(2)], chroma: Chroma::C420, bits: 10, alpha: None },
+            color: ColorInfo { matrix: Matrix::Bt2020Ncl, transfer, primaries: Primaries::Bt2020, range: Range::Limited },
+            par: (1, 1),
+            pts: Default::default(),
+        }
+    }
+
+    /// PQ / HLG media is decoded on the GPU where its input transform is exact there (an HDR
+    /// working space); where it needs tone mapping (SDR working spaces) or carries an Interpret
+    /// Footage override it stays on the CPU.
+    #[test]
+    fn hdr_media_is_gpu_decoded_only_where_exact() {
+        let pq = ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 };
+        let hlg = ColorPipeline { working: WorkingSpace::Rec2100Hlg, ..ColorPipeline::REC709 };
+        let wide = ColorPipeline { wide_gamut: true, ..ColorPipeline::REC709 };
+        for t in [Transfer::Pq, Transfer::Hlg] {
+            let f = hdr_frame(t);
+            let cs = ColorSpace::from_info(&f.color);
+            assert!(gpu_decodes(&pq, cs, &f) && gpu_decodes(&hlg, cs, &f), "{t:?} in HDR working spaces");
+            assert!(!gpu_decodes(&ColorPipeline::REC709, cs, &f), "{t:?} into SDR: tone mapped on the CPU");
+            assert!(!gpu_decodes(&wide, cs, &f), "{t:?} into wide-gamut SDR: tone mapped on the CPU");
+            // an override (Interpret Footage) differs from the frame's own description
+            assert!(!gpu_decodes(&pq, ColorSpace::Rec709, &f), "{t:?} interpreted as Rec. 709");
+            // BT.2020 into the BT.2020 working gamut: no matrix
+            assert!(input_matrix(&pq, &f).is_none());
         }
     }
 }

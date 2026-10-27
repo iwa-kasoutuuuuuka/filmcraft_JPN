@@ -23,6 +23,30 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
+/// The active masks as the shaders read them: `MaskInfo` records and the polygon points they
+/// index (never empty, so both can be bound as buffers).
+pub(crate) fn pack(active: &[&FlatMask]) -> (Vec<u8>, Vec<u8>) {
+    let mut infos = Vec::new();
+    let mut pts: Vec<f32> = Vec::new();
+    for m in active {
+        let start = (pts.len() / 2) as u32;
+        pts.extend(m.pts.iter().flatten());
+        for v in [start, m.pts.len() as u32, m.mode.index(), u32::from(m.inverted)] {
+            infos.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [m.feather, m.expansion, m.opacity, 0.0] {
+            infos.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    if infos.is_empty() {
+        infos.resize(32, 0);
+    }
+    if pts.is_empty() {
+        pts.extend([0.0, 0.0]);
+    }
+    (infos, f32_bytes(&pts))
+}
+
 impl GpuMask {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -84,26 +108,12 @@ impl GpuMask {
         for v in [w as u32, h as u32, active.len() as u32, u32::from(mix.is_some())] {
             params.extend_from_slice(&v.to_le_bytes());
         }
-        let mut infos = Vec::new();
-        let mut pts: Vec<f32> = Vec::new();
-        for m in &active {
-            let start = (pts.len() / 2) as u32;
-            pts.extend(m.pts.iter().flatten());
-            for v in [start, m.pts.len() as u32, m.mode.index(), u32::from(m.inverted)] {
-                infos.extend_from_slice(&v.to_le_bytes());
-            }
-            for v in [m.feather, m.expansion, m.opacity, 0.0] {
-                infos.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        if pts.is_empty() {
-            pts.extend([0.0, 0.0]);
-        }
+        let (infos, pts) = pack(&active);
         let d = &self.device;
         let init = |label: &str, contents: &[u8], usage| d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage });
         let ub = init("mask-params", &params, wgpu::BufferUsages::UNIFORM);
         let mb = init("mask-infos", &infos, wgpu::BufferUsages::STORAGE);
-        let pb = init("mask-pts", &f32_bytes(&pts), wgpu::BufferUsages::STORAGE);
+        let pb = init("mask-pts", &pts, wgpu::BufferUsages::STORAGE);
         let dummy = [0.0f32; 4];
         let (o, e) = mix.unwrap_or((&dummy, &dummy));
         let ob = init("mask-original", &f32_bytes(o), wgpu::BufferUsages::STORAGE);

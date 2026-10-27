@@ -4,7 +4,8 @@
 cargo test --workspace                          # everything; oracle tests skip without ffmpeg
 cargo test -p filmcraft-h264                    # one crate
 cargo test --release -p filmcraft-hevc          # codec tests are much faster in release
-cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, wasm)
+cargo xtask ci                                  # all gates (fmt, clippy, tests, layers, assets, parity, wasm)
+cargo xtask parity [--commands]                 # parity report against Premiere 26 → target/parity/
 cargo xtask fixtures                            # pre-generate the ffmpeg fixture matrix
 FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails instead of skipping
 ```
@@ -32,6 +33,7 @@ FILMCRAFT_REQUIRE_ORACLES=1 cargo test --workspace   # CI: missing ffmpeg fails 
 | Voice-over | `crates/engine/src/voiceover_tests.rs`, `crates/ui-egui/tests/voiceover_ui.rs` | synthetic click train lands in `mix_sequence` exactly at R + k·period (pre-roll dropped, exact sample count), punch-in between In/Out (ramp source, every sample checked), one undo step + undo/redo, take numbering, record-arm/targeting track choice, sync/discard/zero-length/locked cases, cue times; UI: right-click Mic → Voice-Over Record Settings dialog (edits persist on OK, Cancel discards), the Mic button starts and stops a take on its track with pre-roll and overlay |
 | Remix | `crates/audio-dsp/src/remix.rs`, `crates/render/src/remix.rs`, `crates/engine/src/remix_tests.rs`, `crates/ui-egui/tests/remix_ui.rs` | generated rhythmic music (Rust-synthesised drums, bass, chord sections at 90–128 BPM, 22.05/44.1/48 kHz): tempo within 0.3 BPM, every beat within 10 ms (measured ≤ 8.9 ms); remix targets from 0.4× to 2.2× the source within one beat (measured ≤ 12 ms at default sliders), every cut on a detected beat, intro and outro kept, pieces ≥ 4 beats, deterministic; silence, tone and noise refused; rendering independent of request cuts, source-exact outside the 20 ms equal-power crossfades, no clicks; the engine's mix equals the source pieces (< 1e-5); undo, redo and revert exact; overlaps refused; Remix Properties dialog and Remix tool drag driven by automation id |
 | Oracle | `crates/*/tests/*oracle*.rs`, `conformance.rs` | compare with ffmpeg/ffprobe (§2) |
+| Real-world media round trips | `crates/engine/tests/real_media_roundtrip.rs` | ffmpeg-made phone / camera / screen media imported, edited and exported through engine commands, judged by ffprobe / ffmpeg: a portrait variable-frame-rate clip keeps orientation, length and A/V sync (a flash and a beep at 2.0 s stay together within a frame); an iPhone-style HEVC Main 10 HLG QuickTime (colour only in the SPS) gives an HLG sequence and an HLG export, and an SDR one on request, both with a picture; a 1366×768 VP9 / Opus screen recording keeps size and sound; a long-GOP H.264 cut mid-GOP exports exactly the source frames (PSNR against the right frame and its neighbours); a download cut short still exports; every export decodes without an ffmpeg error |
 | Robustness / fuzz | `*/tests/robustness.rs`, `*/tests/fuzz.rs` | seeded mutation and truncation of real and synthetic files; nothing may panic |
 | Performance | `*/tests/perf.rs` (`#[ignore]`) | §5 |
 
@@ -311,3 +313,25 @@ At load ~25–60 the same final build plays h264-1080, stack3 and h264-2160 at F
 in 3 of 3 runs (192/0) and render previews 192/0. The 4K fixture needs ~4 cores of decode per
 real-time second (≈160 ms CPU per frame at 170 Mbit/s); the demo project's procedural footage
 ~190 ms per Full-resolution frame.
+
+## 6. Parity report
+
+`cargo xtask parity` measures what can be measured from the repository against Premiere 26 and
+writes `target/parity/parity.{md,json}`:
+
+- **Presence:** every item of Premiere's Video Effects bin (and its Legacy folder), Audio Effects
+  and Video Transitions bin, looked up in the effect registry. The reference lists live next to the
+  registry (`PREMIERE_26_VIDEO_EFFECTS`, `PREMIERE_26_LEGACY_VIDEO_EFFECTS`,
+  `PREMIERE_AUDIO_EFFECTS`, `PREMIERE_26_TRANSITION_COUNTS` in `crates/project`).
+- **GPU:** which present video effects run on the GPU effect stage (`filmcraft_render::gpufx::GPU_EFFECTS`).
+- **Fidelity:** exact / approximate / stub, from `xtask/parity/fidelity.txt`. Anything not listed
+  there is reported as unclassified, so the number never claims more than someone wrote down with
+  its evidence. When you learn that an effect is approximate (or verify one exact), add a line.
+- **Commands** (`--commands`, builds the CLI in release): how many engine commands exist, sit in a
+  menu, have a default shortcut. With a Premiere menu listing (`plan/premiere/menus.txt`,
+  maintainer-local, or `--menus PATH`; one `File > New > Project…` path per line) it also lists
+  which of Premiere's menu items have no command.
+
+`cargo xtask ci` runs `cargo xtask parity --check`, which fails when a Premiere item goes missing
+or the fidelity file names an unknown id, an unknown level, has a duplicate or a line without a
+reason.

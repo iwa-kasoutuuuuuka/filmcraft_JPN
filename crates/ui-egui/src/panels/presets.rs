@@ -43,15 +43,15 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
             action = Some(("presets.apply".to_string(), p.name.clone()));
         }
         resp.context_menu(|ui| {
-            if !p.builtin && ui.button("Delete Preset").clicked() {
+            if !p.builtin && ui.button(crate::i18n::t("Delete Preset", "プリセットを削除")).clicked() {
                 action = Some(("presets.delete".to_string(), p.name.clone()));
                 ui.close();
             }
-            if ui.button("Export Preset…").clicked() {
+            if ui.button(crate::i18n::t("Export Preset…", "プリセットを書き出し…")).clicked() {
                 action = Some(("presets.export".to_string(), p.name.clone()));
                 ui.close();
             }
-            if ui.button("Import Presets…").clicked() {
+            if ui.button(crate::i18n::t("Import Presets…", "プリセットを読み込み…")).clicked() {
                 action = Some(("presets.import".to_string(), String::new()));
                 ui.close();
             }
@@ -90,35 +90,38 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut close = false;
     let mut apply = false;
-    egui::Window::new("Save Preset").open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Name:");
-            let r = ui.text_edit_singleline(&mut d.name);
-            app.auto.add("savePreset.name", r.rect, "Name");
-        });
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new("Type").strong());
-        for (key, label) in [("scale", "Scale"), ("anchorIn", "Anchor to In Point"), ("anchorOut", "Anchor to Out Point"), ("none", "Without keyframes")] {
-            let r = ui.radio(d.keyframes == key, label);
-            app.auto.add(&format!("savePreset.keyframes.{key}"), r.rect, label);
-            if r.clicked() {
-                d.keyframes = key.into();
+    egui::Window::new(crate::i18n::t("Save Preset", "プリセットを保存")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(
+        ctx,
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::t("Name:", "名前:"));
+                let r = ui.text_edit_singleline(&mut d.name);
+                app.auto.add("savePreset.name", r.rect, "Name");
+            });
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(crate::i18n::t("Type", "種類")).strong());
+            for (key, label) in [("scale", "Scale"), ("anchorIn", "Anchor to In Point"), ("anchorOut", "Anchor to Out Point"), ("none", "Without keyframes")] {
+                let r = ui.radio(d.keyframes == key, label);
+                app.auto.add(&format!("savePreset.keyframes.{key}"), r.rect, label);
+                if r.clicked() {
+                    d.keyframes = key.into();
+                }
             }
-        }
-        ui.add_space(4.0);
-        ui.label("Description:");
-        let r = ui.text_edit_multiline(&mut d.description);
-        app.auto.add("savePreset.description", r.rect, "Description");
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let c = ui.button("Cancel");
-            app.auto.add("savePreset.cancel", c.rect, "Cancel");
-            let o = ui.add_enabled(!d.name.trim().is_empty(), egui::Button::new("OK"));
-            app.auto.add("savePreset.ok", o.rect, "OK");
-            apply = o.clicked();
-            close = apply || c.clicked();
-        });
-    });
+            ui.add_space(4.0);
+            ui.label(crate::i18n::t("Description:", "説明:"));
+            let r = ui.text_edit_multiline(&mut d.description);
+            app.auto.add("savePreset.description", r.rect, "Description");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let c = ui.button(crate::i18n::t("Cancel", "キャンセル"));
+                app.auto.add("savePreset.cancel", c.rect, "Cancel");
+                let o = ui.add_enabled(!d.name.trim().is_empty(), egui::Button::new("OK"));
+                app.auto.add("savePreset.ok", o.rect, "OK");
+                apply = o.clicked();
+                close = apply || c.clicked();
+            });
+        },
+    );
     app.ui.save_preset = if close || !open { None } else { Some(d.clone()) };
     if apply {
         let r = app.session.execute(
@@ -126,7 +129,7 @@ pub fn save_dialog(app: &mut FilmcraftApp, ctx: &egui::Context) {
             json!({"clip": d.clip, "effects": d.effects, "name": d.name.trim(), "description": d.description, "keyframes": d.keyframes}),
         );
         match r {
-            Ok(_) => app.ui.status = format!("Saved preset \u{201c}{}\u{201d}", d.name.trim()),
+            Ok(_) => app.ui.status = crate::tf!("Saved preset \u{201c}{}\u{201d}", "プリセット「{}」を保存しました", d.name.trim()),
             Err(e) => app.ui.status = e.to_string(),
         }
     }

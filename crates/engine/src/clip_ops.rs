@@ -1608,11 +1608,10 @@ fn extract_audio(s: &mut Session, p: &Value) -> Result<Value> {
         let stem = std::path::Path::new(&name).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_else(|| name.clone());
         let src = s.media.full_res_source(&s.project, root, &*s.services).ok_or_else(|| EngineError::Other(format!("{name}: media is offline")))?;
         let sr = a.sample_rate.max(8000);
-        let start = range.start.to_units_floor(sr as i64);
-        let frames = (range.end().to_units_floor(sr as i64) - start).max(0) as usize;
+        let (start, frames) = crate::decode_span(range.start, range.end(), i64::from(sr)).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
         let buf = src.audio(start, frames, sr).map_err(|e| EngineError::Other(format!("{name}: {e}")))?;
         let ch = buf.channel_count().max(1);
-        let mut inter = Vec::with_capacity(frames * ch);
+        let mut inter = Vec::with_capacity(frames.saturating_mul(ch).min(1 << 28));
         for i in 0..frames {
             for c in 0..ch {
                 inter.push(buf.channels.get(c).and_then(|x| x.get(i)).copied().unwrap_or(0.0));

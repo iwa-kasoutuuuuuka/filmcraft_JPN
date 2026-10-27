@@ -12,9 +12,9 @@
 //! (isolated tests, adjustment layers) they leave the image unchanged.
 
 mod blur;
-mod color;
+pub(crate) mod color;
 pub(crate) use color::cdl;
-mod distort;
+pub(crate) mod distort;
 mod immersive;
 mod lights;
 mod stylize;
@@ -331,7 +331,10 @@ pub(crate) fn noise3(x: f32, y: f32, z: f32, seed: u64) -> f32 {
     let (xf, yf, zf) = (x - xi, y - yi, z - zi);
     let (xi, yi, zi) = (xi as i64, yi as i64, zi as i64);
     let (u, v, w) = (fade(xf), fade(yf), fade(zf));
-    let g = |dx: i64, dy: i64, dz: i64| grad3(hash_u(xi + dx, yi + dy, zi + dz, seed), xf - dx as f32, yf - dy as f32, zf - dz as f32);
+    // (a huge coordinate saturates the cast: the next lattice cell wraps instead of overflowing)
+    let g = |dx: i64, dy: i64, dz: i64| {
+        grad3(hash_u(xi.wrapping_add(dx), yi.wrapping_add(dy), zi.wrapping_add(dz), seed), xf - dx as f32, yf - dy as f32, zf - dz as f32)
+    };
     let l = |a: f32, b: f32, t: f32| a + (b - a) * t;
     let x00 = l(g(0, 0, 0), g(1, 0, 0), u);
     let x10 = l(g(0, 1, 0), g(1, 1, 0), u);
@@ -459,27 +462,19 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
     };
     match e.effect.as_str() {
         // Adjust / Color / Image Control / Keying / Utility colour
-        "lighting_effects" => color::lighting(img, e, cx),
         "video_limiter" => color::video_limiter(img, e, cx),
         "vignette" => color::vignette(img, e, cx),
         "logo_cutout" => color::logo_cutout(img, e, cx),
         "ultra_key" => color::ultra_key(img, e, cx),
         "track_matte" => color::track_matte(img, e, cx),
         "cineon_converter" => color::cineon(img, e, cx),
-        "noise" | "noise_legacy" => color::noise(img, e, cx),
         // Blur & Sharpen
         "bokeh_blur" => blur::bokeh(img, e, cx),
-        "channel_blur" => blur::channel_blur(img, e, cx),
         "compound_blur" => blur::compound(img, e, cx),
         "focus_blur" => blur::focus(img, e, cx),
-        "reduce_interlace_flicker" => blur::interlace_flicker(img, e, cx),
         "gaussian_blur_legacy" => alias(img, "gaussian_blur"),
         "directional_blur_legacy" => alias(img, "directional_blur"),
         // Distort / Transform / Utility geometry
-        "corner_pin" => distort::corner_pin(img, e, cx),
-        "magnify" | "magnify_legacy" => distort::magnify(img, e, cx),
-        "spherize" => distort::spherize(img, e, cx),
-        "turbulent_displace" => distort::turbulent_displace(img, e, cx),
         "rotate_3d" => distort::rotate_3d(img, e, cx),
         "grow" | "shrink" => distort::grow(img, e, cx),
         "move" => distort::move_fx(img, e, cx),
@@ -489,26 +484,16 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) -> bool {
         "spacer" => distort::spacer(img, e, cx),
         "clone" => distort::clone_fx(img, e, cx),
         "auto_align" => distort::auto_align(img, e, cx),
-        "rounded_crop" => distort::rounded_crop(img, e, cx),
         "mosaic" | "mosaic_legacy" => distort::mosaic(img, e, cx),
-        "twirl_legacy" => alias(img, "twirl"),
         // Lights & Glows
         "echo_glow" => lights::echo_glow(img, e, cx),
-        "edge_glow" => lights::edge_glow(img, e, cx),
         "glint" => lights::glint(img, e, cx),
-        "light_leaks" => lights::light_leaks(img, e, cx),
-        "rgb_split" => lights::rgb_split(img, e, cx),
         "volumetric_rays" => lights::volumetric_rays(img, e, cx),
         "wonder_glow" => lights::wonder_glow(img, e, cx),
-        "lens_flare" => lights::lens_flare(img, e, cx),
-        "alpha_glow" => lights::alpha_glow(img, e, cx),
         // Stylize / Perspective / Generate / Legacy & obsolete generators
         "brush_strokes" => stylize::brush_strokes(img, e, cx),
-        "color_emboss" => stylize::color_emboss(img, e, cx),
-        "roughen_edges" => stylize::roughen_edges(img, e, cx),
         "long_shadow" => stylize::long_shadow(img, e, cx),
         "stroke" => stylize::stroke(img, e, cx),
-        "gradient" => stylize::gradient(img, e, cx),
         "block_dissolve" => stylize::block_dissolve(img, e, cx),
         "gradient_wipe_legacy" => stylize::gradient_wipe(img, e, cx),
         "linear_wipe_legacy" => stylize::linear_wipe(img, e, cx),

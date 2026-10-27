@@ -15,7 +15,7 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 
 | Method | Params | |
 |---|---|---|
-| `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id |
+| `engine.execute` / `ui.menu.invoke` | `{command, params}` | any engine or UI command id. Parameters the command does not take (by its `params` doc) are ignored and listed in the reply's `warnings` (`{"ok": true, "result": …, "warnings": ["ignored unknown parameter(s): volume …"]}`); MCP `command_run` and `filmcraft-cli exec` report them too |
 | `engine.commands` / `ui.menu.list` | – | command registry / menu tree |
 | `ui.inspect` | – | UI state (tool, workspace, dock, timeline view, playback, fps…) |
 | `ui.elements` | `{prefix?}` | every on-screen interactive element: id, label, rect |
@@ -28,13 +28,16 @@ Methods (handlers in `crates/ui-egui/src/control.rs`):
 | `ui.timeline.hit` / `ui.timeline.locate` | `{x,y}` / `{clip, edge?}` | timeline hit-testing |
 | `ui.playback` | `{action: play|stop|toggle, speed?}` | |
 | `ui.screenshot` | `{path?, panel?}` | PNG of the window or one panel; fails after 10 s when no frame is presented (window hidden, display asleep) |
-| `ui.resize`, `ui.focus`, `app.quit` | | `ui.focus` is the only request that activates the app and takes keyboard focus |
+| `ui.resize`, `ui.focus`, `app.quit` | `app.quit`: `{force?}` | `ui.focus` is the only request that activates the app and takes keyboard focus. `app.quit` with unsaved changes opens the Save / Don't Save / Cancel prompt (`quitProject.*`) unless `force` (the changes stay in the recovery journal) |
 | `perf.stats` | – | performance counters (also the command `perf.stats`, so `engine.execute` and MCP `command_run` reach it; headless sessions return the engine part). `decode`: GOP-cache requests / hits / `cacheHitRate`, decoder seeks, samples decoded and skipped while catching up, `draftFrames` (decoded in draft mode), `h264Threads` (frame-threading workers per H.264 decoder), decoder ms (total and per sample), `framesDecoded`, `hardware` (Settings ▸ Playback ▸ Hardware decoding: `enabled`, pictures from hardware decoders `frames` vs `softwareFrames`, `sessions`, `declined` streams, mid-stream `fallbacks`); `playback`: playing, shown / dropped frames and `dropRate` of the current or last play, resolution, `draftDecode` (Settings ▸ Playback ▸ Draft decoding); `frames`: frame-worker jobs, cancelled, `requestHitRate`, `decodeMs` / `renderMs` (mean, p50, p95 of the last 256 jobs), queue, render-cost estimate, cache use; `ui`: fps and frame ms; `process`: CPU seconds; `media`, `jobs`. Counters are cumulative: diff two readings to measure an interval ([performance.md](performance.md)) |
 
 **Focus.** Driving the app never steals the user's keyboard. Started with `--control`, the app opens
 without activating itself. UI requests and screenshots that need a rendered frame bring the window
 forward without making it key (macOS `orderFrontRegardless`), so the user's typing keeps going to
-the app they are in. Only an explicit `ui.focus` activates FilmCraft.
+the app they are in. Only an explicit `ui.focus` activates FilmCraft (restoring a minimized
+window). While the window is minimized, requests that need it laid out (`ui.elements`, `ui.click`,
+`ui.move`, `ui.drag`, `ui.scroll`, `ui.key`, `ui.type`, `ui.screenshot`, `ui.timeline.*`) fail at
+once with an error saying so; engine commands, `ui.inspect` and `ui.set` keep working.
 
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
 `project.item.<id>`, `effects.item.gaussian_blur`, `panel.tab.Timeline`, `program.transport.playback.toggle`.
@@ -52,6 +55,13 @@ record|soloSafe|output|input|fx.<n>|send.<n>|meter|name>` (popup entries below t
 `mixer.A1.mode.Touch`, `mixer.A1.fx.0.studio_reverb`), `mixer.showEffects`, `mixer.transport.<cmd>`,
 `clipMixer.A1.<fader|pan|mute|solo|keyframe|value>`, `timeline.track.A1.keyframes[.<lane>|.clip]`,
 `timeline.track.A1.lane[.kf.<n>]`, `audioGain.<set|adjust|normalizeMax|normalizeAll|ok|cancel|peak>`.
+
+Audio plug-ins (VST3, Windows; [ADR 0002](adr/0002-audio-plugin-hosting.md)): `audioPlugins.scan`
+(search the VST3 folders, load and describe each plug-in; returns `plugins` with `effect` ids
+`vst3.<uid>` and their `params`, plus `failures` and `folders`), `audioPlugins.list` (the last scan).
+A scanned plug-in is an audio effect like any other: `effects.apply {effect: "vst3.<uid>" | name}`,
+`mixer.addInsert {effect}`, `effects.setParam {param: "p<id>", value: 0…1}` (normalised, keyframable),
+`effects.list {folder: "Audio Effects/VST3"}`. UI id: `effects.scanPlugins`.
 
 Essential Sound: `essentialSound.inspect`, `essentialSound.setType {type: dialogue|music|sfx|ambience}`,
 `essentialSound.clearType`, `essentialSound.set {key, value}` or `{values: {key: value}}` (keys such as
@@ -104,6 +114,7 @@ Ctrl), `Ctrl` (macOS ⌃), `Alt`, `Shift`. The dialog (Edit ▸ Keyboard Shortcu
 `filmcraft-cli mcp` serves MCP on stdio: headless (in-process session; `--demo` / `--project p.fcproj`)
 or `--bridge 127.0.0.1:9876` to drive the running app. Tools: `command_list`, `command_run`,
 `project_inspect`, `sequence_inspect`, `media_import`, `render_frame`, `ui_inspect`, `ui_elements`,
-`ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_screenshot`, `ui_control`. `.mcp.json` registers both.
+`ui_click`, `ui_drag`, `ui_key`, `ui_type`, `ui_screenshot`, `ui_control`. `.mcp.json` (Claude Code) and
+`.agents/mcp_config.json` (Antigravity) register both.
 
 Time is in ticks (254 016 000 000 per second); commands also accept `seconds`, `frame` or `timecode`.

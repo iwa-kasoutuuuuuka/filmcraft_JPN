@@ -1,0 +1,24 @@
+[package]
+name = "filmcraft-av1enc"
+description = "AV1 encoder for FilmCraft's export path: a safe wrapper around the pure-Rust rav1e encoder (no assembly)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["threads"]
+threads = ["rav1e/threading"]
+
+[dependencies]
+filmcraft-bitstream = { workspace = true }
+thiserror = { workspace = true }
+# Pure Rust: no `asm` feature (nasm / cc), no binaries, no git2 build dependency.
+rav1e = { version = "0.8", default-features = false }
+
+[dev-dependencies]
+# our own decoder checks the round trip (dev-dependencies are exempt from the L0 rule)
+filmcraft-av1 = { workspace = true }

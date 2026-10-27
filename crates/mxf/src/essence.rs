@@ -151,7 +151,7 @@ impl PictureInfo {
     /// Frame height: field-based layouts code the height of one field.
     pub fn frame_height(&self) -> u32 {
         let h = if self.display_height > 0 { self.display_height } else { self.stored_height };
-        if matches!(self.frame_layout, 1 | 3) { h * 2 } else { h }
+        if matches!(self.frame_layout, 1 | 3) { h.saturating_mul(2) } else { h }
     }
     pub fn frame_width(&self) -> u32 {
         if self.display_width > 0 { self.display_width } else { self.stored_width }
@@ -188,7 +188,7 @@ pub struct SoundInfo {
 impl SoundInfo {
     /// Bytes per sample frame of plain PCM.
     pub fn frame_bytes(&self) -> usize {
-        if self.block_align > 0 { self.block_align as usize } else { self.channels.max(1) as usize * (self.bits as usize).div_ceil(8).max(1) }
+        if self.block_align > 0 { self.block_align as usize } else { (self.channels.max(1) as usize).saturating_mul((self.bits as usize).div_ceil(8).max(1)) }
     }
 }
 

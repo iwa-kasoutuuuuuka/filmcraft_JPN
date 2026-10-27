@@ -30,9 +30,12 @@ the control channel and MCP agents can do the same.
 | `transcript.select` | Mark In/Out around words `from..=to` (frame-snapped outward) and move the playhead there. |
 | `transcript.extract` / `transcript.lift` | Extract (ripple) or lift the words' frames on the targeted tracks. |
 | `transcript.renameSpeaker` | Rename a speaker by name (every transcript) or by index in one `item`. |
-| `transcript.removeFillers` | Ripple-delete filler words (`fillers`, default um/uh/erm/…; phrases such as "you know" allowed). |
+| `transcript.removeFillers` | Ripple-delete filler words (`fillers`, default um/uh/erm/… and the Japanese えー/えーと/えっと/あのー/うーん/…; phrases such as "you know" allowed). A filler without spaces also matches the recogniser's pieces that spell it (え / ー / と), with 〜 read as ー and long vowels collapsed. あの, まあ and なんか are not defaults: they are often real words. |
+| `transcript.findRepeats` / `transcript.removeRepeats` | Retakes ("so the the plan", "we went to the — we went to the store", 今日は、今日はですね): list (`removed` and `kept` text, word indices `from`/`to`, sequence `start`/`end` seconds) or ripple-delete the abandoned takes, keeping the last one (one undo step). Takes are compared within one speaker's run of words without a pause of `maxGapSeconds` (default 2), case, punctuation and filler words ignored, by spelling (今日 / は matches 今日は). A one- or two-word phrase must be repeated immediately; longer phrases may have a few abandoned words before the restart. Single-character words (の, は) and split kana pairs (いろ / いろ) never count on their own. `minWords` (1–8, default 1), `maxWords` (up to 32, default 8). Intentional repeats ("very very") are removed too: check with `findRepeats` first. |
 | `transcript.removePauses` | Ripple-delete pauses longer than `minSeconds`, keeping `keepSeconds` of air on both sides. |
 | `transcript.createCaptions` | Lay the words out as captions on a new caption track (`maxChars`, `lines`, `minSeconds`, `maxSeconds`, `gapFrames`). |
+| `transcript.createTranslatedCaptions` | Sequence ▸ Transcript ▸ Create English Captions…: the speech of the sequence's audio clips translated into English by the model (Whisper's translate task, multilingual models only) as a new caption track "English" (language `en`). The clips' transcripts are not changed. Translation quality follows the model: `whisper-base` gets the gist, not every detail. |
+| `captions.setStyle {"speakerColors": true}` | Colour each speaker's captions: the first speaker keeps the track colour, the next ones get yellow, cyan, green, pink, orange, violet (Text panel ▸ Captions ▸ Speaker colours). |
 | `transcript.models` / `transcript.downloadModel` | List the speech models (size, licence, installed) / download one. |
 
 ## Speech recognition
@@ -43,12 +46,31 @@ with timestamp decoding, language detection and word times from cross-attention 
 `filmcraft_speech::whisper` module docs). Speakers are labelled by clustering per-chunk MFCC
 statistics (`filmcraft_speech::diarize`); no model is involved.
 
-Both are **optional features**, off by default and never built for the web:
+Both are Cargo features. The `filmcraft` and `filmcraft-cli` apps turn them **on by default**
+(`cargo build --no-default-features` builds without them); the library crates leave them off, and
+they are never built for the web:
 
 - `whisper` (on `filmcraft-speech`, `filmcraft-engine`, and the `filmcraft` / `filmcraft-cli`
   apps, where it also enables downloads): candle inference.
 - `download` (`speech-download` on the engine): HTTPS downloads with rustls + RustCrypto and the
   operating system's certificate verifier.
+
+The language is detected from the speech by default (Settings ▸ Media Analysis & Transcription ▸
+Enable language auto-detection); switch that off to always use the Default language.
+
+**Japanese and Chinese** are written without spaces, so there every token of the recogniser is a
+word with its own time (今日は / 東 / 京 / の / 天 / 気; a character split over two tokens stays
+whole, punctuation stays with the word before it). Text made from words has no spaces inside such
+text (`Transcript::text`, captions), captions count those characters as two columns of `maxChars`,
+and 。？！ end a sentence like . ? !. Caption lines break between phrases, by the usual
+line-breaking conventions and without a dictionary (`may_break_between`): a word starting with
+hiragana stays with the word before it (particles, verb endings), kanji stays with kanji and
+katakana with katakana, nothing breaks right after お / ご, and a line may always break after
+punctuation. A phrase wider than a line is broken at the line width. There is no morphological
+analysis, so a phrase the rules do not cover (two hiragana words in a row) can still be split.
+
+Models are kept in `<data dir>/models` of the session's data directory (`--data-dir`,
+`FILMCRAFT_DATA_DIR`, else the per-user application data folder).
 
 Without `whisper`, `transcript.generate` fails with "speech-to-text is not available in this build";
 transcripts can still be imported with `transcript.set` and edited with every other command. Hosts
@@ -75,6 +97,19 @@ reference `.txt`) are in `target/fixtures/speech/`; it reports the word error ra
 prints SKIPPED. Measured on 2026-10-01: `whisper-tiny`, English, 12.2 % WER over 797 words of
 the local speech samples (LibriSpeech read speech and dialogue clips) (about 9.5 minutes for the run in a release build on an
 Apple-silicon laptop CPU).
+
+Japanese, measured on 2026-10-16 through the CLI (`transcript.generate`, then
+`transcript.createCaptions`) on a 17 s narration synthesised with the Windows Japanese voice
+(Haruka) from a known script, release build on a Ryzen 9 9950X3D: `whisper-base` 2.9 % character
+error rate in 3 s (並べます → ならべます, 三つ → 3つ), `whisper-small` 1.0 % in 7 s (三つ → 3つ);
+the language was detected as Japanese with `auto` as well.
+
+Japanese caption lines break between phrases (see `may_break_between`): particles and okurigana
+stay with the word before them, kanji with kanji, katakana with katakana, and Latin letters or
+digits with the katakana / kanji after them (MP4ファイル, 4K動画). A phrase wider than a
+line is broken after its last particle (わたしは / きのう, ものを / たべました; `soft_break_between`)
+rather than at the line width. There is no morphological analysis, so a line can still break in an
+odd place now and then.
 
 ## Limits
 

@@ -31,7 +31,7 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
 
 pub use caption::{Caption, CaptionAlign, CaptionAnchor, CaptionFormat, CaptionStyle, CaptionTrack, plain_text};
-pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, effect_defs, find_effect};
+pub use effect::{EffectDef, EffectInstance, EffectKind, ParamDef, ParamKind, PluginRef, all_effect_defs, effect_defs, find_effect};
 pub use essential::{AudioType, EssentialSound};
 pub use find::{FindOp, FindQuery, FindRow, SearchBin};
 pub use graphic_design::{CharStyle, GraphicMeta, LayerExtra, Pin, PinTarget, Roll, RollMode, SourceGraphic, StyleRun};
@@ -838,6 +838,40 @@ impl Default for SequenceSettings {
     }
 }
 
+/// Largest sequence frame width or height.
+pub const MAX_FRAME_SIZE: u32 = 16_384;
+/// Supported sequence audio sample rates.
+pub const SAMPLE_RATES: std::ops::RangeInclusive<u32> = 8_000..=192_000;
+/// Most video (and, separately, audio) tracks one sequence may have.
+pub const MAX_TRACKS: usize = 99;
+
+impl SequenceSettings {
+    /// Why these settings cannot be used (frame size outside 1..=[`MAX_FRAME_SIZE`], sample rate
+    /// outside [`SAMPLE_RATES`]).
+    pub fn check(&self) -> Result<(), String> {
+        for (k, v) in [("width", self.width), ("height", self.height)] {
+            if !(1..=MAX_FRAME_SIZE).contains(&v) {
+                return Err(format!("{k} must be 1–{MAX_FRAME_SIZE}, got {v}"));
+            }
+        }
+        if !SAMPLE_RATES.contains(&self.sample_rate) {
+            return Err(format!("sampleRate must be {}–{}, got {}", SAMPLE_RATES.start(), SAMPLE_RATES.end(), self.sample_rate));
+        }
+        Ok(())
+    }
+
+    /// Clamp damaged values (from a hand-edited or corrupt project file) into the ranges
+    /// [`SequenceSettings::check`] accepts; an unusable frame rate falls back to the default.
+    pub fn sanitize(&mut self) {
+        self.width = self.width.clamp(1, MAX_FRAME_SIZE);
+        self.height = self.height.clamp(1, MAX_FRAME_SIZE);
+        self.sample_rate = self.sample_rate.clamp(*SAMPLE_RATES.start(), *SAMPLE_RATES.end());
+        if self.frame_rate.num <= 0 || self.frame_rate.den <= 0 || self.frame_rate.frame_duration() <= Tick::ZERO {
+            self.frame_rate = SequenceSettings::default().frame_rate;
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sequence {
     pub settings: SequenceSettings,
@@ -1098,6 +1132,17 @@ pub struct Project {
     /// project item. Schema v12.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_graphics: BTreeMap<ItemId, SourceGraphic>,
+    /// The sequences open in the Timeline when the project was last saved (tab order) and the
+    /// active one, restored on open. Set by saving, not by edits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_sequences: Option<OpenSequences>,
+}
+
+/// Timeline tabs saved with a project ([`Project::open_sequences`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpenSequences {
+    pub tabs: Vec<ItemId>,
+    pub active: Option<ItemId>,
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.
@@ -1132,6 +1177,7 @@ impl Project {
             transcripts: BTreeMap::new(),
             search_bins: Vec::new(),
             source_graphics: BTreeMap::new(),
+            open_sequences: None,
         }
     }
 
@@ -1198,7 +1244,7 @@ impl Project {
         self.items.values().filter(|i| matches!(i.kind, ItemKind::Sequence(_)))
     }
 
-    /// Create an empty sequence with `v` video and `a` audio tracks.
+    /// Create an empty sequence with `v` video and `a` audio tracks (each at most [`MAX_TRACKS`]).
     pub fn new_sequence(&mut self, name: &str, settings: SequenceSettings, v: usize, a: usize, bin: Option<BinId>) -> ItemId {
         let mut seq = Sequence {
             settings,
@@ -1218,11 +1264,11 @@ impl Project {
             merged: None,
             split: SplitMarks::default(),
         };
-        for i in 0..v {
+        for i in 0..v.min(MAX_TRACKS) {
             let id = TrackId(self.alloc_id());
             seq.video_tracks.push(Track::new(id, TrackKind::Video, format!("Video {}", i + 1)));
         }
-        for i in 0..a {
+        for i in 0..a.min(MAX_TRACKS) {
             let id = TrackId(self.alloc_id());
             seq.audio_tracks.push(Track::new(id, TrackKind::Audio, format!("Audio {}", i + 1)));
         }
@@ -1329,7 +1375,19 @@ impl Project {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
     pub fn from_json(s: &str) -> Result<Project, String> {
-        serde_json::from_str(s).map_err(|e| e.to_string())
+        let mut p: Project = serde_json::from_str(s).map_err(|e| e.to_string())?;
+        p.sanitize();
+        Ok(p)
+    }
+
+    /// Repair values a damaged project file could carry that would crash the renderer or the
+    /// edit maths (see [`SequenceSettings::sanitize`]). Call after loading a project.
+    pub fn sanitize(&mut self) {
+        for it in self.items.values_mut() {
+            if let Some(q) = it.as_sequence_mut() {
+                q.settings.sanitize();
+            }
+        }
     }
 }
 
@@ -1384,6 +1442,30 @@ mod tests {
         );
         let seq = p.new_sequence("Sequence 01", SequenceSettings::default(), 3, 3, None);
         (p, clip, seq)
+    }
+
+    #[test]
+    fn hostile_sequence_settings_are_sanitized_on_load() {
+        let (mut p, _, seq) = demo_project();
+        let st = &mut p.sequence_mut(seq).unwrap().settings;
+        st.width = 0;
+        st.height = u32::MAX;
+        st.sample_rate = 0;
+        st.frame_rate = FrameRate { num: 0, den: 0 };
+        assert!(st.check().is_err());
+        let q = Project::from_json(&p.to_json()).unwrap();
+        let st = &q.sequence(seq).unwrap().settings;
+        assert_eq!((st.width, st.height, st.sample_rate), (1, MAX_FRAME_SIZE, 8_000));
+        assert!(st.frame_rate.frame_duration() > Tick::ZERO);
+        st.check().unwrap();
+    }
+
+    #[test]
+    fn new_sequence_caps_track_counts() {
+        let mut p = Project::new("T");
+        let seq = p.new_sequence("S", SequenceSettings::default(), usize::MAX, usize::MAX, None);
+        let q = p.sequence(seq).unwrap();
+        assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (MAX_TRACKS, MAX_TRACKS));
     }
 
     #[test]

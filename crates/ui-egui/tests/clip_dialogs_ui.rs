@@ -1,6 +1,6 @@
 //! Headless UI tests of the Edit / Clip / File menu dialogs (M3.10): Paste Attributes, Make
 //! Subclip, Frame Hold Options, Modify ▸ Audio Channels, the Close Project prompt, and nested
-//! menus (Clip ▸ Video Options ▸ Time Interpolation).
+//! menus (Clip ▸ Video Options ▸ Time Interpolation), and New ▸ Color Matte.
 
 use std::sync::mpsc::{Sender, channel};
 
@@ -238,4 +238,266 @@ fn subclip_in_the_source_monitor_and_project_menu() {
     } else {
         panic!("subclip row not shown: {:?}", d.ok("ui.elements", json!({"prefix": "project.item."})));
     }
+}
+
+/// File ▸ New ▸ Color Matte… asks for the colour (picker or hex), name, size and duration; it used
+/// to make a grey matte straight away with no way to pick a colour (issue #29).
+#[test]
+fn color_matte_dialog_picks_the_colour() {
+    let mut d = Driver::new();
+    d.menu("file.newColorMatte");
+    for id in ["colorMatte.color", "colorMatte.colorHex", "colorMatte.name", "colorMatte.width", "colorMatte.height", "colorMatte.seconds", "colorMatte.ok"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.ok("ui.set", json!({"clipDialog": {"color": "#ff8000", "name": "Orange", "seconds": 3.0}}));
+    d.click("colorMatte.ok");
+    assert!(d.app().ui.clip_dialog.is_none(), "OK closes the dialog");
+    let it = d.app().session.project.items.values().find(|i| i.name == "Orange").cloned().expect("matte made");
+    let rate = d.app().session.active_sequence().unwrap().settings.frame_rate;
+    let src = d.app().session.media.cached(it.id).expect("matte source");
+    let f = src.video_frame(filmcraft_media::FrameRequest::full(rate.tick_of(1))).unwrap().to_rgba8();
+    assert_eq!(&f[..3], &[255, 128, 0], "the picked colour");
+}
+
+/// The other New Item commands open a dialog too (name, frame size, duration), as in Premiere;
+/// they used to create the item with defaults straight away.
+#[test]
+fn synthetic_item_dialogs_set_name_size_and_duration() {
+    let mut d = Driver::new();
+    for (cmd, pre) in [
+        ("file.newAdjustmentLayer", "adjustmentLayer"),
+        ("file.newBarsAndTone", "barsAndTone"),
+        ("file.newBlackVideo", "blackVideo"),
+        ("file.newCountingLeader", "countingLeader"),
+        ("file.newTransparentVideo", "transparentVideo"),
+    ] {
+        d.menu(cmd);
+        for f in ["name", "width", "height", "seconds", "ok"] {
+            assert!(d.has(&format!("{pre}.{f}")), "{pre}.{f}");
+        }
+        let name = format!("My {pre}");
+        d.ok("ui.set", json!({"clipDialog": {"name": name, "width": 640, "height": 360, "seconds": 2.0}}));
+        d.click(&format!("{pre}.ok"));
+        assert!(d.app().ui.clip_dialog.is_none(), "{cmd}: OK closes the dialog");
+        let it = d.app().session.project.items.values().find(|i| i.name == name).cloned().unwrap_or_else(|| panic!("{cmd} made {name}"));
+        let size = match &it.kind {
+            ItemKind::AdjustmentLayer { width, height, .. } => (*width, *height),
+            _ => d.app().session.media.cached(it.id).and_then(|s| s.info().video.as_ref().map(|v| (v.width, v.height))).unwrap_or_default(),
+        };
+        assert_eq!(size, (640, 360), "{cmd}");
+    }
+}
+
+/// Closing the window with unsaved changes asks first (it used to close at once, and the next
+/// launch offered the changes as if FilmCraft had crashed): Cancel keeps the app and the changes;
+/// Don't Save discards them (and their recovery journal) and lets the window close.
+#[test]
+fn closing_the_window_with_unsaved_changes_asks_first() {
+    let mut d = Driver::new();
+    let close = |d: &mut Driver| {
+        d.harness.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        d.frames(3);
+    };
+    d.exec("file.newBin", json!({"name": "Unsaved"}));
+    assert!(d.app().session.is_dirty());
+    close(&mut d);
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.command.clone()).as_deref(), Some("app.quit"), "the prompt opened");
+    for id in ["quitProject.save", "quitProject.dontSave", "quitProject.cancel"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("quitProject.cancel");
+    assert!(d.app().ui.clip_dialog.is_none() && d.app().session.is_dirty(), "Cancel keeps the changes");
+    close(&mut d);
+    d.click("quitProject.dontSave");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(!d.app().session.is_dirty(), "Don't Save discards the changes");
+    // nothing unsaved now: closing does not ask again
+    close(&mut d);
+    assert!(d.app().ui.clip_dialog.is_none());
+}
+
+/// Clip ▸ Speed/Duration… (Ctrl+R) and the Properties panel's speed button open the dialog; it used
+/// to run with no parameters (silently resetting the speed to 100 %), the timeline's context menu
+/// set 50 % straight away, and the Properties button did nothing.
+#[test]
+fn speed_duration_dialog_sets_speed_reverse_and_interpolation() {
+    let mut d = Driver::new();
+    let c = d.v1(0);
+    d.exec("timeline.select", json!({"clips": [c.id.0]}));
+    d.exec("clip.speedDuration", json!({"speed": 50.0}));
+    d.frames(2);
+    // the menu command opens the dialog with the clip's current speed instead of resetting it
+    d.menu("clip.speedDuration");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().unwrap().params["speed"], json!(50.0));
+    assert!((d.v1(0).speed - 0.5).abs() < 1e-9, "opening the dialog changes nothing");
+    for id in ["speedDuration.speed", "speedDuration.reverse", "speedDuration.ripple", "speedDuration.interpolation.frameBlending", "speedDuration.ok"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.ok("ui.set", json!({"clipDialog": {"speed": 200.0}}));
+    d.click("speedDuration.reverse");
+    d.click("speedDuration.interpolation.frameBlending");
+    d.click("speedDuration.ok");
+    let got = d.v1(0);
+    assert!((got.speed - 2.0).abs() < 1e-9 && got.reverse, "speed {} reverse {}", got.speed, got.reverse);
+    assert_eq!(got.time_interpolation, filmcraft_engine::project::TimeInterpolation::FrameBlending);
+    // Cancel leaves the clip alone
+    d.menu("clip.speedDuration");
+    d.ok("ui.set", json!({"clipDialog": {"speed": 10.0}}));
+    d.click("speedDuration.cancel");
+    assert!((d.v1(0).speed - 2.0).abs() < 1e-9);
+    // the Properties panel's speed button opens the same dialog
+    d.ok("ui.panel.show", json!({"panel": "Properties"}));
+    d.frames(3);
+    d.click("properties.speed");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.command.clone()).as_deref(), Some("clip.speedDuration"));
+    d.click("speedDuration.cancel");
+    // its Crop keyframe buttons toggle animation (they did nothing)
+    d.click("properties.section.Crop");
+    if !d.has("properties.crop.left.animate") {
+        d.click("properties.section.Crop");
+    }
+    d.click("properties.crop.left.animate");
+    let animated = d.v1(0).effect("crop").and_then(|e| e.param("left")).is_some_and(|p| p.is_animated());
+    assert!(animated, "Crop ▸ Left is animated");
+}
+
+/// New Project / Open / Demo Project on a project with unsaved changes ask first; New Project used
+/// to replace it at once, dropping the changes and their recovery journal.
+#[test]
+fn replacing_a_project_with_unsaved_changes_asks_first() {
+    let mut d = Driver::new();
+    d.exec("file.newBin", json!({"name": "Unsaved work"}));
+    let has_bin = |d: &mut Driver| d.app().session.project.root.children.iter().any(|c| format!("{c:?}").contains("Unsaved work"));
+    assert!(d.app().session.is_dirty() && has_bin(&mut d));
+    d.menu("file.newProject");
+    assert_eq!(d.app().ui.clip_dialog.as_ref().map(|x| x.command.clone()).as_deref(), Some("app.replaceProject"), "the prompt opened");
+    assert!(has_bin(&mut d), "nothing replaced yet");
+    for id in ["replaceProject.save", "replaceProject.dontSave", "replaceProject.cancel"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("replaceProject.cancel");
+    assert!(d.app().ui.clip_dialog.is_none() && has_bin(&mut d) && d.app().session.is_dirty(), "Cancel keeps the project");
+    d.menu("file.openDemoProject");
+    d.click("replaceProject.dontSave");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(!has_bin(&mut d) && !d.app().session.is_dirty(), "Don't Save: the demo project replaced it");
+    // nothing unsaved: no prompt
+    d.menu("file.newProject");
+    assert!(d.app().ui.clip_dialog.is_none());
+    assert!(d.app().session.project.items.is_empty(), "a new, empty project");
+}
+
+/// File ▸ New ▸ Sequence… opens the New Sequence dialog (presets, name, size, rate, tracks); it
+/// used to make a 1080p 23.976 sequence straight away.
+#[test]
+fn new_sequence_dialog_picks_a_preset() {
+    let mut d = Driver::new();
+    let n0 = d.app().session.project.sequences().count();
+    d.menu("file.newSequence");
+    assert_eq!(d.app().session.project.sequences().count(), n0, "nothing made before OK");
+    for id in ["newSequence.name", "newSequence.preset.0", "newSequence.width", "newSequence.fps", "newSequence.video", "newSequence.ok"] {
+        assert!(d.has(id), "{id}");
+    }
+    d.click("newSequence.preset.8"); // Vertical 1080×1920 30
+    d.ok("ui.set", json!({"clipDialog": {"name": "Reel", "video": 2}}));
+    d.click("newSequence.ok");
+    let seq = d.app().session.active_sequence().unwrap().clone();
+    assert_eq!((seq.settings.width, seq.settings.height), (1080, 1920));
+    assert!((seq.settings.frame_rate.as_f64() - 30.0).abs() < 1e-6);
+    assert_eq!(seq.video_tracks.len(), 2);
+    assert_eq!(d.app().session.project.sequences().count(), n0 + 1);
+}
+
+/// File ▸ Export ▸ EDL / OTIO / FCP XML / FCPXML ask where to save (they failed with "need
+/// `path`" from the menu), and Export ▸ Media… opens Export mode.
+#[test]
+fn export_menu_items_ask_where_or_open_export_mode() {
+    let mut d = Driver::new();
+    let dir = std::env::temp_dir().join(format!("fc-menu-export-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.clone();
+    d.app().hooks.pick_save_as = Some(Box::new(move |_filter: &str, exts: &[&str], suggested: &str| {
+        assert!(suggested.ends_with(&format!(".{}", exts[0])), "{suggested} {exts:?}");
+        Some(target.join(suggested).to_string_lossy().to_string())
+    }));
+    for id in ["file.exportEdl", "file.exportOtio", "file.exportFcp7Xml", "file.exportFcpxml"] {
+        let r = d.ok("ui.menu.invoke", json!({"id": id}));
+        let path = r["path"].as_str().map(str::to_string).or_else(|| r.as_str().map(str::to_string));
+        assert!(std::fs::read_dir(&dir).unwrap().count() > 0, "{id} wrote a file: {r} {path:?}");
+    }
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 4, "one file per format");
+    d.menu("file.exportMedia");
+    assert_eq!(format!("{:?}", d.app().ui.mode), "Export");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Nest…, Add Tracks…, Sequence Settings…, Add Chapter Marker… and Add New Caption Track… open
+/// their dialogs from the menus (they ran straight away with defaults); the timeline's context
+/// menu goes through the same router, and right-clicking a clip selects it first.
+#[test]
+fn ellipsis_menu_items_open_their_dialogs() {
+    let mut d = Driver::new();
+    let seq_id = d.app().session.state.active_sequence.unwrap();
+    let rev = |d: &mut Driver| d.app().session.revision;
+    // Add Tracks: 2 video, 1 audio
+    let (v0, a0) = {
+        let q = d.app().session.active_sequence().unwrap();
+        (q.video_tracks.len(), q.audio_tracks.len())
+    };
+    let r0 = rev(&mut d);
+    d.menu("sequence.addTracks");
+    assert_eq!(rev(&mut d), r0, "nothing added before OK");
+    d.ok("ui.set", json!({"menuDialog": {"video": 2, "audio": 1}}));
+    d.click("addTracks.ok");
+    let q = d.app().session.active_sequence().unwrap();
+    assert_eq!((q.video_tracks.len(), q.audio_tracks.len()), (v0 + 2, a0 + 1));
+    // Sequence Settings: rename
+    d.menu("sequence.settings");
+    d.ok("ui.set", json!({"menuDialog": {"name": "Final Cut"}}));
+    d.click("sequenceSettings.ok");
+    assert_eq!(d.app().session.project.item(seq_id).unwrap().name, "Final Cut");
+    // Chapter marker with a name
+    d.menu("markers.addChapter");
+    d.ok("ui.set", json!({"menuDialog": {"name": "Intro"}}));
+    d.click("chapterMarker.ok");
+    assert!(d.app().session.active_sequence().unwrap().markers.iter().any(|m| m.name == "Intro"));
+    // Caption track: CEA-708
+    d.menu("captions.newTrack");
+    d.ok("ui.set", json!({"menuDialog": {"format": "CEA-708"}}));
+    d.click("captionTrack.ok");
+    let list = d.exec("captions.list", json!({}));
+    assert!(list.to_string().contains("708"), "{list}");
+    // right-click an unselected clip, then Nest… from the context menu: the dialog names it
+    let (a, b) = (d.v1(0).id.0, d.v1(1).id.0);
+    d.exec("timeline.select", json!({"clips": [a]}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": format!("timeline.clip.{b}"), "button": "right"}));
+    d.frames(3);
+    assert!(d.app().session.state.selection.iter().any(|c| c.0 == b), "right-click selected the clip");
+    assert!(!d.app().session.state.selection.iter().any(|c| c.0 == a), "and only it");
+    d.click("timeline.context.clip.nest");
+    d.ok("ui.set", json!({"menuDialog": {"name": "Opening"}}));
+    d.click("nest.ok");
+    assert!(d.app().session.project.sequences().any(|i| i.name == "Opening"), "nested as named");
+}
+
+/// While a dialog is open, shortcuts do not reach the panels behind it (Space started playback
+/// and Delete removed the selected clips under an open dialog).
+#[test]
+fn shortcuts_do_not_reach_the_panels_behind_a_dialog() {
+    let mut d = Driver::new();
+    let c = d.v1(1).id.0;
+    d.exec("timeline.select", json!({"clips": [c]}));
+    d.ok("ui.set", json!({"focused": "Timeline"}));
+    d.menu("sequence.addTracks");
+    d.ok("ui.key", json!({"key": "Delete"}));
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(3);
+    assert!(d.app().session.active_sequence().unwrap().find_item(filmcraft_engine::project::ClipId(c)).is_some(), "Delete did not reach the timeline");
+    assert!(!d.app().playback.playing, "Space did not start playback");
+    // closed: the keys work again
+    d.click("addTracks.cancel");
+    d.ok("ui.key", json!({"key": "Space"}));
+    d.frames(2);
+    assert!(d.app().playback.playing);
 }

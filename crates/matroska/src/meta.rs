@@ -234,7 +234,11 @@ pub(crate) fn parse_cues(d: &[u8], out: &mut Vec<CuePoint>) {
     }
 }
 
-fn parse_chapter(d: &[u8]) -> Chapter {
+/// Deepest ChapterAtom / SimpleTag nesting followed; deeper levels are dropped
+/// (hostile files can nest unknown-size elements until the stack overflows).
+const MAX_NESTING: usize = 64;
+
+fn parse_chapter(d: &[u8], depth: usize) -> Chapter {
     let mut c = Chapter { uid: 0, string_uid: None, start_ns: 0, end_ns: None, hidden: false, enabled: true, displays: Vec::new(), children: Vec::new() };
     for e in Children::new(d) {
         match e.id {
@@ -260,7 +264,7 @@ fn parse_chapter(d: &[u8]) -> Chapter {
                 }
                 c.displays.push(disp);
             }
-            CHAPTER_ATOM => c.children.push(parse_chapter(e.data)),
+            CHAPTER_ATOM if depth < MAX_NESTING => c.children.push(parse_chapter(e.data, depth + 1)),
             _ => {}
         }
     }
@@ -276,7 +280,7 @@ pub(crate) fn parse_chapters(d: &[u8], out: &mut Vec<Edition>) {
                 EDITION_FLAG_HIDDEN => edition.hidden = uint(e.data) != 0,
                 EDITION_FLAG_DEFAULT => edition.default = uint(e.data) != 0,
                 EDITION_FLAG_ORDERED => edition.ordered = uint(e.data) != 0,
-                CHAPTER_ATOM => edition.chapters.push(parse_chapter(e.data)),
+                CHAPTER_ATOM => edition.chapters.push(parse_chapter(e.data, 0)),
                 _ => {}
             }
         }
@@ -284,7 +288,7 @@ pub(crate) fn parse_chapters(d: &[u8], out: &mut Vec<Edition>) {
     }
 }
 
-fn parse_simple_tag(d: &[u8]) -> SimpleTag {
+fn parse_simple_tag(d: &[u8], depth: usize) -> SimpleTag {
     let mut t = SimpleTag { name: String::new(), language: "und".into(), default: true, string: None, binary: None, children: Vec::new() };
     for e in Children::new(d) {
         match e.id {
@@ -293,7 +297,7 @@ fn parse_simple_tag(d: &[u8]) -> SimpleTag {
             TAG_DEFAULT => t.default = uint(e.data) != 0,
             TAG_STRING => t.string = Some(string(e.data)),
             TAG_BINARY => t.binary = Some(e.data.to_vec()),
-            SIMPLE_TAG => t.children.push(parse_simple_tag(e.data)),
+            SIMPLE_TAG if depth < MAX_NESTING => t.children.push(parse_simple_tag(e.data, depth + 1)),
             _ => {}
         }
     }
@@ -318,7 +322,7 @@ pub(crate) fn parse_tags(d: &[u8], out: &mut Vec<Tag>) {
                         }
                     }
                 }
-                SIMPLE_TAG => tag.simple.push(parse_simple_tag(e.data)),
+                SIMPLE_TAG => tag.simple.push(parse_simple_tag(e.data, 0)),
                 _ => {}
             }
         }
@@ -536,4 +540,35 @@ pub(crate) fn parse_tracks(d: &[u8], timestamp_scale: u64) -> Vec<Track> {
         out.push(t);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: deeply nested unknown-size ChapterAtoms / SimpleTags overflowed the stack.
+    #[test]
+    fn deep_nesting_is_bounded() {
+        let mut chapters = vec![0x45, 0xB9, 0xFF];
+        for _ in 0..200_000 {
+            chapters.extend_from_slice(&[0xB6, 0xFF]);
+        }
+        let mut eds = Vec::new();
+        parse_chapters(&chapters, &mut eds);
+        let mut depth = 0;
+        let mut c = eds.first().and_then(|e| e.chapters.first());
+        while let Some(ch) = c {
+            depth += 1;
+            c = ch.children.first();
+        }
+        assert_eq!(depth, MAX_NESTING + 1);
+
+        let mut tags = vec![0x73, 0x73, 0xFF];
+        for _ in 0..200_000 {
+            tags.extend_from_slice(&[0x67, 0xC8, 0xFF]);
+        }
+        let mut out = Vec::new();
+        parse_tags(&tags, &mut out);
+        assert_eq!(out.len(), 1);
+    }
 }

@@ -84,13 +84,7 @@ fn color_from(entry: &filmcraft_isobmff::SampleEntry, w: u32, h: u32) -> ColorIn
         if let Some(t) = Transfer::from_code(t as u8) {
             c.transfer = t;
         }
-        c.primaries = match p {
-            9 => Primaries::Bt2020,
-            12 => Primaries::P3D65,
-            5 => Primaries::Bt601_625,
-            6 => Primaries::Bt601_525,
-            _ => Primaries::Bt709,
-        };
+        c.primaries = Primaries::from_code(p as u8).unwrap_or(Primaries::Bt709);
         if full {
             c.range = Range::Full;
         }
@@ -132,12 +126,18 @@ impl Mp4Source {
             // A rate that rounds to zero (one sample per huge duration) can't be divided by.
             let rate = if rate.num > 0 && rate.den > 0 { rate } else { FrameRate::default() };
             color = color_from(entry, w, h);
-            if entry
+            let colr = entry
                 .video
                 .as_ref()
-                .is_some_and(|v| matches!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { .. } | filmcraft_isobmff::ColorInfo::Nclc { .. })))
-            {
+                .is_some_and(|v| matches!(v.color, Some(filmcraft_isobmff::ColorInfo::Nclx { .. } | filmcraft_isobmff::ColorInfo::Nclc { .. })));
+            if colr {
                 explicit_color = Some(color);
+            }
+            // H.264 / HEVC without a `colr` box (ffmpeg's QuickTime writer, many cameras): the
+            // colour description of the stream's own SPS (VUI), as the decoder reports it
+            let nal = crate::hw::NalStreamInfo::from_entry(entry).and_then(|r| r.ok());
+            if !colr && let Some(n) = &nal {
+                color = n.color;
             }
             let bitrate = (t.samples.iter().map(|s| s.size as u64).sum::<u64>() * 8 * t.timescale as u64).checked_div(t.duration);
             let mut info = VideoStreamInfo {
@@ -146,7 +146,19 @@ impl Mp4Source {
                 frame_rate: rate,
                 par: vp.pixel_aspect.unwrap_or((1, 1)),
                 codec: codec_label(&entry.codec),
-                pixel_format: pixfmt_label(&entry.codec),
+                pixel_format: match (&nal, pixfmt_label(&entry.codec)) {
+                    // HEVC: chroma format and bit depth from its SPS
+                    (Some(n), l) if l.is_empty() => {
+                        let sub = match n.chroma_format_idc {
+                            0 => "4:0:0",
+                            2 => "4:2:2",
+                            3 => "4:4:4",
+                            _ => "4:2:0",
+                        };
+                        format!("YUV {sub} {}-bit", n.bit_depth_luma)
+                    }
+                    (_, l) => l,
+                },
                 color,
                 has_alpha: matches!(&entry.codec, CodecConfig::ProRes { fourcc } if fourcc.0 == *b"ap4h" || fourcc.0 == *b"ap4x"),
                 bitrate,

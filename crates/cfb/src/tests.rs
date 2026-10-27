@@ -199,3 +199,35 @@ fn mutation_never_panics_or_hangs() {
         }
     }
 }
+
+/// Regression: a directory chain looping on itself was only stopped after `fat.len()` steps; with
+/// 109 4 KiB FAT sectors that copied ~457 MB out of a 450 KB file.
+#[test]
+fn looping_chain_is_bounded_by_the_file() {
+    const SS: usize = 4096;
+    const N_FAT: usize = 109;
+    let put = |b: &mut [u8], at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    let mut b = vec![0u8; SS * (1 + N_FAT + 1)];
+    b[..8].copy_from_slice(&SIGNATURE);
+    b[24..26].copy_from_slice(&0x3Eu16.to_le_bytes());
+    b[26..28].copy_from_slice(&4u16.to_le_bytes());
+    b[28..30].copy_from_slice(&0xFFFEu16.to_le_bytes());
+    b[30..32].copy_from_slice(&12u16.to_le_bytes());
+    b[32..34].copy_from_slice(&6u16.to_le_bytes());
+    put(&mut b, 44, N_FAT as u32);
+    put(&mut b, 48, N_FAT as u32); // directory: the sector after the FAT
+    put(&mut b, 56, MINI_STREAM_CUTOFF);
+    put(&mut b, 60, ENDOFCHAIN);
+    put(&mut b, 68, ENDOFCHAIN);
+    for i in 0..109 {
+        put(&mut b, 76 + i * 4, i as u32);
+    }
+    // FAT: FAT sectors marked, every other entry points at the directory sector (a loop)
+    for i in 0..N_FAT * SS / 4 {
+        put(&mut b, SS + i * 4, if i < N_FAT { FATSECT } else { N_FAT as u32 });
+    }
+    let t = std::time::Instant::now();
+    let r = CompoundFile::open(&b);
+    assert!(matches!(r, Err(Error::Invalid(ref m)) if m.contains("loops")), "{r:?}");
+    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+}

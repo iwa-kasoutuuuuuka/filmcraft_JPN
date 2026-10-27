@@ -609,7 +609,14 @@ fn camera_keys_cut_and_select() {
     let keys: Vec<(String, String)> =
         s.shortcuts.bindings.iter().filter(|b| b.command.starts_with("multicam.")).map(|b| (b.command.clone(), b.keys.clone())).collect();
     assert!(keys.contains(&("multicam.selectCamera1".into(), "1".into())), "{keys:?}");
-    assert!(keys.contains(&("multicam.cutToCamera9".into(), "Ctrl+9".into())), "{keys:?}");
+    // off the Mac `Ctrl+9` is the same key as `Cmd+9` (Toggle All Audio Targets), so the camera cut
+    // moves to the first free Ctrl+Alt chord
+    let cut9 = keys.iter().find(|(c, _)| c == "multicam.cutToCamera9").map(|(_, k)| k.as_str());
+    if crate::shortcuts::Platform::current().is_mac() {
+        assert_eq!(cut9, Some("Ctrl+9"), "{keys:?}");
+    } else {
+        assert!(cut9.is_some_and(|k| k.starts_with("Ctrl+Alt+") && k.ends_with('9')), "{keys:?}");
+    }
 }
 
 /// Colour of camera `k` (0-based) in the many-angle tests: distinct reds and greens.

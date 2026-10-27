@@ -279,6 +279,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         Some(m) => Some(TrackMethod::from_name(m).ok_or_else(|| bad("masks.set", format!("unknown tracking method `{m}`")))?),
         None => None,
     };
+    if path.as_ref().is_some_and(|path| path.len() < 3 && path.closed) {
+        return Err(bad("masks.set", "a mask needs at least 3 vertices"));
+    }
     let name = str_p(p, "name").map(str::to_string);
     let inverted = bool_p(p, "inverted");
     let nums: Vec<(&str, f64)> = ["feather", "opacity", "expansion"].into_iter().filter_map(|k| f64_p(p, k).map(|v| (k, v))).collect();
@@ -366,23 +369,30 @@ fn add_vertex(s: &mut Session, p: &Value) -> Result<Value> {
     let after = u64_p(p, "after").ok_or_else(|| bad("masks.addVertex", "need `after`"))? as usize;
     let at = p.get("at").and_then(pt).ok_or_else(|| bad("masks.addVertex", "need `at`"))?;
     edit_mask(s, p, "Add Mask Vertex", move |m, t| {
-        if m.path.is_animated() && m.path.keyframes.len() > 1 {
+        let n = m.path_at(t).vertices.len();
+        if after >= n {
+            return Err(bad("masks.addVertex", format!("`after` must be a vertex index below {n}")));
+        }
+        let animated = m.path.is_animated() && m.path.keyframes.len() > 1;
+        if animated {
             // keep every keyframe interpolable: insert the vertex into all of them
             for k in &mut m.path.keyframes {
                 if let ParamValue::Path(path) = &mut k.value {
-                    let i = (after + 1).min(path.vertices.len());
-                    let a = path.vertices[after.min(path.vertices.len() - 1)].p;
-                    let b = path.vertices[i % path.vertices.len()].p;
-                    path.vertices.insert(i, MaskVertex::corner(a.lerp(b, 0.5)));
+                    let len = path.vertices.len();
+                    let i = (after + 1).min(len);
+                    let (Some(a), Some(b)) = (path.vertices.get(after.min(len.saturating_sub(1))), path.vertices.get(i.checked_rem(len).unwrap_or(0))) else {
+                        continue;
+                    };
+                    let mid = a.p.lerp(b.p, 0.5);
+                    path.vertices.insert(i, MaskVertex::corner(mid));
                 }
             }
         }
         let mut path = m.path_at(t);
         let i = (after + 1).min(path.vertices.len());
-        if m.path.keyframes.len() > 1 {
-            path.vertices[i] = MaskVertex::corner(at);
-        } else {
-            path.vertices.insert(i, MaskVertex::corner(at));
+        match path.vertices.get_mut(i) {
+            Some(v) if animated => *v = MaskVertex::corner(at),
+            _ => path.vertices.insert(i, MaskVertex::corner(at)),
         }
         set_path_at(m, t, path);
         Ok(())

@@ -75,11 +75,15 @@ pub struct Options {
     pub diarize: bool,
     /// Upper bound for the number of speakers found.
     pub max_speakers: usize,
+    /// Translate the speech into English instead of writing it down in its own language
+    /// (Whisper's translate task; multilingual models only). The words are English, timed to the
+    /// speech they translate (roughly: a translation does not follow the speech word by word).
+    pub translate: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { language: None, diarize: true, max_speakers: 6 }
+        Self { language: None, diarize: true, max_speakers: 6, translate: false }
     }
 }
 

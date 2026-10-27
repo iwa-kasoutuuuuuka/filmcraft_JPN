@@ -528,7 +528,8 @@ pub struct AudioFileSource {
 
 impl AudioFileSource {
     pub fn decode(name: &str, bytes: Arc<[u8]>) -> Result<Self> {
-        let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        // a FLAC stream is recognised by its signature whatever the file is called
+        let ext = if is_flac(&bytes) { "flac".to_string() } else { name.rsplit('.').next().unwrap_or("").to_ascii_lowercase() };
         let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes.clone())), Default::default());
         let mut hint = Hint::new();
         hint.with_extension(&ext);
@@ -598,8 +599,13 @@ impl MediaSource for AudioFileSource {
 
 pub fn opener(name: &str, bytes: Arc<[u8]>) -> Option<std::result::Result<SharedSource, MediaError>> {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if !matches!(ext.as_str(), "mp3" | "mp2" | "flac" | "ogg" | "oga" | "aif" | "aiff" | "aifc") {
+    if !matches!(ext.as_str(), "mp3" | "mp2" | "flac" | "ogg" | "oga" | "aif" | "aiff" | "aifc") && !is_flac(&bytes) {
         return None;
     }
     Some(AudioFileSource::decode(name, bytes).map(|s| Arc::new(s) as SharedSource).map_err(Into::into))
+}
+
+/// A native FLAC stream starts with the `fLaC` signature (RFC 9639 §6).
+fn is_flac(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"fLaC")
 }

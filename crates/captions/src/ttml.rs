@@ -195,13 +195,21 @@ fn attr<'a>(n: roxmltree::Node<'a, '_>, local: &str) -> Option<&'a str> {
     n.attributes().find(|a| a.name() == local).map(|a| a.value())
 }
 
+/// Largest `frameRate` / `subFrameRate` honoured.
+const MAX_RATE: i64 = 1000;
+/// Largest numerator / denominator of `frameRateMultiplier` honoured (1000 1001 is NTSC).
+const MAX_RATE_FACTOR: i64 = 100_000;
+/// Largest magnitude of a parsed time (about 9 years), far from `i64` overflow when offsets add up.
+const MAX_TIME: i128 = 1 << 56;
+
 fn timing(root: roxmltree::Node) -> Timing {
-    let base = attr(root, "frameRate").and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(30);
-    let (mn, md) = attr(root, "frameRateMultiplier").and_then(parse_ratio).unwrap_or((1, 1));
-    let rate = FrameRate::new(base * mn, md);
-    let sub = attr(root, "subFrameRate").and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(1);
+    // documents are untrusted: keep rates in a range where the tick arithmetic cannot overflow
+    let base = attr(root, "frameRate").and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(30).min(MAX_RATE);
+    let (mn, md) = attr(root, "frameRateMultiplier").and_then(parse_ratio).map_or((1, 1), |(n, d)| (n.min(MAX_RATE_FACTOR), d.min(MAX_RATE_FACTOR)));
+    let rate = FrameRate::new(base.saturating_mul(mn), md);
+    let sub = attr(root, "subFrameRate").and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(1).min(MAX_RATE);
     let tick_rate = attr(root, "tickRate").and_then(|v| v.trim().parse::<i64>().ok()).filter(|v| *v > 0).unwrap_or(if attr(root, "frameRate").is_some() {
-        base * sub
+        base.saturating_mul(sub)
     } else {
         1
     });
@@ -210,14 +218,17 @@ fn timing(root: roxmltree::Node) -> Timing {
 
 /// Seconds as an exact decimal string → ticks.
 fn decimal_ticks(int: &str, frac: &str, unit_ticks: i128) -> Option<i128> {
+    if int.len() > 15 || !int.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     let i: i128 = if int.is_empty() { 0 } else { int.parse().ok()? };
-    let mut t = i * unit_ticks;
+    let mut t = i.checked_mul(unit_ticks)?;
     if !frac.is_empty() {
         if frac.len() > 12 || !frac.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
         let f: i128 = frac.parse().ok()?;
-        t += f * unit_ticks / 10i128.pow(frac.len() as u32);
+        t = t.checked_add(f.checked_mul(unit_ticks)? / 10i128.pow(frac.len() as u32))?;
     }
     Some(t)
 }
@@ -246,9 +257,9 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
             let sub: i128 = if fs.is_empty() { 0 } else { num(fs)? };
             // frames at the effective rate; sub-frames divide a frame
             let ft = tm.rate.tick_of(1).0 as i128;
-            t += frames * ft + sub * ft / tm.sub_frame_rate.max(1) as i128;
+            t = t.checked_add(frames.checked_mul(ft)?)?.checked_add(sub.checked_mul(ft)? / tm.sub_frame_rate.max(1) as i128)?;
         }
-        return Some(Tick(t as i64));
+        return Some(Tick(t.clamp(-MAX_TIME, MAX_TIME) as i64));
     }
     let unit_start = s.find(|c: char| c.is_ascii_alphabetic())?;
     let (v, unit) = s.split_at(unit_start);
@@ -265,15 +276,15 @@ fn parse_time(s: &str, tm: Timing) -> Option<Tick> {
             let n: i128 = vi.parse().ok()?;
             let fd = tm.rate.tick_of(1).0 as i128;
             let whole = tm.rate.tick_of(n as i64).0 as i128;
-            whole + decimal_ticks("0", vf, fd)?
+            whole.checked_add(decimal_ticks("0", vf, fd)?)?
         }
         "t" => {
             let n: i128 = vi.parse().ok()?;
-            n * tps / tm.tick_rate.max(1) as i128
+            n.checked_mul(tps)? / tm.tick_rate.max(1) as i128
         }
         _ => return None,
     };
-    Some(Tick(t as i64))
+    Some(Tick(t.clamp(-MAX_TIME, MAX_TIME) as i64))
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -411,10 +422,11 @@ fn times(n: roxmltree::Node, parent: Tick, tm: &Timing, doc: &mut Document) -> (
         }
         t
     };
-    let begin = p("begin", doc).map(|b| parent + b);
+    let add = |a: Tick, b: Tick| Tick(a.0.saturating_add(b.0));
+    let begin = p("begin", doc).map(|b| add(parent, b));
     let end = match (p("end", doc), p("dur", doc)) {
-        (Some(e), _) => Some(parent + e),
-        (None, Some(d)) => Some(begin.unwrap_or(parent) + d),
+        (Some(e), _) => Some(add(parent, e)),
+        (None, Some(d)) => Some(add(begin.unwrap_or(parent), d)),
         _ => None,
     };
     (begin, end)
@@ -476,6 +488,24 @@ mod tests {
 
     fn tm(rate: FrameRate) -> Timing {
         Timing { rate, base: rate.timecode_base(), sub_frame_rate: 1, tick_rate: 1 }
+    }
+
+    /// Regression: huge frame rates, multipliers, sub-frame rates and time values overflowed the
+    /// tick arithmetic, and nested begins added up past i64.
+    #[test]
+    fn hostile_rates_and_times_do_not_overflow() {
+        let t = tm(FrameRate::FPS_25);
+        assert_eq!(parse_time("00:00:99999999999999999999999999999999999999", t), None);
+        assert!(parse_time("999999999999999h", t).is_some_and(|v| v.0.unsigned_abs() <= 1 << 56));
+        let x = r#"<?xml version="1.0"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttp="http://www.w3.org/ns/ttml#parameter" ttp:frameRate="9223372036854775807" ttp:frameRateMultiplier="9223372036854775807 1" ttp:subFrameRate="9223372036854775807">
+ <body><div begin="999999999999999h"><div begin="999999999999999h"><div begin="999999999999999h">
+  <p begin="999999999999999h" dur="999999999999999h">x</p>
+  <p begin="00:00:00:999999.999999">y</p>
+ </div></div></div></body>
+</tt>"#;
+        let r = std::panic::catch_unwind(|| parse(x).map(|d| d.cues.len()));
+        assert!(r.is_ok());
     }
 
     #[test]

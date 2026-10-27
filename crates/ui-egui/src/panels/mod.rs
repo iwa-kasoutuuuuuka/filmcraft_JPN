@@ -83,7 +83,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect)
         PanelKind::ReferenceMonitor => reference::show(app, ui, rect),
         PanelKind::Text => text::show(app, ui, rect),
         PanelKind::EssentialSound => essential_sound::show(app, ui, rect),
-        other => crate::dock::placeholder(ui, rect, &app.tokens, &format!("{} — coming in a later milestone", other.title())),
+        other => crate::dock::placeholder(
+            ui,
+            rect,
+            &app.tokens,
+            &crate::tf!("{} — coming in a later milestone", "{} — 今後のマイルストーンで対応予定", other.title()),
+        ),
     }
 }
 
@@ -184,23 +189,23 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(190.0);
-            if ui.button("Close Panel").clicked() {
+            if ui.button(crate::i18n::t("Close Panel", "パネルを閉じる")).clicked() {
                 app.ui.dock.close(p);
                 close = true;
             }
-            if ui.button("Maximize Frame").clicked() {
+            if ui.button(crate::i18n::t("Maximize Frame", "フレームを最大化")).clicked() {
                 app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![p], active: 0 };
                 close = true;
             }
-            if ui.button("Restore Workspace").clicked() {
+            if ui.button(crate::i18n::t("Restore Workspace", "ワークスペースを復元")).clicked() {
                 let w = app.ui.workspace.clone();
                 app.set_workspace(&w);
                 close = true;
             }
             if p == PanelKind::Timeline {
                 ui.separator();
-                ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Video Thumbnails");
-                ui.checkbox(&mut app.ui.timeline.show_waveforms, "Audio Waveforms");
+                ui.checkbox(&mut app.ui.timeline.show_thumbnails, crate::i18n::t("Video Thumbnails", "ビデオサムネール"));
+                ui.checkbox(&mut app.ui.timeline.show_waveforms, crate::i18n::t("Audio Waveforms", "オーディオ波形"));
             }
             if p == PanelKind::Project {
                 ui.separator();

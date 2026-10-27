@@ -208,6 +208,68 @@ fn plan_matches_reference_renderer() {
     }
 }
 
+/// Masked effects and Opacity masks of a media clip stay GPU layers: the plan carries the masks
+/// flattened for the working image, and running it gives the reference renderer's picture.
+#[test]
+fn plan_keeps_masked_effects_as_gpu_layers() {
+    use filmcraft_geom::Vec2;
+    use filmcraft_project::{Mask, MaskMode, MaskPath};
+    let (mut p, red, ocean, seq, map) = setup();
+    let bottom = place(&mut p, seq, 0, ocean, 0, 48);
+    let top = place(&mut p, seq, 1, red, 0, 48);
+    let (sw, sh) = {
+        let s = p.sequence(seq).unwrap();
+        (s.settings.width as f64, s.settings.height as f64)
+    };
+    let mut blur = filmcraft_project::find_effect("gaussian_blur").unwrap().instance();
+    blur.params.get_mut("blurriness").unwrap().value = ParamValue::Float(30.0);
+    let mut spot = Mask::new("spot", MaskPath::ellipse(Vec2::new(sw * 0.4, sh * 0.5), Vec2::new(sw * 0.25, sh * 0.3)));
+    spot.feather.value = ParamValue::Float(12.0);
+    blur.masks.push(spot.clone());
+    let mut hole = Mask::new("hole", MaskPath::rect(sw * 0.3, sh * 0.3, sw * 0.5, sh * 0.6));
+    hole.mode = MaskMode::Subtract;
+    blur.masks.push(hole);
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(bottom).unwrap();
+        it.effects.push(blur);
+        let (_, it) = s.find_item_mut(top).unwrap();
+        it.effect_mut("opacity").unwrap().masks.push(spot);
+        it.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
+    }
+    let r = FrameRate::FPS_24;
+    for scale in [1.0, 0.5] {
+        let opts = RenderOptions { scale, ..Default::default() };
+        let reference = render_sequence(&p, seq, r.tick_of(12), opts, &map);
+        let plan = plan::plan_frame(&p, seq, r.tick_of(12), opts, &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("masked clips should be GPU-drawable") };
+        let fx: Vec<&plan::LayerFx> = layers.iter().filter_map(|l| l.fx.as_deref()).collect();
+        assert_eq!(fx.len(), 2, "both clips run the effect stage");
+        assert!(fx[0].masks.len() == 1 && fx[0].masks[0].len() == 2 && fx[0].opacity_masks.is_empty());
+        assert!(fx[1].ops.is_empty() && fx[1].opacity_masks.len() == 1);
+        let got = plan::execute_cpu(&plan);
+        assert_eq!((got.w, got.h), (reference.w, reference.h));
+        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(max < 0.02, "scale {scale}: max diff {max}");
+    }
+    // a mask with more points than the GPU evaluates per pixel: that clip is a CPU image again
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(top).unwrap();
+        let pts: Vec<Vec2> = (0..plan::MAX_GPU_MASK_POINTS + 8)
+            .map(|i| Vec2::new(sw * 0.5 + (i as f64 * 0.37).cos() * sw * 0.3, sh * 0.5 + (i as f64 * 0.37).sin() * sh * 0.3))
+            .collect();
+        it.effect_mut("opacity").unwrap().masks.push(Mask::new("many", MaskPath::polygon(&pts)));
+    }
+    let opts = RenderOptions::default();
+    let plan = plan::plan_frame(&p, seq, r.tick_of(12), opts, &map);
+    let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("layers") };
+    assert_eq!(layers.iter().filter(|l| l.fx.is_some()).count(), 1, "the clip with too many mask points is rendered on the CPU");
+    let (got, reference) = (plan::execute_cpu(&plan), render_sequence(&p, seq, r.tick_of(12), opts, &map));
+    let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(max < 0.02, "max diff {max}");
+}
+
 /// A project with a 4 s bars-and-tone clip (1 kHz at −20 dBFS) on A1, with extra audio effects.
 fn tone_with(effects: &[(&str, &[(&str, f64)])]) -> (Project, ItemId, SourceMap) {
     let mut p = Project::new("fx");
@@ -348,5 +410,169 @@ fn draft_reduced_resolution_plans_carry_decimated_yuv() {
             // the Y'CbCr-code mean differs from a linear-light mean by a little on gradients
             assert!(max < if draft { 0.03 } else { 1e-5 }, "scale {scale}, draft {draft}: max diff {max}");
         }
+    }
+}
+
+/// Every GPU-capable effect's CPU twin (`FxOp::apply`, what the GPU pass is tested against) must be
+/// what `effects::apply` actually renders, or GPU and CPU frames disagree (Ultra Key once went to the
+/// GPU with a simplified twin while the CPU ran the full `vfx::color::ultra_key`).
+#[test]
+fn gpu_effect_twins_match_the_cpu_path() {
+    let (w, h) = (23usize, 9usize);
+    let mut img = Image::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let f = x as f32 / (w - 1) as f32;
+            let c = match x % 4 {
+                0 => [f, 0.8 * (1.0 - f), 0.3],
+                1 => [1.4 * f, 1.1 * f, 0.2],
+                2 => [0.1, 0.75, 0.05],
+                _ => [f, f, f],
+            };
+            let a = [1.0, 0.6, 0.0][y % 3];
+            img.px[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[c[0] * a, c[1] * a, c[2] * a, a]);
+        }
+    }
+    let cx = crate::effects::FxCtx {
+        t: Tick::ZERO,
+        px_scale: 1.0,
+        seconds: 0.0,
+        timecode: "",
+        clip_name: "",
+        project: None,
+        env: None,
+        working: filmcraft_color::WorkingSpace::Rec709,
+    };
+    for id in crate::gpufx::GPU_EFFECTS {
+        let e = filmcraft_project::find_effect(id).unwrap_or_else(|| panic!("{id}")).instance();
+        let Some(op) = crate::gpufx::FxOp::eval(&e, &cx, w, h) else { continue };
+        let mut twin = img.clone();
+        op.apply(&mut twin);
+        let mut cpu = img.clone();
+        crate::effects::apply(&mut cpu, &e, &cx);
+        let worst = twin.px.iter().zip(&cpu.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(worst < 1e-5, "{id}: twin differs from effects::apply by {worst}");
+    }
+}
+
+/// HDR and wide-gamut sequences are planned for the GPU too: BT.709 media is decoded there and
+/// converted into the working gamut (`plan::input_matrix`), effects run in the working space, and
+/// the plan converts for the monitor at the end. Run on the CPU (the GPU's reference), the plan
+/// gives the frame `render_sequence` gives.
+#[test]
+fn hdr_and_wide_gamut_sequences_plan_for_the_gpu() {
+    use filmcraft_color::{ColorPipeline, WorkingSpace};
+    for color in [
+        ColorPipeline { working: WorkingSpace::Rec2100Pq, ..ColorPipeline::REC709 },
+        ColorPipeline { working: WorkingSpace::Rec2100Hlg, ..ColorPipeline::REC709 },
+        ColorPipeline { wide_gamut: true, ..ColorPipeline::REC709 },
+    ] {
+        let (mut p, red, ocean, seq, map) = setup();
+        place(&mut p, seq, 0, ocean, 0, 48);
+        let top = place(&mut p, seq, 1, red, 0, 48);
+        {
+            let s = p.sequence_mut(seq).unwrap();
+            s.settings.color = color;
+            let it = s.video_tracks[1].items.iter_mut().find(|i| i.id == top).unwrap();
+            let mut l = filmcraft_project::find_effect("lumetri").unwrap().instance();
+            for (k, v) in [("exposure", 0.8), ("contrast", 30.0), ("saturation", 140.0)] {
+                l.params.get_mut(k).unwrap().value = ParamValue::Float(v);
+            }
+            it.effects.push(l);
+            if let Some(o) = it.effect_mut("opacity").and_then(|o| o.params.get_mut("opacity")) {
+                o.value = ParamValue::Float(60.0);
+            }
+        }
+        let t = Tick(1000);
+        let plan = plan::plan_frame(&p, seq, t, RenderOptions::default(), &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("{color:?}: GPU-drawable") };
+        assert!(layers.iter().any(|l| l.fx.as_ref().is_some_and(|f| !f.ops.is_empty())), "{color:?}: Lumetri on the GPU");
+        let cpu = render_sequence(&p, seq, t, RenderOptions::default(), &map);
+        let via_plan = plan::execute_cpu(&plan);
+        let worst = cpu.px.iter().zip(&via_plan.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(worst < 4e-3, "{color:?}: plan differs from render_sequence by {worst}");
+    }
+}
+
+/// Clips with the GPU3 effects (Noise, Drop Shadow, warps, Generate) are planned as GPU effect
+/// layers, at full and half resolution, and the plan run on the CPU gives `render_sequence`'s frame.
+#[test]
+fn gpu3_effects_plan_as_gpu_layers() {
+    let (mut p, red, ocean, seq, map) = setup();
+    place(&mut p, seq, 0, ocean, 0, 48);
+    let top = place(&mut p, seq, 1, red, 0, 48);
+    let fx = |id: &str, params: &[(&str, f64)]| {
+        let mut e = filmcraft_project::find_effect(id).unwrap().instance();
+        for (k, v) in params {
+            e.params.get_mut(*k).unwrap().value = ParamValue::Float(*v);
+        }
+        e
+    };
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(top).unwrap();
+        it.effects.push(fx("noise", &[("amount", 25.0)]));
+        it.effects.push(fx("twirl", &[("angle", 90.0)]));
+        it.effects.push(fx("drop_shadow", &[("distance", 20.0), ("softness", 30.0)]));
+        it.effects.push(fx("grid", &[("opacity", 40.0)]));
+        it.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
+    }
+    let r = FrameRate::FPS_24;
+    for scale in [1.0, 0.5] {
+        let opts = RenderOptions { scale, ..Default::default() };
+        let plan = plan::plan_frame(&p, seq, r.tick_of(12), opts, &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("GPU3 effects should be GPU-drawable") };
+        let fx: Vec<&plan::LayerFx> = layers.iter().filter_map(|l| l.fx.as_deref()).collect();
+        assert_eq!(fx.len(), 1, "the clip runs the effect stage");
+        assert_eq!(fx[0].ops.len(), 4);
+        let got = plan::execute_cpu(&plan);
+        let reference = render_sequence(&p, seq, r.tick_of(12), opts, &map);
+        assert_eq!((got.w, got.h), (reference.w, reference.h));
+        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(max < 0.02, "scale {scale}: max diff {max}");
+    }
+}
+
+/// Clips with GPU4 effects (glows, Turbulent Displace, Median, Channel Blur, Roughen Edges…) are
+/// planned as GPU effect layers, at full and half resolution, and the plan run on the CPU gives
+/// `render_sequence`'s frame.
+#[test]
+fn gpu4_effects_plan_as_gpu_layers() {
+    let (mut p, red, ocean, seq, map) = setup();
+    place(&mut p, seq, 0, ocean, 0, 48);
+    let top = place(&mut p, seq, 1, red, 0, 48);
+    let fx = |id: &str, params: &[(&str, f64)]| {
+        let mut e = filmcraft_project::find_effect(id).unwrap().instance();
+        for (k, v) in params {
+            e.params.get_mut(*k).unwrap().value = ParamValue::Float(*v);
+        }
+        e
+    };
+    let ids = ["edge_glow", "turbulent_displace", "median", "channel_blur", "roughen_edges", "lens_flare", "reduce_interlace_flicker"];
+    {
+        let s = p.sequence_mut(seq).unwrap();
+        let (_, it) = s.find_item_mut(top).unwrap();
+        it.effects.push(fx("edge_glow", &[("radius", 12.0)]));
+        it.effects.push(fx("turbulent_displace", &[("amount", 20.0)]));
+        it.effects.push(fx("median", &[("radius", 2.0)]));
+        it.effects.push(fx("channel_blur", &[("red", 8.0)]));
+        it.effects.push(fx("roughen_edges", &[("border", 10.0)]));
+        it.effects.push(fx("lens_flare", &[]));
+        it.effects.push(fx("reduce_interlace_flicker", &[("softness", 2.0)]));
+        it.effect_mut("motion").unwrap().params.get_mut("scale").unwrap().value = ParamValue::Float(60.0);
+    }
+    let r = FrameRate::FPS_24;
+    for scale in [1.0, 0.5] {
+        let opts = RenderOptions { scale, ..Default::default() };
+        let plan = plan::plan_frame(&p, seq, r.tick_of(12), opts, &map);
+        let plan::FramePlan::Layers { layers, .. } = &plan else { panic!("GPU4 effects should be GPU-drawable") };
+        let fx: Vec<&plan::LayerFx> = layers.iter().filter_map(|l| l.fx.as_deref()).collect();
+        assert_eq!(fx.len(), 1, "the clip runs the effect stage");
+        assert_eq!(fx[0].ops.len(), ids.len());
+        let got = plan::execute_cpu(&plan);
+        let reference = render_sequence(&p, seq, r.tick_of(12), opts, &map);
+        assert_eq!((got.w, got.h), (reference.w, reference.h));
+        let max = got.px.iter().zip(&reference.px).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(max < 0.02, "scale {scale}: max diff {max}");
     }
 }

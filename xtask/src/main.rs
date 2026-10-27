@@ -15,6 +15,7 @@
 //! - `ci`: fmt check, clippy -D warnings, tests, layers, assets, wasm.
 
 mod ico;
+mod parity;
 mod version;
 
 use std::process::{Command, ExitCode};
@@ -39,6 +40,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("riff", 0),
     ("h264", 0),
     ("h264enc", 0),
+    ("av1enc", 0),
     ("hevc", 0),
     ("vp9", 0),
     ("prores", 0),
@@ -47,6 +49,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("av1", 0),
     ("aac", 0),
     ("opus", 0),
+    ("flac", 0),
     ("frame", 1),
     ("media", 1),
     ("project", 1),
@@ -445,6 +448,7 @@ fn ci() -> Result<(), String> {
     run(Command::new(cargo).args(["test", "--workspace", "--release"]))?;
     layers()?;
     assets()?;
+    parity::run(&root(), &["--check"])?;
     wasm()
 }
 
@@ -483,12 +487,16 @@ fn main() -> ExitCode {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             version::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
+        "parity" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            parity::run(&root(), &rest.iter().map(String::as_str).collect::<Vec<_>>())
+        }
         "ico" => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             ico::run(&rest.iter().map(String::as_str).collect::<Vec<_>>())
         }
         _ => Err(
-            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|version [set X.Y.Z]|ci|bench [args]|bench-playback [args]>"
+            "usage: cargo xtask <layers|assets|wasm|web [--dev] [--serve PORT]|fixtures [crate…]|ico OUT IN…|version [set X.Y.Z]|parity [--check] [--commands] [--menus PATH]|ci|bench [args]|bench-playback [args]>"
                 .into(),
         ),
     };

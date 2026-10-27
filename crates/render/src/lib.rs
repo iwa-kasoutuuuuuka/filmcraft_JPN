@@ -15,7 +15,10 @@ pub mod blend;
 pub mod color_match;
 pub mod colorman;
 pub mod effects;
+pub mod facedet;
 pub mod gpufx;
+pub mod gpufx_ext;
+pub mod gpufx_more;
 pub mod graphic_clip;
 pub mod graphics;
 pub mod image;
@@ -76,9 +79,13 @@ impl Default for RenderOptions {
     }
 }
 
+/// Largest frame side the renderer allocates (a damaged or hostile size must not exhaust memory).
+pub const MAX_FRAME_SIDE: usize = 16_384;
+
 /// Output size for a sequence at a scale.
 pub fn output_size(seq: &Sequence, scale: f32) -> (usize, usize) {
-    (((seq.settings.width as f32 * scale).round() as usize).max(1), ((seq.settings.height as f32 * scale).round() as usize).max(1))
+    let side = |v: u32| ((v as f32 * scale).round() as usize).clamp(1, MAX_FRAME_SIDE);
+    (side(seq.settings.width), side(seq.settings.height))
 }
 
 /// Render sequence `seq_id` at timeline time `t`.

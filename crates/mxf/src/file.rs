@@ -223,11 +223,11 @@ pub struct EssenceTrack {
 impl EssenceTrack {
     /// First presented edit unit (stored position of the material package's zero point).
     pub fn first_edit_unit(&self) -> i64 {
-        (self.origin + self.start_position).max(0)
+        self.origin.saturating_add(self.start_position).max(0)
     }
     /// Total sound sample frames stored.
     pub fn stored_sample_frames(&self) -> u64 {
-        self.chunks.last().map_or(0, |c| c.first_sample + c.samples)
+        self.chunks.last().map_or(0, |c| c.first_sample.saturating_add(c.samples))
     }
     /// Sound sample frames per edit unit (rational), e.g. 48000/25.
     pub fn samples_per_edit_unit(&self) -> (i64, i64) {
@@ -748,8 +748,17 @@ pub fn open(src: &(impl ByteSource + ?Sized)) -> Result<MxfFile> {
     })
 }
 
-/// Index entries per stored edit unit for an index SID (all segments when `sid` is 0 or unmatched).
-fn index_entries(index: &[IndexSegment], sid: u32) -> (Vec<Option<IndexEntry>>, u32) {
+/// Largest stored edit unit an index table may describe (about 23 days at 25 fps).
+const MAX_INDEXED_EDIT_UNITS: usize = 50_000_000;
+/// Most sound channels [`MxfFile::read_pcm`] decodes (hostile channel counts would allocate a
+/// buffer per channel).
+const MAX_CHANNELS: usize = 64;
+
+/// Index entries per stored edit unit for an index SID (all segments when `sid` is 0 or unmatched),
+/// for a file of `file_size` bytes.
+fn index_entries(index: &[IndexSegment], sid: u32, file_size: u64) -> (Vec<Option<IndexEntry>>, u32) {
+    // every indexed edit unit holds at least one byte of the file
+    let max_unit = MAX_INDEXED_EDIT_UNITS.min(usize::try_from(file_size).unwrap_or(usize::MAX));
     let any = index.iter().any(|s| s.index_sid == sid);
     let segs: Vec<&IndexSegment> = index.iter().filter(|s| !any || s.index_sid == sid).collect();
     let mut out: Vec<Option<IndexEntry>> = Vec::new();
@@ -759,8 +768,9 @@ fn index_entries(index: &[IndexSegment], sid: u32) -> (Vec<Option<IndexEntry>>, 
             eubc = s.edit_unit_byte_count;
         }
         for (k, e) in s.entries.iter().enumerate() {
-            let Ok(p) = usize::try_from(s.start_position + k as i64) else { continue };
-            if p > 50_000_000 {
+            let Some(Ok(p)) = s.start_position.checked_add(k as i64).map(usize::try_from) else { continue };
+            // a hostile StartPosition must not make us allocate a huge sparse table
+            if p > max_unit {
                 break;
             }
             if out.len() <= p {
@@ -854,7 +864,7 @@ fn build_track(
                     _ => e.size / fb.max(1),
                 };
                 t.chunks.push(Chunk { offset: e.value_offset, size: e.size, first_sample: first, samples: n });
-                first += n;
+                first = first.saturating_add(n);
             }
             t.wrapping = if elements.len() == 1 && r.duration.is_some_and(|d| d > 1) { Wrapping::Clip } else { Wrapping::Frame };
             t.sound = Some(si);
@@ -871,8 +881,8 @@ fn build_pictures(
     index: &[IndexSegment],
     warnings: &mut Vec<String>,
 ) -> Result<()> {
-    let (entries, eubc) = index_entries(index, t.index_sid);
-    let expected = t.duration.map(|d| (d + t.first_edit_unit()).max(0) as usize);
+    let (entries, eubc) = index_entries(index, t.index_sid, src.len());
+    let expected = t.duration.map(|d| d.saturating_add(t.first_edit_unit()).max(0) as usize);
     let clip = elements.len() == 1 && expected.is_none_or(|n| n > 1) && (eubc > 0 || entries.len() > 1);
     let mut samples: Vec<Sample> = Vec::new();
     if clip {
@@ -1002,17 +1012,20 @@ impl MxfFile {
     pub fn read_pcm(&self, src: &(impl ByteSource + ?Sized), track: usize, start: u64, frames: usize) -> Result<Vec<Vec<f32>>> {
         let t = self.tracks.get(track).ok_or_else(|| Error::Invalid(format!("no track {track}")))?;
         let si = t.sound.as_ref().ok_or_else(|| Error::Invalid("not a sound track".into()))?;
+        if si.channels as usize > MAX_CHANNELS {
+            return Err(Error::Unsupported(format!("{} sound channels", si.channels)));
+        }
         let ch = si.channels.max(1) as usize;
         let mut out = vec![vec![0f32; frames]; ch];
-        let end = start + frames as u64;
+        let end = start.saturating_add(frames as u64);
         let fb = si.frame_bytes();
-        let mut ci = t.chunks.partition_point(|c| c.first_sample + c.samples <= start);
+        let mut ci = t.chunks.partition_point(|c| c.first_sample.saturating_add(c.samples) <= start);
         while let Some(c) = t.chunks.get(ci) {
             if c.first_sample >= end {
                 break;
             }
             let a = start.max(c.first_sample);
-            let b = end.min(c.first_sample + c.samples);
+            let b = end.min(c.first_sample.saturating_add(c.samples));
             if b > a {
                 let decoded = match t.sound_format {
                     SoundFormat::Pcm => {
@@ -1040,5 +1053,23 @@ impl MxfFile {
             ci += 1;
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    /// Regression: `start_position + k` overflowed for a hostile StartPosition, and a large one
+    /// allocated a sparse table far bigger than the file.
+    #[test]
+    fn index_entries_are_bounded() {
+        let seg = |start_position| IndexSegment { start_position, entries: vec![IndexEntry::default(); 2], ..Default::default() };
+        let (out, _) = index_entries(&[seg(i64::MAX)], 0, 1 << 20);
+        assert!(out.len() <= 1);
+        let (out, _) = index_entries(&[seg(40_000_000)], 0, 1000);
+        assert!(out.is_empty());
+        let (out, _) = index_entries(&[seg(3)], 0, 1000);
+        assert_eq!(out.len(), 5);
     }
 }

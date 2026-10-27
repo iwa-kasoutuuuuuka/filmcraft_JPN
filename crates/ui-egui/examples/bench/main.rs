@@ -5,7 +5,7 @@
 //! ```sh
 //! cargo xtask bench                                   # every section, writes target/bench/bench-<label>.{json,md}
 //! cargo xtask bench --sections decode,scrub --repeat 3 --label after
-//! cargo xtask bench --sections decode --hw off --label hw-off   # FilmCraft's own decoders only
+//! cargo xtask bench --sections decode --hw off --label hw-off   # FilmCraft's own decoders (and encoders) only
 //! cargo run --release -p filmcraft-ui-egui --example bench -- --section timeline   # one section, this process
 //! ```
 //!
@@ -66,7 +66,14 @@ fn main() {
     };
     // as the desktop app: OS hardware decoders in front of ours, unless Hardware decoding is Off
     filmcraft_platform::register();
-    filmcraft_codecs::hw::set_hardware_decoding(opts.hw != "off");
+    filmcraft_ui_egui::frames::register_cpu_clocks(filmcraft_platform::cputime::process_cpu_time, filmcraft_platform::cputime::thread_cpu_time);
+    filmcraft_codecs::hw::set_hardware_mode(match opts.hw.as_str() {
+        "off" => filmcraft_codecs::hw::HwMode::Off,
+        "on" => filmcraft_codecs::hw::HwMode::On,
+        _ => filmcraft_codecs::hw::HwMode::Auto,
+    });
+    // `--hw off`: our encoders too (hardware H.264 encoding on Windows)
+    filmcraft_engine::export::hw::set_hardware_encoding(opts.hw != "off");
     if let Some(section) = arg_value(&args, "--section") {
         let v = run_section(&section, &opts);
         let text = serde_json::to_string_pretty(&v).unwrap_or_default();
@@ -109,8 +116,8 @@ fn orchestrate(args: &[String], o: &Opts) {
     let mut results = Vec::new();
     for name in &wanted {
         let tmp = out.join(format!(".section-{name}-{}.json", std::process::id()));
-        let mut cmd = time_wrapper();
-        cmd.arg(&exe).args(["--section", name, "--json"]).arg(&tmp).args(["--repeat", &o.repeat.to_string()]);
+        let mut cmd = time_wrapper(&exe);
+        cmd.args(["--section", name, "--json"]).arg(&tmp).args(["--repeat", &o.repeat.to_string()]);
         if o.quick {
             cmd.arg("--quick");
         }
@@ -147,17 +154,16 @@ fn orchestrate(args: &[String], o: &Opts) {
     println!("wrote {} and {}", jp.display(), mp.display());
 }
 
-fn time_wrapper() -> Command {
+/// `exe` under `/usr/bin/time` (peak RSS), or on its own where there is none (Windows).
+fn time_wrapper(exe: &Path) -> Command {
     let time = Path::new("/usr/bin/time");
     if time.exists() {
         let mut c = Command::new(time);
-        c.arg(if cfg!(target_os = "macos") { "-l" } else { "-v" });
+        c.arg(if cfg!(target_os = "macos") { "-l" } else { "-v" }).arg(exe);
         c
     } else {
         // No `time`: run the section directly (no peak RSS).
-        let mut c = Command::new("env");
-        c.arg("--");
-        c
+        Command::new(exe)
     }
 }
 
@@ -185,6 +191,14 @@ fn sh(cmd: &str, args: &[&str]) -> Option<String> {
     Command::new(cmd).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
+/// One value from Windows PowerShell (machine facts `sysctl` gives elsewhere); `None` off Windows.
+fn windows_query(expr: &str) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    sh("powershell", &["-NoProfile", "-NonInteractive", "-Command", expr])
+}
+
 fn machine_info() -> Value {
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     let cpu = sh("sysctl", &["-n", "machdep.cpu.brand_string"])
@@ -193,10 +207,18 @@ fn machine_info() -> Value {
                 .ok()
                 .and_then(|c| c.lines().find(|l| l.starts_with("model name")).and_then(|l| l.split(':').nth(1)).map(|s| s.trim().to_string()))
         })
+        .or_else(|| windows_query("(Get-CimInstance Win32_Processor | Select-Object -First 1).Name"))
         .unwrap_or_else(|| "unknown CPU".into());
-    let mem_gb = sh("sysctl", &["-n", "hw.memsize"]).and_then(|m| m.parse::<u64>().ok()).map(|b| b as f64 / (1u64 << 30) as f64);
-    let os = sh("uname", &["-sr"]).unwrap_or_default();
-    let date = sh("date", &["-u", "+%Y-%m-%d %H:%M UTC"]).unwrap_or_default();
+    let mem_gb = sh("sysctl", &["-n", "hw.memsize"])
+        .or_else(|| windows_query("(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"))
+        .and_then(|m| m.parse::<u64>().ok())
+        .map(|b| b as f64 / (1u64 << 30) as f64);
+    let os = sh("uname", &["-sr"])
+        .or_else(|| windows_query("(Get-CimInstance Win32_OperatingSystem).Caption + ' ' + (Get-CimInstance Win32_OperatingSystem).Version"))
+        .unwrap_or_default();
+    let date = sh("date", &["-u", "+%Y-%m-%d %H:%M UTC"])
+        .or_else(|| windows_query("(Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm') + ' UTC'"))
+        .unwrap_or_default();
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let commit = Command::new("git")
         .arg("-C")

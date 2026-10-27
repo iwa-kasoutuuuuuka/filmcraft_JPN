@@ -77,6 +77,7 @@ fn label_of(app: &FilmcraftApp, id: &str) -> String {
         .command(id)
         .map(|c| c.label)
         .or_else(|| filmcraft_engine::find_command(id).map(|c| c.label.to_string()))
+        .map(|l| crate::i18n::tr(&l).to_string())
         .unwrap_or_else(|| id.to_string())
 }
 
@@ -140,7 +141,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
     let size = vec2((screen.width() - 40.0).clamp(760.0, 1320.0), (screen.height() - 60.0).clamp(560.0, 900.0));
     let mut close: Option<bool> = None; // Some(true) = OK, Some(false) = Cancel
     let mut open = true;
-    egui::Window::new("Keyboard Shortcuts")
+    egui::Window::new(crate::i18n::tr_settings("Keyboard Shortcuts"))
         .id(egui::Id::new("keyboard-shortcuts"))
         .open(&mut open)
         .collapsible(false)
@@ -190,7 +191,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
 }
 
 fn small_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, label: &str, enabled: bool) -> bool {
-    let r = ui.add_enabled(enabled, egui::Button::new(RichText::new(label).size(12.5)).min_size(vec2(0.0, 24.0)));
+    let r = ui.add_enabled(enabled, egui::Button::new(RichText::new(crate::i18n::tr_ui(label)).size(12.5)).min_size(vec2(0.0, 24.0)));
     app.auto.add(id, r.rect, label);
     r.clicked()
 }
@@ -202,68 +203,82 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     let builtin: Vec<String> = presets["builtin"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
     let custom: Vec<String> = presets["custom"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Preset:").size(13.0).color(t.text_dim));
-        let shown = if modified { format!("{active} (modified)") } else { active.clone() };
+        ui.label(RichText::new(crate::i18n::t("Preset:", "プリセット:")).size(13.0).color(t.text_dim));
+        let shown = if modified { crate::tf!("{active} (modified)", "{active} (変更済み)") } else { active.clone() };
         let r = egui::ComboBox::from_id_salt("shortcuts-preset").width(280.0).selected_text(shown).show_ui(ui, |ui| {
             for name in builtin.iter().chain(custom.iter()) {
                 let r = ui.selectable_label(*name == active && !modified, name);
                 app.auto.add(&format!("shortcuts.preset.{name}"), r.rect, name);
                 if r.clicked() {
                     exec(app, "shortcuts.loadPreset", json!({"name": name}));
-                    app.shortcut_editor.message = format!("Loaded “{name}”");
+                    app.shortcut_editor.message = crate::tf!("Loaded “{name}”", "「{name}」を読み込みました");
                 }
             }
         });
         app.auto.add("shortcuts.preset", r.response.rect, "Preset");
         ui.add_space(8.0);
-        if small_button(app, ui, "shortcuts.saveAs", "Save As…", true) {
+        if small_button(app, ui, "shortcuts.saveAs", crate::i18n::t("Save As…", "別名で保存…"), true) {
             app.shortcut_editor.save_name = Some(if builtin.contains(&active) { "My Shortcuts".into() } else { active.clone() });
         }
         let can_delete = custom.contains(&active);
-        if small_button(app, ui, "shortcuts.delete", "Delete", can_delete) {
+        if small_button(app, ui, "shortcuts.delete", crate::i18n::t("Delete", "削除"), can_delete) {
             exec(app, "shortcuts.deletePreset", json!({"name": active}));
-            app.shortcut_editor.message = format!("Deleted preset “{active}”");
+            app.shortcut_editor.message = crate::tf!("Deleted preset “{active}”", "プリセット「{active}」を削除しました");
         }
-        if small_button(app, ui, "shortcuts.export", "Export…", true) {
+        if small_button(app, ui, "shortcuts.export", crate::i18n::t("Export…", "書き出し…"), true) {
             let picked = app.hooks.pick_save_as.as_mut().and_then(|f| f("Keyboard Shortcuts", &["json"], &format!("{active}.json")));
             match picked {
                 Some(path) => {
                     if exec(app, "shortcuts.export", json!({"path": path})).is_some() {
-                        app.shortcut_editor.message = format!("Exported to {path}");
+                        app.shortcut_editor.message = crate::tf!("Exported to {path}", "{path} に書き出しました");
                     }
                 }
-                None => app.shortcut_editor.message = "Export: no file chosen (agents: shortcuts.export {path})".into(),
+                None => {
+                    app.shortcut_editor.message =
+                        crate::i18n::t("Export: no file chosen (agents: shortcuts.export {path})", "書き出し: ファイルが選択されていません").into()
+                }
             }
         }
-        if small_button(app, ui, "shortcuts.import", "Import…", true) {
+        if small_button(app, ui, "shortcuts.import", crate::i18n::t("Import…", "読み込み…"), true) {
             let picked = app.hooks.pick_open_file.as_mut().and_then(|f| f("Keyboard Shortcuts", &["json"]));
             match picked {
                 Some(path) => {
                     if let Some(r) = exec(app, "shortcuts.import", json!({"path": path})) {
-                        app.shortcut_editor.message = format!("Imported “{}”", r["name"].as_str().unwrap_or(""));
+                        app.shortcut_editor.message = crate::tf!("Imported “{}”", "「{}」を読み込みました", r["name"].as_str().unwrap_or(""));
                     }
                 }
-                None => app.shortcut_editor.message = "Import: no file chosen (agents: shortcuts.import {path})".into(),
+                None => {
+                    app.shortcut_editor.message =
+                        crate::i18n::t("Import: no file chosen (agents: shortcuts.import {path})", "読み込み: ファイルが選択されていません").into()
+                }
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(if cfg!(target_os = "macos") { "Keyboard: US (macOS)" } else { "Keyboard: US" }).size(12.0).color(t.text_dim));
+            ui.label(
+                RichText::new(if cfg!(target_os = "macos") {
+                    crate::i18n::t("Keyboard: US (macOS)", "キーボード: US (macOS)")
+                } else {
+                    crate::i18n::t("Keyboard: US", "キーボード: 日本語/US")
+                })
+                .size(12.0)
+                .color(t.text_dim),
+            );
         });
     });
     if let Some(mut name) = app.shortcut_editor.save_name.clone() {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Save preset as:").size(13.0).color(t.text_dim));
+            ui.label(RichText::new(crate::i18n::t("Save preset as:", "プリセット名を指定して保存:")).size(13.0).color(t.text_dim));
             let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0));
             app.auto.add("shortcuts.saveAs.name", r.rect, "Preset name");
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if small_button(app, ui, "shortcuts.saveAs.ok", "Save", !name.trim().is_empty()) || enter {
+            if small_button(app, ui, "shortcuts.saveAs.ok", crate::i18n::t("Save", "保存"), !name.trim().is_empty()) || enter {
                 if exec(app, "shortcuts.savePreset", json!({"name": name})).is_some() {
-                    app.shortcut_editor.message = format!("Saved preset “{}”", name.trim());
+                    app.shortcut_editor.message = crate::tf!("Saved preset “{}”", "プリセット「{}」を保存しました", name.trim());
                     app.shortcut_editor.save_name = None;
                 } else {
                     app.shortcut_editor.save_name = Some(name.clone());
                 }
-            } else if small_button(app, ui, "shortcuts.saveAs.cancel", "Cancel", true) {
+            } else if small_button(app, ui, "shortcuts.saveAs.cancel", crate::i18n::t("Cancel", "キャンセル"), true) {
                 app.shortcut_editor.save_name = None;
             } else {
                 app.shortcut_editor.save_name = Some(name.clone());
@@ -272,12 +287,22 @@ fn header(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Commands:").size(13.0).color(t.text_dim));
+        ui.label(RichText::new(crate::i18n::t("Commands:", "コマンド:")).size(13.0).color(t.text_dim));
         let cur = app.shortcut_editor.context.clone();
-        let r =
-            egui::ComboBox::from_id_salt("shortcuts-context").width(280.0).selected_text(if cur.is_empty() { APPLICATION } else { &cur }).show_ui(ui, |ui| {
+        let r = egui::ComboBox::from_id_salt("shortcuts-context")
+            .width(280.0)
+            .selected_text(if cur.is_empty() || cur == APPLICATION {
+                crate::i18n::t(APPLICATION, "アプリケーション全体").to_string()
+            } else {
+                crate::tf!("{} Panel", "{} パネル", crate::i18n::tr(&cur))
+            })
+            .show_ui(ui, |ui| {
                 for c in std::iter::once(APPLICATION).chain(PANELS.iter().copied()) {
-                    let label = if c == APPLICATION { c.to_string() } else { format!("{c} Panel") };
+                    let label = if c == APPLICATION {
+                        crate::i18n::t(APPLICATION, "アプリケーション全体").to_string()
+                    } else {
+                        crate::tf!("{} Panel", "{} パネル", crate::i18n::tr(c))
+                    };
                     let r = ui.selectable_label(cur == c, label);
                     app.auto.add(&format!("shortcuts.context.{c}"), r.rect, c);
                     if r.clicked() {
@@ -567,9 +592,12 @@ fn keyboard(app: &mut FilmcraftApp, ui: &mut egui::Ui, area: Rect, t: &Tokens) {
 fn legend(ui: &mut egui::Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         for (c, text) in [
-            (APP_KEY, "Application shortcuts work whatever panel has focus"),
-            (PANEL_KEY, "Panel shortcuts override application shortcuts while that panel has focus"),
-            (MOD_KEY, "Modifier held / selected"),
+            (APP_KEY, crate::i18n::t("Application shortcuts work whatever panel has focus", "アプリケーション全体で有効なショートカット")),
+            (
+                PANEL_KEY,
+                crate::i18n::t("Panel shortcuts override application shortcuts while that panel has focus", "フォーカスのあるパネルで優先されるショートカット"),
+            ),
+            (MOD_KEY, crate::i18n::t("Modifier held / selected", "修飾キーが押下 / 選択中")),
         ] {
             let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
             ui.painter().rect_filled(r, 2.0, c);
@@ -583,11 +611,12 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
     let plat = Platform::current();
     ui.horizontal(|ui| {
         let mut q = app.shortcut_editor.search.clone();
-        let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search commands or keys").desired_width(320.0));
+        let r =
+            ui.add(egui::TextEdit::singleline(&mut q).hint_text(crate::i18n::t("Search commands or keys", "コマンドまたはキーを検索")).desired_width(320.0));
         app.auto.add("shortcuts.search", r.rect, "Search");
         app.shortcut_editor.search = q;
         if let Some(sel) = app.shortcut_editor.selected.clone() {
-            ui.label(RichText::new(format!("Selected: {}", label_of(app, &sel))).size(12.0).color(t.text_dim));
+            ui.label(RichText::new(crate::tf!("Selected: {}", "選択中: {}", label_of(app, &sel))).size(12.0).color(t.text_dim));
         }
     });
     ui.add_space(4.0);
@@ -596,8 +625,14 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
     let w = ui.available_width();
     // column header
     let (hr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
-    ui.painter().text(hr.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, "Command", Tokens::semibold(12.5), t.text_dim);
-    ui.painter().text(pos2(hr.min.x + w * 0.58, hr.center().y), Align2::LEFT_CENTER, "Shortcut", Tokens::semibold(12.5), t.text_dim);
+    ui.painter().text(hr.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, crate::i18n::t("Command", "コマンド"), Tokens::semibold(12.5), t.text_dim);
+    ui.painter().text(
+        pos2(hr.min.x + w * 0.58, hr.center().y),
+        Align2::LEFT_CENTER,
+        crate::i18n::t("Shortcut", "ショートカット"),
+        Tokens::semibold(12.5),
+        t.text_dim,
+    );
     egui::ScrollArea::vertical().id_salt("shortcuts-list").max_height(height - 50.0).auto_shrink([false, false]).show(ui, |ui| {
         let mut last_cat = String::new();
         for (i, row) in rows.iter().enumerate() {
@@ -607,7 +642,7 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                 let (cr, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
                 let c = cr.left_center() + vec2(9.0, 0.0);
                 ui.painter().add(egui::Shape::convex_polygon(vec![c + vec2(-4.0, -2.5), c + vec2(4.0, -2.5), c + vec2(0.0, 3.0)], t.text_dim, Stroke::NONE));
-                ui.painter().text(cr.left_center() + vec2(20.0, 0.0), Align2::LEFT_CENTER, &cat, Tokens::semibold(12.0), t.text);
+                ui.painter().text(cr.left_center() + vec2(20.0, 0.0), Align2::LEFT_CENTER, crate::i18n::tr(&cat), Tokens::semibold(12.0), t.text);
                 last_cat = cat;
             }
             let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
@@ -620,7 +655,13 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                 t.row_alt
             };
             ui.painter().rect_filled(r, 0.0, bg);
-            ui.painter().text(r.left_center() + vec2(22.0, 0.0), Align2::LEFT_CENTER, row["label"].as_str().unwrap_or(""), Tokens::ui(12.5), t.text);
+            ui.painter().text(
+                r.left_center() + vec2(22.0, 0.0),
+                Align2::LEFT_CENTER,
+                crate::i18n::tr(row["label"].as_str().unwrap_or("")),
+                Tokens::ui(12.5),
+                t.text,
+            );
             app.auto.add(&format!("shortcuts.row.{id}"), r, row["label"].as_str().unwrap_or(""));
             if resp.clicked() {
                 app.shortcut_editor.selected = Some(id.clone());
@@ -629,7 +670,7 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
             let cell = Rect::from_min_max(pos2(r.min.x + w * 0.58, r.min.y + 2.0), pos2(r.max.x - 34.0, r.max.y - 2.0));
             let recording = app.shortcut_editor.recording.as_ref().is_some_and(|(c, _)| *c == id);
             let text = if recording {
-                "Type a shortcut… (Esc cancels)".to_string()
+                crate::i18n::t("Type a shortcut… (Esc cancels)", "キーを押してください… (Escでキャンセル)").to_string()
             } else {
                 row["shortcuts"]
                     .as_array()
@@ -638,7 +679,7 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                     .map(|b| {
                         let d = b["display"].as_str().unwrap_or("").to_string();
                         match b["panel"].as_str() {
-                            Some(pn) => format!("{d} ({pn})"),
+                            Some(pn) => format!("{d} ({})", crate::i18n::tr(pn)),
                             None => d,
                         }
                     })
@@ -658,7 +699,9 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
                 app.shortcut_editor.recording = Some((id.clone(), false));
             }
             let plus = Rect::from_min_size(pos2(r.max.x - 30.0, r.min.y + 3.0), vec2(20.0, 20.0));
-            let presp = ui.interact(plus, egui::Id::new(("shortcut-add", &id)), Sense::click()).on_hover_text("Add another shortcut");
+            let presp = ui
+                .interact(plus, egui::Id::new(("shortcut-add", &id)), Sense::click())
+                .on_hover_text(crate::i18n::t("Add another shortcut", "ショートカットを追加"));
             ui.painter().text(
                 plus.center(),
                 Align2::CENTER_CENTER,
@@ -673,7 +716,7 @@ fn command_list(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Toke
             }
         }
         if rows.is_empty() {
-            ui.label(RichText::new("No matching commands").color(t.text_dim));
+            ui.label(RichText::new(crate::i18n::t("No matching commands", "一致するコマンドが見つかりません")).color(t.text_dim));
         }
     });
     let _ = plat;
@@ -683,14 +726,14 @@ fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens
     let plat = Platform::current();
     let key = app.shortcut_editor.key.clone();
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Key:").size(13.0).strong().color(t.text));
+        ui.label(RichText::new(crate::i18n::t("Key:", "キー:")).size(13.0).strong().color(t.text));
         if let Some(k) = &key {
             ui.label(RichText::new(key_legend(k, plat.is_mac())).size(13.0).color(t.hot_text));
         }
     });
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
-    ui.painter().text(hr.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, "Modifiers", Tokens::semibold(12.5), t.text_dim);
-    ui.painter().text(hr.left_center() + vec2(110.0, 0.0), Align2::LEFT_CENTER, "Command", Tokens::semibold(12.5), t.text_dim);
+    ui.painter().text(hr.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, crate::i18n::t("Modifiers", "修飾キー"), Tokens::semibold(12.5), t.text_dim);
+    ui.painter().text(hr.left_center() + vec2(110.0, 0.0), Align2::LEFT_CENTER, crate::i18n::t("Command", "コマンド"), Tokens::semibold(12.5), t.text_dim);
     let list = key.as_ref().and_then(|k| app.session.execute("shortcuts.forKey", json!({"key": k})).ok()).unwrap_or_default();
     egui::ScrollArea::vertical().id_salt("shortcuts-key").max_height(height - 90.0).auto_shrink([false, false]).show(ui, |ui| {
         let w = ui.available_width();
@@ -703,28 +746,31 @@ fn key_detail(app: &mut FilmcraftApp, ui: &mut egui::Ui, height: f32, t: &Tokens
                 let d = k.display(plat);
                 let legend = key_legend(c.key, plat.is_mac());
                 let m = d.trim_end_matches(&legend).trim_end_matches(c.key).trim_end_matches('+').to_string();
-                if m.is_empty() { "None".to_string() } else { m }
+                if m.is_empty() { crate::i18n::t("None", "なし").to_string() } else { m }
             });
             ui.painter().text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, mods.unwrap_or_default(), Tokens::ui(12.5), t.text);
             let cmd = b["command"].as_str().unwrap_or("");
             let label = match b["panel"].as_str() {
-                Some(p) => format!("{} ({p})", label_of(app, cmd)),
+                Some(p) => format!("{} ({})", label_of(app, cmd), crate::i18n::tr(p)),
                 None => label_of(app, cmd),
             };
             ui.painter().text(r.left_center() + vec2(110.0, 0.0), Align2::LEFT_CENTER, label, Tokens::ui(12.5), t.text);
         }
         if key.is_some() && list.as_array().is_none_or(|a| a.is_empty()) {
-            ui.label(RichText::new("Nothing is assigned to this key").color(t.text_dim));
+            ui.label(RichText::new(crate::i18n::t("Nothing is assigned to this key", "このキーにはショートカットが割り当てられていません")).color(t.text_dim));
         }
         if key.is_none() {
-            ui.label(RichText::new("Click a key on the keyboard to see its shortcuts").color(t.text_dim));
+            ui.label(
+                RichText::new(crate::i18n::t("Click a key on the keyboard to see its shortcuts", "キーボードのキーをクリックすると割り当てが表示されます"))
+                    .color(t.text_dim),
+            );
         }
     });
     // assign the selected command to the clicked key with the selected modifiers
     if let (Some(k), Some(cmd)) = (key, app.shortcut_editor.selected.clone()) {
         let keys = format!("{}{}", app.shortcut_editor.mods.prefix(), k);
         let disp = Chord::parse(&keys).map(|c| c.display(plat)).unwrap_or(keys.clone());
-        let label = format!("Assign {disp} to {}", label_of(app, &cmd));
+        let label = crate::tf!("Assign {disp} to {}", "{disp} を {} に割り当て", label_of(app, &cmd));
         if small_button(app, ui, "shortcuts.assignKey", &label, true) {
             assign(app, &cmd, &keys, false);
         }
@@ -742,11 +788,23 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool>
             for (ctx, keys, cmds) in conflicts.iter().take(2) {
                 let disp = Chord::parse(keys).map(|c| c.display(plat)).unwrap_or(keys.clone());
                 let names: Vec<String> = cmds.iter().map(|c| label_of(app, c)).collect();
-                let r = ui.label(RichText::new(format!("Conflict: {disp} is assigned to {} ({ctx})", names.join(" and "))).size(12.0).color(WARN));
+                let r = ui.label(
+                    RichText::new(crate::tf!(
+                        "Conflict: {disp} is assigned to {} ({ctx})",
+                        "競合: {disp} は {} ({ctx}) にすでに割り当てられています",
+                        names.join(crate::i18n::t(" and ", " および "))
+                    ))
+                    .size(12.0)
+                    .color(WARN),
+                );
                 app.auto.add("shortcuts.conflict", r.rect, "conflict");
             }
             let msg = if app.shortcut_editor.message.is_empty() {
-                "Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.".to_string()
+                crate::i18n::t(
+                    "Click a command's Shortcut cell and press keys to assign it; + adds another shortcut.",
+                    "ショートカット列をクリックしてキーを押すと割り当てられます。「+」で複数のキーを登録できます。",
+                )
+                .to_string()
             } else {
                 app.shortcut_editor.message.clone()
             };
@@ -760,7 +818,8 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool>
             if ok.clicked() {
                 close = Some(true);
             }
-            let cancel = ui.add(egui::Button::new(RichText::new("Cancel").size(13.0)).min_size(vec2(72.0, 28.0)).corner_radius(14.0));
+            let cancel =
+                ui.add(egui::Button::new(RichText::new(crate::i18n::t("Cancel", "キャンセル")).size(13.0)).min_size(vec2(72.0, 28.0)).corner_radius(14.0));
             app.auto.add("shortcuts.cancel", cancel.rect, "Cancel");
             if cancel.clicked() {
                 close = Some(false);
@@ -768,17 +827,18 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, t: &Tokens) -> Option<bool>
             ui.add_space(16.0);
             let sel = app.shortcut_editor.selected.clone();
             let panel = app.shortcut_editor.panel().map(str::to_string);
-            if small_button(app, ui, "shortcuts.clear", "Clear", sel.is_some())
+            if small_button(app, ui, "shortcuts.clear", crate::i18n::t("Clear", "消去"), sel.is_some())
                 && let Some(c) = sel
                 && let Some(r) = exec(app, "shortcuts.clear", json!({"command": c, "panel": panel.clone().unwrap_or_else(|| APPLICATION.into())}))
             {
-                app.shortcut_editor.message = format!("Cleared {} shortcut(s) of {}", r["removed"], label_of(app, &c));
+                app.shortcut_editor.message =
+                    crate::tf!("Cleared {n} shortcut(s) of {name}", "{name} のショートカットを {n} 件削除しました", n = r["removed"], name = label_of(app, &c));
             }
             let (cu, cr) = (app.session.shortcuts.can_undo(), app.session.shortcuts.can_redo());
-            if small_button(app, ui, "shortcuts.redo", "Redo", cr) {
+            if small_button(app, ui, "shortcuts.redo", crate::i18n::t("Redo", "やり直し"), cr) {
                 exec(app, "shortcuts.redo", json!({}));
             }
-            if small_button(app, ui, "shortcuts.undo", "Undo", cu) {
+            if small_button(app, ui, "shortcuts.undo", crate::i18n::t("Undo", "元に戻す"), cu) {
                 exec(app, "shortcuts.undo", json!({}));
             }
         });

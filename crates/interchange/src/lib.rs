@@ -36,6 +36,7 @@ pub mod otio;
 
 mod common;
 mod comp;
+pub mod filmora;
 pub mod wav;
 mod xml;
 
@@ -63,6 +64,8 @@ pub enum Format {
     Aaf,
     /// OMF Interchange 2.0 (Bento container).
     Omf,
+    /// Wondershare Filmora project (`.wfp`), import only.
+    Filmora,
 }
 
 impl Format {
@@ -76,6 +79,7 @@ impl Format {
             Format::Otio => "OpenTimelineIO",
             Format::Aaf => "AAF",
             Format::Omf => "OMF",
+            Format::Filmora => "Filmora Project",
         }
     }
 
@@ -88,6 +92,7 @@ impl Format {
             Format::Otio => "otio",
             Format::Aaf => "aaf",
             Format::Omf => "omf",
+            Format::Filmora => "wfp",
         }
     }
 
@@ -101,6 +106,7 @@ impl Format {
             "otio" => Some(Format::Otio),
             "aaf" => Some(Format::Aaf),
             "omf" | "omfi" => Some(Format::Omf),
+            "wfp" => Some(Format::Filmora),
             _ => None,
         }
     }
@@ -108,6 +114,9 @@ impl Format {
 
 /// Sniff the format of a document from its bytes, using the file extension as a hint.
 pub fn detect(bytes: &[u8], extension: Option<&str>) -> Option<Format> {
+    if filmora::sniff(bytes) {
+        return Some(Format::Filmora);
+    }
     if aaf::sniff(bytes) {
         return Some(Format::Aaf);
     }
@@ -259,6 +268,9 @@ pub fn import(bytes: &[u8], format: Format, base_dir: Option<&str>) -> Result<(I
 ///
 /// AAF and OMF documents may embed audio: [`aaf::import`] / [`omf::import`] also return it.
 pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result<(Imported, Report)> {
+    if format == Format::Filmora {
+        return filmora::import(bytes, opts);
+    }
     if matches!(format, Format::Aaf | Format::Omf) {
         let (imported, extracted, mut report) = if format == Format::Aaf { aaf::import(bytes, opts)? } else { omf::import(bytes, opts)? };
         if !extracted.is_empty() {
@@ -273,7 +285,7 @@ pub fn import_with(bytes: &[u8], format: Format, opts: &ImportOptions) -> Result
         Format::Fcp7Xml => fcp7::import(&text, opts, &mut report)?,
         Format::Fcpxml => fcpxml::import(&text, opts, &mut report)?,
         Format::Otio => otio::import(&text, opts, &mut report)?,
-        Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
+        Format::Aaf | Format::Omf | Format::Filmora => return Err(Error::Other("AAF / OMF / Filmora are binary documents".into())),
     };
     Ok((imported, report))
 }
@@ -381,6 +393,9 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
     if format == Format::Aaf {
         return aaf::export(project, sequence, &aaf::AafOptions { name: opts.name.clone(), ..Default::default() });
     }
+    if format == Format::Filmora {
+        return Err(Error::Other("Filmora projects can be imported, not exported".into()));
+    }
     if format == Format::Omf {
         return omf::export(project, sequence, &omf::OmfOptions { name: opts.name.clone(), ..Default::default() });
     }
@@ -390,7 +405,7 @@ pub fn export(project: &Project, sequence: ItemId, format: Format, opts: &Export
         Format::Fcp7Xml => fcp7::export(project, sequence, opts, &mut report)?,
         Format::Fcpxml => fcpxml::export(project, sequence, opts, &mut report)?,
         Format::Otio => otio::export(project, sequence, opts, &mut report)?,
-        Format::Aaf | Format::Omf => return Err(Error::Other("AAF / OMF are binary documents".into())),
+        Format::Aaf | Format::Omf | Format::Filmora => return Err(Error::Other("AAF / OMF / Filmora are binary documents".into())),
     };
     Ok((text.into_bytes(), report))
 }

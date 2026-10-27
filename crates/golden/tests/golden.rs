@@ -738,10 +738,45 @@ fn scenes_are_distinct() {
 
 // ---- GPU parity ----
 
+/// A GPU for the parity tests. Software adapters (WARP, llvmpipe: CI runners) are skipped: the
+/// effect scenes take far longer than a CI job there. `gpu_compositor_builds_on_any_adapter`
+/// still compiles every pipeline on them.
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    if adapter.get_info().device_type == wgpu::DeviceType::Cpu && std::env::var_os("FILMCRAFT_GPU_TESTS_ON_CPU").is_none() {
+        eprintln!("SKIPPED (gpu): software adapter {} (FILMCRAFT_GPU_TESTS_ON_CPU=1 runs these anyway)", adapter.get_info().name);
+        return None;
+    }
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+}
+
+/// Every compositor pipeline compiles without a validation error on whatever adapter there is,
+/// software ones included. On Windows without dxcompiler.dll that is DX12's FXC, which aborted on
+/// dynamically indexed vector writes in fx.wgsl (the app then fell back to CPU compositing).
+/// Every adapter of every backend counts (OpenGL too): on llvmpipe's OpenGL the effect stage's
+/// `Rgba32Float` working texture is not renderable, which was a validation error here (Ubuntu CI);
+/// the compositor now leaves its effect stage out on such a GPU.
+#[test]
+fn gpu_compositor_builds_on_any_adapter() {
+    let instance = wgpu::Instance::default();
+    let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
+    if adapters.is_empty() {
+        eprintln!("SKIPPED (gpu compositor): no GPU adapter");
+    }
+    for adapter in adapters {
+        let Ok((dev, q)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) else {
+            eprintln!("SKIPPED (gpu compositor): no device on {:?}", adapter.get_info());
+            continue;
+        };
+        let errors = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = errors.clone();
+        dev.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(e.to_string())));
+        let _c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
+        let errors = errors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(errors.is_empty(), "{:?}: {errors:#?}", adapter.get_info());
+        eprintln!("gpu compositor builds on {} ({:?})", adapter.get_info().name, adapter.get_info().backend);
+    }
 }
 
 #[test]
@@ -884,8 +919,8 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
 /// Standard effect chains run on the GPU: every clip below plans as a GPU layer with its effects
 /// (no CPU-rendered image), including keyframed parameters, transformed clips, partial opacity
 /// and blend modes, and matches the CPU render with the GPU parity tolerance (p99 ≤ 6, mean < 1.5
-/// away from layer outlines) at three times. A clip with an effect the GPU stage lacks (Emboss)
-/// still falls back to a CPU layer image.
+/// away from layer outlines) at three times. A clip with an effect the GPU stage lacks
+/// (Wonder Glow) still falls back to a CPU layer image.
 #[test]
 fn gpu_effect_chains_match_cpu_render() {
     let mut b = Builder::new(5);
@@ -921,7 +956,7 @@ fn gpu_effect_chains_match_cpu_render() {
     b.effect(v4, "black_white", &[]);
     let v5 = b.place(4, sunset, 0, 48);
     b.fixed(v5, "motion", &[("scale", fl(25.0)), ("position", pt(60.0, 140.0))]);
-    b.effect(v5, "emboss", &[]);
+    b.effect(v5, "wonder_glow", &[]);
     let mut s = b.at(12);
     let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
     let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
@@ -930,7 +965,7 @@ fn gpu_effect_chains_match_cpu_render() {
         let fx = l.fx.as_ref().unwrap_or_else(|| panic!("V{}: not a GPU effect layer", i + 1));
         assert!(!fx.ops.is_empty());
     }
-    assert!(layers[4].fx.is_none(), "Emboss is rendered on the CPU");
+    assert!(layers[4].fx.is_none(), "Wonder Glow is rendered on the CPU");
     let Some((dev, q)) = device() else {
         eprintln!("SKIPPED (gpu effect parity): no GPU adapter");
         return;

@@ -167,8 +167,51 @@ struct DragState {
 const TEXT_EDIT_ID: &str = "gfx-text-edit";
 
 fn end_edit(app: &mut FilmcraftApp, ui: &egui::Ui) {
+    // the text still being composed is typed in, not lost (a click elsewhere ends the edit)
+    commit_marked_text(app);
     app.ui.gfx_edit = None;
     ui.memory_mut(|m| m.surrender_focus(egui::Id::new(TEXT_EDIT_ID)));
+}
+
+/// Type the input method's marked text (still being composed) into the edited layer at the caret,
+/// over the selection, as one `graphics.setText`: an edit that ends while composing would lose it.
+fn commit_marked_text(app: &mut FilmcraftApp) {
+    let Some(ed) = app.ui.gfx_edit.as_mut() else { return };
+    let marked: String = std::mem::take(&mut ed.preedit).chars().filter(|c| !c.is_control()).collect();
+    ed.preedit_clause = None;
+    if marked.is_empty() {
+        return;
+    }
+    let (clip, layer, caret, anchor) = (ed.clip, ed.layer, ed.caret, ed.anchor);
+    let Some(mut text) = layer_text(app, clip, layer) else { return };
+    let (a, b) = (floor_char(&text, caret.min(anchor)), floor_char(&text, caret.max(anchor)));
+    text.replace_range(a..b, &marked);
+    if let Some(ed) = app.ui.gfx_edit.as_mut() {
+        ed.caret = a + marked.len();
+        ed.anchor = ed.caret;
+    }
+    if let Err(e) = app.session.execute("graphics.setText", json!({"clip": clip, "layer": layer, "text": text, "merge": true})) {
+        app.ui.status = e.to_string();
+    }
+}
+
+/// The text of a graphic clip's text layer in the active sequence, as shown at the playhead.
+fn layer_text(app: &FilmcraftApp, clip: u64, layer: usize) -> Option<String> {
+    let seq = app.session.active_sequence()?;
+    let (_, it) = seq.find_item(ClipId(clip))?;
+    let Some(ItemKind::Graphic { width, height, .. }) = app.session.project.item(it.item).map(|p| &p.kind) else { return None };
+    let ei = *layer_indices(&it.effects).get(layer)?;
+    let spec = eval_layer(it.effects.get(ei)?, it.source_time_at(app.session.playhead()), (*width, *height))?;
+    text_of(&spec).map(|t| t.text.clone())
+}
+
+/// `i` clamped to `s` and moved back to a character boundary.
+fn floor_char(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 /// Draw the overlay and handle graphics tools on the Program monitor picture `pic`.
@@ -241,7 +284,7 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
     // ---- text editing
     if let Some(ed) = editing.clone() {
         match views.iter().find(|v| v.clip.0 == ed.clip && v.layer == ed.layer && v.is_text()) {
-            Some(v) => text_edit(app, ui, v, ed, &resp, &mut actions),
+            Some(v) => text_edit(app, ui, v, ed, &resp),
             None => end_edit(app, ui),
         }
     }
@@ -486,15 +529,20 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         let (a, b) = (sp(&v.to_screen, x, base - line.ascent), sp(&v.to_screen, x, base + line.descent));
         painter.line_segment([a, b], Stroke::new(1.5, Color32::WHITE));
         painter.line_segment([a + vec2(1.0, 0.0), b + vec2(1.0, 0.0)], Stroke::new(0.5, Color32::BLACK));
-        let er = Rect::from_points(&v.quad()).union(Rect::from_two_pos(a, b));
+        // the input method's composition at the caret, the clause being converted highlighted
+        let cursor = Rect::from_two_pos(a, b);
+        let mut ime_rect = cursor;
+        if !ed.preedit.is_empty() {
+            let r = draw_preedit(&painter, a, b, &ed.preedit, ed.preedit_clause);
+            ime_rect = ime_rect.union(r);
+            app.auto.add("program.textEdit.preedit", r, &ed.preedit);
+        }
+        let er = Rect::from_points(&v.quad()).union(cursor);
         app.auto.add("program.textEdit", er, &tp.text);
+        // The platform places the candidate window by `rect` (egui-winit), so it is the caret and
+        // the composition, not the whole layer: a large title put the candidates far from the caret.
         ui.ctx().output_mut(|o| {
-            o.ime = Some(egui::output::IMEOutput {
-                purpose: Default::default(),
-                rect: er,
-                cursor_rect: Rect::from_two_pos(a, b),
-                should_interrupt_composition: false,
-            })
+            o.ime = Some(egui::output::IMEOutput { purpose: Default::default(), rect: ime_rect, cursor_rect: cursor, should_interrupt_composition: false })
         });
     }
     // ---- run
@@ -506,13 +554,40 @@ pub fn monitor_overlay(app: &mut FilmcraftApp, ui: &mut egui::Ui, pic: Rect, fra
         match app.session.execute(&cmd, p) {
             Ok(r) => {
                 if then_edit && let (Some(c), Some(l)) = (r["clip"].as_u64(), r["layer"].as_u64()) {
-                    app.ui.gfx_edit = Some(GfxEdit { clip: c, layer: l as usize, caret: 0, anchor: 0 });
+                    app.ui.gfx_edit = Some(GfxEdit { clip: c, layer: l as usize, caret: 0, anchor: 0, ..Default::default() });
                     app.ui.focused = crate::dock::PanelKind::Program;
                 }
             }
             Err(e) => app.ui.status = e.to_string(),
         }
     }
+}
+
+/// Draw the composition `text` on a dark plate centred on the caret line `top`-`bottom`, underlined,
+/// with the clause being converted (character range) underlined thicker and lit. Returns the plate.
+fn draw_preedit(painter: &egui::Painter, top: Pos2, bottom: Pos2, text: &str, clause: Option<(usize, usize)>) -> Rect {
+    let height = (bottom - top).length();
+    let size = if height.is_finite() { (height * 0.8).clamp(10.0, 256.0) } else { 12.0 };
+    let g = painter.layout_no_wrap(text.to_string(), egui::FontId::proportional(size), Color32::WHITE);
+    let rise = if height.is_finite() { (bottom.y - top.y - g.size().y) / 2.0 } else { 0.0 };
+    let at = pos2(top.x + 2.0, top.y + rise);
+    let r = Rect::from_min_size(at, g.size());
+    painter.rect_filled(r.expand(2.0), 2.0, Color32::from_black_alpha(170));
+    let x = |i: usize| at.x + g.pos_from_cursor(egui::text::CCursor::new(i)).min.x;
+    let chars = text.chars().count();
+    match clause.map(|(s, e)| (s.min(chars), e.min(chars))).filter(|(s, e)| s < e) {
+        Some((s, e)) => {
+            let (from, to) = (x(s), x(e));
+            painter.rect_filled(Rect::from_min_max(pos2(from, r.top()), pos2(to, r.bottom())), 0.0, Color32::from_rgba_unmultiplied(80, 140, 255, 110));
+            painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, Color32::WHITE));
+            painter.line_segment([pos2(from, r.bottom()), pos2(to, r.bottom())], Stroke::new(2.5, Color32::WHITE));
+        }
+        None => {
+            painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.5, Color32::WHITE));
+        }
+    }
+    painter.galley(at, g, Color32::WHITE);
+    r
 }
 
 fn layer_display_name_view(app: &FilmcraftApp, v: &LayerView) -> String {
@@ -546,14 +621,16 @@ fn start_edit_at(app: &mut FilmcraftApp, ui: &egui::Ui, v: &LayerView, p: Pos2, 
     let Some(tp) = text_of(&v.spec) else { return };
     let l = text_layout(tp);
     let caret = v.to_local(p).map_or(tp.text.len(), |(x, y)| l.hit(x, y));
-    app.ui.gfx_edit = Some(GfxEdit { clip: v.clip.0, layer: v.layer, caret, anchor: caret });
+    // the marked text still being composed goes into the layer it was typed into
+    commit_marked_text(app);
+    app.ui.gfx_edit = Some(GfxEdit { clip: v.clip.0, layer: v.layer, caret, anchor: caret, ..Default::default() });
     app.ui.focused = crate::dock::PanelKind::Program;
     let _ = ui;
     actions.push(("graphics.selectLayer".into(), json!({"clip": v.clip.0, "layers": [v.layer]})));
 }
 
 /// Keyboard handling while a text layer is being edited.
-fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: GfxEdit, resp: &egui::Response, actions: &mut Vec<(String, Value)>) {
+fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: GfxEdit, resp: &egui::Response) {
     let _ = resp;
     let eid = egui::Id::new(TEXT_EDIT_ID);
     // a real (non-clickable) widget holds keyboard focus so shortcuts pause while typing
@@ -571,6 +648,9 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
     let events = ui.input(|i| i.events.clone());
     let mut changed = false;
     let mut stop = false;
+    // text an input method committed in this batch: a platform that also reports it as typed text
+    // must not type it twice
+    let mut committed: Option<String> = None;
     let sel = |ed: &GfxEdit| (ed.caret.min(ed.anchor), ed.caret.max(ed.anchor));
     let delete_sel = |text: &mut String, ed: &mut GfxEdit| -> bool {
         let (a, b) = sel(ed);
@@ -584,6 +664,46 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
     };
     for ev in events {
         match ev {
+            // input method (Japanese): the composition shows at the caret; the committed text is
+            // typed like any other (it was dropped, so converted Japanese never reached the layer)
+            egui::Event::Ime(egui::ImeEvent::Preedit { text: pre, active_range_chars }) => {
+                ed.preedit_clause = active_range_chars.filter(|_| !pre.is_empty()).map(|r| (r.start, r.end));
+                ed.preedit = pre;
+            }
+            egui::Event::Ime(egui::ImeEvent::DeleteSurrounding { before_chars, after_chars }) => {
+                let mut a = ed.caret;
+                for _ in 0..before_chars.min(text.len()) {
+                    a = prev_boundary(&text, a);
+                }
+                let mut b = ed.caret;
+                for _ in 0..after_chars.min(text.len()) {
+                    b = next_boundary(&text, b);
+                }
+                if a < b {
+                    text.replace_range(a..b, "");
+                    ed.caret = a;
+                    ed.anchor = a;
+                    changed = true;
+                }
+            }
+            egui::Event::Ime(egui::ImeEvent::Commit(s)) => {
+                ed.preedit.clear();
+                ed.preedit_clause = None;
+                committed = Some(s.clone());
+                let s: String = s.chars().filter(|c| !c.is_control() || *c == '\n').collect();
+                if s.is_empty() {
+                    continue;
+                }
+                delete_sel(&mut text, &mut ed);
+                text.insert_str(ed.caret, &s);
+                ed.caret += s.len();
+                ed.anchor = ed.caret;
+                changed = true;
+            }
+            // keys while composing belong to the input method (Enter converts, Backspace edits the
+            // composition)
+            egui::Event::Key { .. } if !ed.preedit.is_empty() => {}
+            egui::Event::Text(s) if committed.as_deref() == Some(s.as_str()) => committed = None,
             egui::Event::Text(s) | egui::Event::Paste(s) => {
                 let s: String = s.chars().filter(|c| !c.is_control() || *c == '\n').collect();
                 if s.is_empty() {
@@ -683,13 +803,17 @@ fn text_edit(app: &mut FilmcraftApp, ui: &mut egui::Ui, v: &LayerView, mut ed: G
             _ => {}
         }
     }
-    if changed && text != tp.text {
-        actions.push(("graphics.setText".into(), json!({"clip": ed.clip, "layer": ed.layer, "text": text, "merge": true})));
+    // Written now, not queued with the pass's other actions: an edit that ends later in this pass
+    // types the marked text into this text, not into the one before it.
+    if changed
+        && text != tp.text
+        && let Err(e) = app.session.execute("graphics.setText", json!({"clip": ed.clip, "layer": ed.layer, "text": text, "merge": true}))
+    {
+        app.ui.status = e.to_string();
     }
+    app.ui.gfx_edit = Some(ed);
     if stop {
         end_edit(app, ui);
-    } else {
-        app.ui.gfx_edit = Some(ed);
     }
 }
 
@@ -777,7 +901,7 @@ impl Ctx<'_> {
     }
     fn row(&self, ui: &mut egui::Ui, label: &str) -> (Rect, egui::Ui) {
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
-        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, label, Tokens::ui(12.0), self.t.text_dim);
+        ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(label), Tokens::ui(12.0), self.t.text_dim);
         let v = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_max(pos2(r.min.x + 130.0, r.min.y + 3.0), pos2(r.max.x - 6.0, r.max.y - 3.0)))
@@ -835,7 +959,7 @@ impl Ctx<'_> {
     }
     fn check(&mut self, vui: &mut egui::Ui, id: &str, label: &str) -> bool {
         let mut b = pv(self.e, id, self.mt).as_bool().unwrap_or(false);
-        let r = vui.checkbox(&mut b, label);
+        let r = vui.checkbox(&mut b, crate::i18n::tr_ui(label));
         self.auto(id, r.rect, label);
         if r.changed() {
             self.set(id, json!(b));
@@ -885,7 +1009,7 @@ fn section(ui: &mut egui::Ui, app: &mut FilmcraftApp, name: &str, t: &Tokens) ->
         if open { Icon::ChevronDown } else { Icon::ChevronRight },
         t.text_dim,
     );
-    ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, name, Tokens::semibold(13.0), t.text);
+    ui.painter().text(pos2(r.min.x + 18.0, r.center().y), Align2::LEFT_CENTER, crate::i18n::tr_ui(name), Tokens::semibold(13.0), t.text);
     app.auto.add(&format!("graphics.section.{}", name.replace(' ', "")), r, name);
     if resp.clicked() {
         if open {
@@ -969,7 +1093,7 @@ fn glyph_button(ui: &mut egui::Ui, how: &str, tip: &str, on: bool, t: &Tokens) -
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
     align_glyph(ui.painter(), Rect::from_center_size(r.center(), vec2(16.0, 14.0)), how, if resp.hovered() || on { t.text } else { t.text_dim });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr_ui(tip))
 }
 
 fn letter_button(ui: &mut egui::Ui, text: &str, tip: &str, on: bool, t: &Tokens, font: egui::FontId) -> egui::Response {
@@ -980,7 +1104,7 @@ fn letter_button(ui: &mut egui::Ui, text: &str, tip: &str, on: bool, t: &Tokens,
         ui.painter().rect_filled(r, 3.0, t.hover);
     }
     ui.painter().text(r.center(), Align2::CENTER_CENTER, text, font, if on || resp.hovered() { t.text } else { t.text_dim });
-    resp.on_hover_text(tip)
+    resp.on_hover_text(crate::i18n::tr_ui(tip))
 }
 
 /// Whether the Properties panel should show the graphic editor.
@@ -992,9 +1116,17 @@ pub fn graphic_selected(app: &FilmcraftApp) -> bool {
 pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let Some((clip, it)) = selected_graphic(app) else {
-        crate::dock::placeholder(ui, rect, &t, "Select a graphic clip, or use the Type tool (T) on the Program monitor");
+        crate::dock::placeholder(
+            ui,
+            rect,
+            &t,
+            crate::i18n::t(
+                "Select a graphic clip, or use the Type tool (T) on the Program monitor",
+                "グラフィッククリップを選択するか、プログラムモニターで文字ツール (T) を使用してください",
+            ),
+        );
         let br = Rect::from_center_size(rect.center() + vec2(0.0, 30.0), vec2(150.0, 26.0));
-        let resp = ui.put(br, egui::Button::new("Create new graphic"));
+        let resp = ui.put(br, egui::Button::new(crate::i18n::t("Create new graphic", "新規グラフィックを作成")));
         app.auto.add("graphics.createNew", br, "Create new graphic");
         if resp.clicked()
             && let Err(e) = app.session.execute("graphics.newText", json!({"text": "New Text"}))
@@ -1048,7 +1180,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let (dr, dresp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
                     icons::paint(ui.painter(), dr.shrink(4.0), Icon::Trash, if dresp.hovered() { t.text } else { t.text_dim });
                     autos.push(("graphics.deleteLayer".into(), dr, "Delete Layer".into()));
-                    if dresp.on_hover_text("Delete Layer").clicked() {
+                    if dresp.on_hover_text(crate::i18n::t("Delete Layer", "レイヤーを削除")).clicked() {
                         actions.push(("graphics.deleteLayer".into(), json!({"clip": clip.0, "layer": l})));
                     }
                 }
@@ -1087,7 +1219,10 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 crate::panels::graphics_templates::responsive_time(app, ui, clip, &it, &mut autos, &mut actions);
             }
             ui.add_space(12.0);
-            ui.label(egui::RichText::new("Select a layer to edit its properties.").color(t.text_faint));
+            ui.label(
+                egui::RichText::new(crate::i18n::t("Select a layer to edit its properties.", "レイヤーを選択すると、プロパティを編集できます。"))
+                    .color(t.text_faint),
+            );
             return;
         };
         let e = &it.effects[idx[l]];
@@ -1162,7 +1297,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 _ => String::new(),
             };
             let fams = filmcraft_text::families();
-            let (_, mut vui) = cx.row(ui, "Font");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Font", "フォント"));
             let r = egui::ComboBox::from_id_salt(("gfx-font", clip.0, l)).selected_text(&family).width(170.0).height(400.0).show_ui(&mut vui, |ui| {
                 if !filmcraft_text::fonts::system_scanned() {
                     filmcraft_text::fonts::scan_system();
@@ -1175,7 +1310,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             });
             cx.auto("font", r.response.rect, "Font");
             let styles: Vec<String> = fams.iter().find(|(f, _)| f.eq_ignore_ascii_case(&family)).map(|(_, s)| s.clone()).unwrap_or_default();
-            let (_, mut vui) = cx.row(ui, "Font Style");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Font Style", "フォントスタイル"));
             let r = egui::ComboBox::from_id_salt(("gfx-style", clip.0, l)).selected_text(&style).width(170.0).show_ui(&mut vui, |ui| {
                 for st in styles.iter().map(String::as_str).chain(["Bold", "Italic", "Bold Italic"]).filter({
                     let mut seen = Vec::new();
@@ -1199,7 +1334,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 ParamValue::Choice(c) => c,
                 _ => 0,
             };
-            let (_, mut vui) = cx.row(ui, "Alignment");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Alignment", "整列"));
             for (i, (how, tip)) in [("pl", "Left Align Text"), ("pc", "Center Align Text"), ("pr", "Right Align Text"), ("pj", "Justify")].iter().enumerate() {
                 let r = glyph_button(&mut vui, how, tip, align == i as u32, &t);
                 cx.auto(&format!("align.{i}"), r.rect, tip);
@@ -1211,7 +1346,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             cx.number(ui, "Leading", "leading", 0.5, (-5000.0, 5000.0), 0, "");
             cx.number(ui, "Baseline Shift", "baseline_shift", 0.5, (-5000.0, 5000.0), 0, "");
             cx.number(ui, "Text Box Width", "box_width", 2.0, (0.0, 100_000.0), 0, "");
-            let (_, mut vui) = cx.row(ui, "Style");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Style", "スタイル"));
             let flag = |id: &str| pv(e, id, mt).as_bool().unwrap_or(false);
             let caps = match pv(e, "caps", mt) {
                 ParamValue::Choice(c) => c,
@@ -1242,9 +1377,27 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             let (_, mut vui) = cx.row(ui, "OpenType");
             cx.check(&mut vui, "kerning", "Kerning");
             cx.check(&mut vui, "ligatures", "Ligatures");
+            // ruby: 漢字《かんじ》 / ｜base《reading》 in the text is set as furigana
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Ruby", "ルビ"));
+            cx.check(&mut vui, "ruby", "Furigana from 《 》 marks");
+            // one-click looks (fill, outlines, band, shadow): graphics.textStyle
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Text Style", "テキストスタイル"));
+            let r = egui::ComboBox::from_id_salt(("text-style", cx.clip.0, cx.layer))
+                .width(190.0)
+                .selected_text(crate::i18n::t("Choose a style…", "スタイルを選択…"))
+                .show_ui(&mut vui, |ui| {
+                    for (id, name) in filmcraft_engine::text_style::style_names() {
+                        let b = ui.selectable_label(false, crate::i18n::tr(name));
+                        cx.auto(&format!("textStyle.{id}"), b.rect, name);
+                        if b.clicked() {
+                            cx.actions.push(("graphics.textStyle".into(), json!({"clip": cx.clip.0, "layer": cx.layer, "style": id})));
+                        }
+                    }
+                });
+            cx.auto("textStyle", r.response.rect, "Text Style");
         }
         if e.effect == graphic::SHAPE_LAYER && section(ui, app, "Shape", &t) {
-            let (_, mut vui) = cx.row(ui, "Shape");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Shape", "シェイプ"));
             cx.choice(&mut vui, "shape", graphic::SHAPE_OPTS, 120.0);
             cx.point(ui, "Size", "size");
             cx.number(ui, "Corner Radius", "corner_radius", 0.5, (0.0, 10_000.0), 0, "");
@@ -1252,7 +1405,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         // ---- appearance
         if section(ui, app, "Appearance", &t) {
-            let (_, mut vui) = cx.row(ui, "Fill");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Fill", "塗り"));
             cx.check(&mut vui, "fill", "");
             cx.color(&mut vui, "fill_color");
             for (on, col, w, kind, label) in
@@ -1266,7 +1419,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 vui.add_space(6.0);
                 cx.choice(&mut vui, kind, graphic::STROKE_OPTS, 70.0);
             }
-            let (_, mut vui) = cx.row(ui, "Background");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Background", "背景"));
             let bg = cx.check(&mut vui, "background", "");
             cx.color(&mut vui, "background_color");
             if bg {
@@ -1274,7 +1427,7 @@ pub fn properties(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 cx.number(ui, "   Size", "background_size", 0.5, (0.0, 1000.0), 0, "");
                 cx.number(ui, "   Corner Radius", "background_radius", 0.5, (0.0, 1000.0), 0, "");
             }
-            let (_, mut vui) = cx.row(ui, "Shadow");
+            let (_, mut vui) = cx.row(ui, crate::i18n::t("Shadow", "シャドウ"));
             let sh = cx.check(&mut vui, "shadow", "");
             cx.color(&mut vui, "shadow_color");
             if sh {

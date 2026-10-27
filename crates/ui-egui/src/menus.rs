@@ -148,6 +148,15 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         // the engine's counters plus playback, frame workers and UI timings
         return Ok(crate::perf::stats(app));
     }
+    // Replacing a project that has unsaved changes asks first (Save / Don't Save / Cancel); it
+    // used to discard them, recovery journal included. `force` skips the prompt.
+    if matches!(id, "file.newProject" | "file.open" | "file.openDemoProject")
+        && app.session.is_dirty()
+        && params.get("force").and_then(Value::as_bool) != Some(true)
+    {
+        crate::panels::clip_dialogs::open_save_prompt(app, id, params);
+        return Ok(json!({"dialog": "Save Project"}));
+    }
     if let Some(rest) = id.strip_prefix("window.panel.") {
         let p = PanelKind::from_name(rest).ok_or_else(|| format!("unknown panel `{rest}`"))?;
         app.show_panel(p);
@@ -279,12 +288,19 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         id if crate::links::url_for(id).is_some() => {
             let url = crate::links::url_for(id).unwrap_or_default();
             crate::links::open(ctx, url);
-            app.ui.status = format!("Opened {url}");
+            app.ui.status = crate::tf!("Opened {url}", "{url} を開きました");
             return Ok(json!({"url": url}));
         }
         "help.shortcuts" | "app.keyboardShortcuts" => {
             crate::panels::shortcuts_dialog::open(app);
             return Ok(Value::Null);
+        }
+        // File ▸ Export ▸ Media… opens Export mode (from the menu it failed with "need `path`"); with
+        // a path it exports directly.
+        "file.exportMedia" if params.get("path").is_none() => {
+            filmcraft_engine::find_command(id).map_or(Ok(()), |c| (c.enabled)(&app.session))?;
+            app.ui.mode = crate::state::Mode::Export;
+            return Ok(json!({"mode": "export"}));
         }
         // File ▸ Export ▸ AAF… / OMF… open their settings dialogs; with a path they export directly.
         "file.exportAaf" | "file.exportOmf" if params.get("path").is_none() => {
@@ -360,6 +376,29 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();
+    }
+    // Markers ▸ Copy YouTube Chapters: the list goes to the clipboard, problems to the status bar
+    if id == "markers.exportChapters"
+        && let Ok(v) = &r
+        && let Some(text) = v.get("text").and_then(Value::as_str)
+    {
+        ctx.copy_text(text.to_string());
+        let n = v.get("chapters").and_then(Value::as_array).map_or(0, Vec::len);
+        let short =
+            v.get("tooShort").and_then(Value::as_array).and_then(|a| a.first()).and_then(|c| c.get("title")).and_then(Value::as_str).map(str::to_string);
+        app.ui.status = if v.get("tooFew").and_then(Value::as_bool).unwrap_or(false) {
+            crate::tf!(
+                "Copied {n} chapters; YouTube shows chapters only when there are at least 3",
+                "チャプター {n} 件をコピーしました（YouTube でチャプターが表示されるのは 3 件以上のときです）"
+            )
+        } else if let Some(t) = short {
+            crate::tf!(
+                "Copied {n} chapters; \"{t}\" is shorter than the 10 s YouTube needs",
+                "チャプター {n} 件をコピーしました（「{t}」が 10 秒未満です。YouTube では各チャプター 10 秒以上が必要です）"
+            )
+        } else {
+            crate::tf!("Copied {n} chapters to the clipboard", "チャプター {n} 件をクリップボードにコピーしました")
+        };
     }
     r
 }
@@ -516,26 +555,37 @@ pub fn external_commands() -> Vec<filmcraft_engine::shortcuts::CommandInfo> {
     v
 }
 
-/// Draw the in-window menu bar.
-pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+/// Draw the in-window menu bar (each top-level menu's automation id is `menubar.<menu>`, e.g.
+/// `menubar.File`; its entries run through `ui.menu.invoke` by command id).
+/// Returns the right edge of the last menu (the bar itself takes the whole width it is given).
+pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> f32 {
     let items = menu_items(app);
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
+    let mut end = ui.max_rect().min.x;
+    let mut tops: Vec<(&str, egui::Rect)> = Vec::new();
     egui::MenuBar::new().ui(ui, |ui| {
         for top in MENUS {
             let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
-            ui.menu_button(top, |ui| {
+            let display_top = crate::i18n::tr(top);
+            let r = ui.menu_button(display_top, |ui| {
                 ui.set_min_width(260.0);
                 if mine.is_empty() {
-                    ui.add_enabled(false, egui::Button::new("(empty)"));
+                    ui.add_enabled(false, egui::Button::new(crate::i18n::t("(empty)", "(空)")));
                 }
                 menu_level(ui, &mine, 1, &mut clicked);
             });
+            end = end.max(r.response.rect.max.x);
+            tops.push((top, r.response.rect));
         }
     });
+    for (top, rect) in tops {
+        app.auto.add(&format!("menubar.{top}"), rect, top);
+    }
     if let Some(id) = clicked {
         let _ = invoke(app, &ctx, &id, json!({}));
     }
+    end
 }
 
 /// One menu level: items whose path ends here, and a submenu (at its first item's position) for
@@ -549,7 +599,8 @@ fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mu
             }
             subs.push(sub);
             let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
-            ui.menu_button(sub, |ui| {
+            let display_sub = crate::i18n::tr(sub);
+            ui.menu_button(display_sub, |ui| {
                 ui.set_min_width(220.0);
                 menu_level(ui, &inner, depth + 1, clicked);
             });
@@ -562,7 +613,8 @@ fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mu
 
 fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> bool {
     // checkable items leave room for a checkmark drawn at the left
-    let label = if it.checked.is_some() { format!("      {}", it.label) } else { it.label.clone() };
+    let localized = crate::i18n::tr(&it.label);
+    let label = if it.checked.is_some() { format!("      {}", localized) } else { localized.to_string() };
     let mut b = egui::Button::new(label);
     if let Some(s) = &it.shortcut {
         b = b.shortcut_text(shortcut_text(s));

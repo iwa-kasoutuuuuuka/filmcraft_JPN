@@ -324,3 +324,42 @@ fn lumetri_presets_in_the_effects_panel() {
     let e = lumetri(&mut d, clip);
     assert_eq!(e["params"]["temperature"]["value"], json!("Float(35.0)"), "{e}");
 }
+
+/// Every Lumetri slider is reachable by automation id (`lumetri.param.<id>`), not only the HDR
+/// and Refine ones: Basic Correction, Creative and Vignette, and clicking one edits the clip.
+#[test]
+fn every_lumetri_slider_has_an_automation_id() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Color"}));
+    d.frames(3);
+    let clip = select_first_clip(&mut d);
+    d.exec("effects.apply", json!({"clips": [clip], "effect": "lumetri"}));
+    d.frames(3);
+    for id in ["temperature", "tint", "saturation", "exposure", "contrast", "highlights", "shadows", "whites", "blacks"] {
+        assert!(!d.ids(&format!("lumetri.param.{id}")).is_empty(), "lumetri.param.{id} missing: {:?}", d.ids("lumetri."));
+    }
+    d.click("lumetri.section.Basic Correction");
+    d.click("lumetri.section.Vignette");
+    assert!(!d.ids("lumetri.param.vignette_amount").is_empty(), "{:?}", d.ids("lumetri."));
+    d.click("lumetri.section.Basic Correction");
+    // a click near the right end of the Exposure track raises the exposure
+    let r = d.element("lumetri.param.exposure").unwrap();
+    d.ok("ui.click", json!({"x": r[0] + r[2] - 66.0, "y": r[1] + r[3] / 2.0}));
+    d.frames(3);
+    let e = lumetri(&mut d, clip);
+    let v: f64 = e["params"]["exposure"]["value"].as_str().unwrap().trim_start_matches("Float(").trim_end_matches(')').parse().unwrap();
+    assert!(v > 1.0, "exposure raised: {e}");
+}
+
+/// The Workspaces popup's entries are clickable by automation id.
+#[test]
+fn workspace_menu_entries_have_automation_ids() {
+    let mut d = Driver::demo();
+    d.click("header.workspaces");
+    for w in ["Editing", "Color", "Audio", "Captions and Graphics", "All Panels"] {
+        assert!(!d.ids(&format!("header.workspaces.{w}")).is_empty(), "{w}: {:?}", d.ids("header."));
+    }
+    assert!(!d.ids("header.workspaces.reset").is_empty());
+    d.click("header.workspaces.Color");
+    assert_eq!(d.app().ui.workspace, "Color");
+}

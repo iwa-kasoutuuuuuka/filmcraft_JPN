@@ -31,7 +31,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let t = app.tokens;
     let ctx = ui.ctx().clone();
     let Some(seq_id) = app.session.state.active_sequence else {
-        crate::dock::placeholder(ui, rect, &t, "(no sequences)");
+        crate::dock::placeholder(ui, rect, &t, crate::i18n::t("(no sequences)", "(シーケンスなし)"));
         return;
     };
     let Some(frame) = frame(app) else { return };
