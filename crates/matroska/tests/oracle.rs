@@ -58,8 +58,13 @@ fn compare(ffprobe: &Path, path: &Path) -> (MkvFile, Vec<Packet>) {
             assert!((pts - p.pts).abs() <= p.lace as i64, "{ctx}: pts ffprobe {pts} vs {}", p.pts);
             pts_checked += 1;
         }
+        // A track's last block may be trimmed (BlockDuration shorter than a codec frame, e.g. the
+        // final AC-3 frame of a `-t 1` encode). Older FFmpeg reports the full frame there; newer
+        // FFmpeg reports the trimmed length, as we do.
+        let last_of_track = !packets.iter().skip(i + 1).any(|q| q.track == p.track);
         if let Some(dur) = int(&f["duration"])
             && p.duration != 0
+            && !(last_of_track && (p.duration as i64) < dur)
         {
             assert!((dur - p.duration as i64).abs() <= 1, "{ctx}: duration ffprobe {dur} vs {}", p.duration);
             dur_checked += 1;
