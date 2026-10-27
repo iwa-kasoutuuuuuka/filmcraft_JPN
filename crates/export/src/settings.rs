@@ -414,6 +414,17 @@ impl ExportSettings {
         !matches!(self.format, Format::Wav | Format::Aiff)
     }
 
+    /// Whether the output can carry an alpha channel ([`ExportSettings::alpha`]): ProRes 4444 /
+    /// 4444 XQ in QuickTime. (MXF ProRes stays opaque.)
+    pub fn supports_alpha(&self) -> bool {
+        self.format == Format::ProRes && crate::prores_profile(&self.prores_profile).chroma() == filmcraft_prores::ChromaFormat::Yuv444
+    }
+
+    /// Whether exported frames keep their straight alpha instead of being flattened over black.
+    pub fn keeps_alpha(&self) -> bool {
+        self.alpha && self.supports_alpha()
+    }
+
     /// File extension of the output.
     pub fn extension(&self) -> &'static str {
         if self.format.is_delivery() && self.multiplexer == Multiplexer::Mov { "mov" } else { self.format.extension() }
@@ -512,7 +523,11 @@ impl ExportSettings {
                         Profile::Proxy => ", ProRes 422 Proxy",
                         Profile::Lt => ", ProRes 422 LT",
                         Profile::Standard => ", ProRes 422",
-                        _ => ", ProRes 422 HQ",
+                        Profile::Hq => ", ProRes 422 HQ",
+                        Profile::P4444 if self.keeps_alpha() => ", ProRes 4444 with alpha",
+                        Profile::P4444 => ", ProRes 4444",
+                        Profile::P4444Xq if self.keeps_alpha() => ", ProRes 4444 XQ with alpha",
+                        Profile::P4444Xq => ", ProRes 4444 XQ",
                     }
                 }
                 Format::DnxHr => v += &format!(", DNxHR {}", if self.dnx_profile.is_empty() { "HQ".into() } else { self.dnx_profile.to_ascii_uppercase() }),

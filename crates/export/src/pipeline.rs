@@ -61,6 +61,9 @@ pub(crate) struct Pipeline {
     geom: Geometry,
     opts: RenderOptions,
     pub hdr_out: bool,
+    /// Keep the picture's straight alpha instead of flattening it over black
+    /// ([`ExportSettings::keeps_alpha`]; SDR only, HDR frames stay opaque).
+    alpha: bool,
     out_tf: Option<filmcraft_color::OutputTransform>,
     effects: ExportEffects,
     overlay: Option<Image>,
@@ -89,7 +92,9 @@ impl Pipeline {
         let direct =
             geom.content.is_none() && geom.offset == (0, 0) && filmcraft_render::output_size(q, geom.render_scale) == (r.width as usize, r.height as usize);
         let plain = !hdr_out && overlay.is_none() && !effects.name_overlay.enabled && !effects.timecode_overlay.enabled;
-        let gpu = (settings.gpu_rendering && direct && plain).then(crate::renderer).flatten();
+        // the GPU renderer composites over black: an export that keeps alpha renders on the CPU
+        let alpha = settings.keeps_alpha() && !hdr_out;
+        let gpu = (settings.gpu_rendering && direct && plain && !alpha).then(crate::renderer).flatten();
         Ok(Pipeline {
             gpu,
             seq_rate: q.settings.frame_rate,
@@ -103,14 +108,16 @@ impl Pipeline {
             geom,
             opts,
             hdr_out,
+            alpha,
             out_tf,
             effects,
             overlay,
         })
     }
 
-    /// Output frame `f` as straight sRGB RGBA8 at the output size, or for HDR exports the encoded
-    /// R'G'B' floats (3 per pixel).
+    /// Output frame `f` as sRGB RGBA8 at the output size (flattened over black unless the export
+    /// keeps alpha, then straight alpha), or for HDR exports the encoded R'G'B' floats (3 per
+    /// pixel).
     pub fn frame(&self, f: i64, sources: &dyn SourceProvider) -> (Vec<u8>, Vec<f32>) {
         let t = self.rate.tick_of(f);
         if let Some(r) = &self.gpu
@@ -140,7 +147,7 @@ impl Pipeline {
             }
             return (Vec::new(), out);
         }
-        let mut rgba = img.over_black_rgba8();
+        let mut rgba = if self.alpha { img.to_rgba8() } else { img.over_black_rgba8() };
         if lim.enabled {
             limit_rgba8(&mut rgba, lim.min_percent, lim.max_percent);
         }

@@ -788,13 +788,22 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
         Format::ProRes => {
             row(ui, t, "Profile", |ui| {
-                let keys = ["proxy", "lt", "standard", "hq"];
-                let labels = ["Apple ProRes 422 Proxy", "Apple ProRes 422 LT", "Apple ProRes 422", "Apple ProRes 422 HQ"];
+                let keys = ["proxy", "lt", "standard", "hq", "4444", "4444xq"];
+                let labels =
+                    ["Apple ProRes 422 Proxy", "Apple ProRes 422 LT", "Apple ProRes 422", "Apple ProRes 422 HQ", "Apple ProRes 4444", "Apple ProRes 4444 XQ"];
                 let cur = keys.iter().position(|k| *k == s.prores_profile).unwrap_or(3);
-                if let Some(i) = combo(ui, reg, "export.video.proresProfile", labels[cur], &opts(&labels), 220.0) {
-                    s.prores_profile = keys[i].into();
+                if let Some(i) = combo(ui, reg, "export.video.proresProfile", labels.get(cur).copied().unwrap_or_default(), &opts(&labels), 220.0)
+                    && let Some(k) = keys.get(i)
+                {
+                    s.prores_profile = (*k).into();
                 }
             });
+            // 4444 / 4444 XQ carry the sequence's alpha (transparent where nothing is drawn)
+            if s.supports_alpha() {
+                row(ui, t, "Alpha", |ui| {
+                    check(ui, reg, "export.video.alpha", &mut s.alpha, "Include Alpha Channel");
+                });
+            }
         }
         Format::DnxHr => {
             row(ui, t, "Profile", |ui| {

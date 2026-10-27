@@ -215,6 +215,9 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = bool_p(p, "sdr") {
         settings.sdr = v;
     }
+    if let Some(v) = bool_p(p, "alpha") {
+        settings.alpha = v;
+    }
     if let (Some(w), Some(h)) = (u64_p(p, "width"), u64_p(p, "height")) {
         settings.frame_size = Some((w as u32, h as u32));
     }

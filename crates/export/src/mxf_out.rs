@@ -38,7 +38,9 @@ fn picture(settings: &ExportSettings, w: u32, h: u32) -> PictureDesc {
                     Profile::Proxy => 1,
                     Profile::Lt => 2,
                     Profile::Standard => 3,
-                    _ => 4,
+                    Profile::Hq => 4,
+                    Profile::P4444 => 5,
+                    Profile::P4444Xq => 6,
                 },
             }
         }
@@ -52,10 +54,8 @@ fn picture(settings: &ExportSettings, w: u32, h: u32) -> PictureDesc {
         },
         _ => PictureCoding::Vc3 { cid: crate::dnx_profile(&settings.dnx_profile).cid() },
     };
+    // ProRes: 10-bit 4:2:2, or 12-bit 4:4:4 for the 4444 profiles (set by the descriptor)
     let mut d = PictureDesc::new(coding, w, h);
-    if matches!(coding, PictureCoding::ProRes { .. }) {
-        d.depth = 10;
-    }
     d.color = match settings.signal {
         s if s == ColorSignal::PQ => ColorSpace::Rec2020Pq,
         s if s == ColorSignal::HLG => ColorSpace::Rec2020Hlg,

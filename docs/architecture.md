@@ -609,7 +609,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
 |---|---|---|
 | `h264` | `filmcraft-h264enc` (profile, level, CBR / VBR 1-pass / VBR 2-pass, keyframe distance) + `filmcraft-aac` | MP4 or QuickTime (`isobmff`, the Multiplexer setting) |
 | `av1` | `filmcraft-av1enc` (rav1e speed 10, one-pass average bitrate, keyframe distance; 8-bit 4:2:0 BT.709) + `filmcraft-aac` | MP4 only (`av01` / `av1C`, `av01` compatible brand) |
-| `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ) | MOV |
+| `prores` | `filmcraft-prores` (Proxy / LT / 422 / HQ 10-bit 4:2:2; 4444 / 4444 XQ 12-bit 4:4:4, with `alpha` the straight alpha of the sequence, transparent where nothing is drawn; HDR and MXF ProRes stay opaque, and alpha exports render on the CPU) | MOV (`ap4h` / `ap4x` for 4444) |
 | `dnxhr` | `filmcraft-dnx` (LB / SQ / HQ / HQX) | MOV (`AVdh`) |
 | `mjpeg` | built in | MOV |
 | `mxf-op1a` | DNxHR (default), ProRes or H.264 (Annex B, long GOP), `mxfVideoCodec`; PCM 16/24-bit | MXF OP1a (`filmcraft-mxf` writer: frame-wrapped, index with temporal offsets, start timecode) |
@@ -626,7 +626,7 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
   H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
-  DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
+  ProRes 4444 / 4444 XQ (with or without alpha), DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF). User presets and favourites persist in
   `<data dir>/export-presets.json` (`export.presets.*`).
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
   or ranges add several items); `export.queue.start` encodes ready items one after another as

@@ -116,6 +116,113 @@ fn prores_export_roundtrip() {
 }
 
 #[test]
+fn prores_profiles_by_name() {
+    use filmcraft_prores::Profile;
+    for (name, p) in [
+        ("proxy", Profile::Proxy),
+        ("lt", Profile::Lt),
+        ("standard", Profile::Standard),
+        ("", Profile::Hq),
+        ("hq", Profile::Hq),
+        ("4444", Profile::P4444),
+        ("4444xq", Profile::P4444Xq),
+        ("4444 XQ", Profile::P4444Xq),
+        ("bogus", Profile::Hq),
+    ] {
+        assert_eq!(prores_profile(name), p, "{name}");
+    }
+    let s = |profile: &str, format: Format, alpha: bool| ExportSettings { format, prores_profile: profile.into(), alpha, ..Default::default() };
+    assert!(s("4444", Format::ProRes, true).keeps_alpha());
+    assert!(s("4444xq", Format::ProRes, true).keeps_alpha());
+    assert!(!s("4444", Format::ProRes, false).keeps_alpha());
+    assert!(!s("hq", Format::ProRes, true).keeps_alpha(), "4:2:2 has no alpha");
+    assert!(!s("4444", Format::MxfOp1a, true).keeps_alpha(), "MXF ProRes stays opaque");
+    assert!(!s("4444", Format::H264, true).keeps_alpha());
+}
+
+/// A 320×180 sequence whose only picture is a 160×90 matte of `color` in the middle: the rest of
+/// the frame is empty (transparent).
+fn small_matte_project(color: [f32; 4]) -> (Arc<Project>, ItemId, SourceMap) {
+    let (p, seq, mut m) = project();
+    let mut p = (*p).clone();
+    let small = GeneratorSource::new(Generator::ColorMatte { color }, 160, 90, FrameRate::FPS_24, Tick(2 * TICKS_PER_SECOND));
+    let item = p.sequence(seq).unwrap().video_tracks[0].items[0].item;
+    if let ItemKind::Media(mc) = &mut p.item_mut(item).unwrap().kind {
+        mc.media = MediaRef::Generator(small.generator.clone());
+        mc.info = small.info().clone();
+    }
+    m.0.insert(item, Arc::new(small));
+    (Arc::new(p), seq, m)
+}
+
+/// ProRes 4444 / 4444 XQ: 4:4:4 frames under `ap4h` / `ap4x`; with Include Alpha Channel the
+/// sequence's straight alpha is coded (0 where nothing is drawn), without it frames are opaque.
+#[test]
+fn prores_4444_export_keeps_alpha() {
+    let (p, seq, m) = small_matte_project([1.0, 1.0, 1.0, 1.0]);
+    for (profile, label, tag) in [("4444", "ProRes 4444", "ap4h"), ("4444xq", "ProRes 4444 XQ", "ap4x")] {
+        for alpha in [true, false] {
+            let path = tmp(&format!("pr_{profile}_{alpha}.mov"));
+            let s = ExportSettings { format: Format::ProRes, path: path.clone(), prores_profile: profile.into(), alpha, ..Default::default() };
+            export(&p, seq, &s, &m, &Progress::default()).unwrap();
+            let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+            let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+            let codec = src.info().video.as_ref().unwrap().codec.clone();
+            assert!(codec.contains(label), "{profile}: {codec}");
+            let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap();
+            assert!(f.format_label().contains("4:4:4"), "{profile}: {}", f.format_label());
+            let px = f.to_rgba8();
+            let at = |x: usize, y: usize| &px[(y * 320 + x) * 4..(y * 320 + x) * 4 + 4];
+            let (corner, centre) = (at(5, 5), at(160, 90));
+            assert!(centre[0] > 245 && centre[1] > 245 && centre[2] > 245 && centre[3] == 255, "{profile}: centre {centre:?}");
+            if alpha {
+                assert_eq!(corner[3], 0, "{profile}: empty area is transparent: {corner:?}");
+            } else {
+                assert!(corner[3] == 255 && corner[0] < 10, "{profile}: flattened over black: {corner:?}");
+            }
+            if let Some(ffprobe) = filmcraft_testkit::ffprobe_or_skip("prores 4444 pix_fmt") {
+                let out = std::process::Command::new(ffprobe)
+                    .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_tag_string,pix_fmt", "-of", "csv=p=0", &path])
+                    .output()
+                    .unwrap();
+                let o = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                assert!(o.contains(tag), "{profile}: {o}");
+                let want = if alpha { "yuva444p12" } else { "yuv444p12" };
+                assert!(o.contains(want), "{profile}: {o}");
+            }
+        }
+    }
+
+    // a half-transparent matte keeps its partial alpha
+    let (p, seq, m) = small_matte_project([1.0, 0.0, 0.0, 0.5]);
+    let path = tmp("pr_4444_half.mov");
+    let s = ExportSettings { format: Format::ProRes, path: path.clone(), prores_profile: "4444".into(), alpha: true, ..Default::default() };
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = filmcraft_codecs::open_bytes("pr.mov", bytes).unwrap();
+    let px = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 3))).unwrap().to_rgba8();
+    let c = &px[(90 * 320 + 160) * 4..(90 * 320 + 160) * 4 + 4];
+    assert!((c[3] as i32 - 128).abs() <= 3 && c[0] > 240 && c[1] < 15, "straight half alpha: {c:?}");
+}
+
+/// MXF OP1a with ProRes 4444 codes 4:4:4 (opaque) under profile 5.
+#[test]
+fn mxf_prores_4444_exports() {
+    let (p, seq, m) = project();
+    let path = tmp("pr4444.mxf");
+    let mut s = ExportSettings { format: Format::MxfOp1a, path: path.clone(), prores_profile: "4444".into(), ..Default::default() };
+    s.mxf_video_codec = crate::settings::MxfVideoCodec::ProRes;
+    s.range = Some(TimeRange::new(Tick::ZERO, FrameRate::FPS_24.tick_of(4)));
+    export(&p, seq, &s, &m, &Progress::default()).unwrap();
+    let bytes: Arc<[u8]> = std::fs::read(&path).unwrap().into();
+    let src = filmcraft_codecs::open_bytes("pr.mxf", bytes).unwrap();
+    let f = src.video_frame(FrameRequest::full(Tick(TICKS_PER_SECOND / 24))).unwrap();
+    assert!(f.format_label().contains("4:4:4"), "{}", f.format_label());
+    let px = f.to_rgba8();
+    assert!(px[0] > 240 && px[1] < 15 && px[3] == 255, "{:?}", &px[..4]);
+}
+
+#[test]
 fn dnxhr_export_roundtrip() {
     let (p, seq, m) = project();
     for (profile, label) in [("hq", "DNxHR HQ"), ("hqx", "DNxHR HQX"), ("sq", "DNxHR SQ")] {
