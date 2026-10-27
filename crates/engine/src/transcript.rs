@@ -441,6 +441,71 @@ fn remove_fillers(s: &mut Session, p: &Value) -> Result<Value> {
     remove_ranges(s, "Remove Filler Words", ranges)
 }
 
+/// Longest repeated phrase `transcript.findRepeats` / `removeRepeats` accept (`maxWords`).
+const MAX_REPEAT_WORDS: u64 = 32;
+/// Longest repeated phrase looked for by default.
+const DEFAULT_REPEAT_WORDS: u64 = 8;
+
+/// Repeat options from command parameters (hostile values clamped: `minWords` 1..=8, `maxWords`
+/// `minWords`..=32, `maxGapSeconds` 0..=60).
+fn repeat_options(p: &Value) -> tx::RepeatOptions {
+    let d = tx::RepeatOptions::default();
+    let min = u64_p(p, "minWords").unwrap_or(1).clamp(1, DEFAULT_REPEAT_WORDS);
+    let max = u64_p(p, "maxWords").unwrap_or(DEFAULT_REPEAT_WORDS).clamp(min, MAX_REPEAT_WORDS);
+    let max_gap = f64_p(p, "maxGapSeconds").filter(|v| v.is_finite()).map(|v| Tick::from_seconds_f64(v.clamp(0.0, 60.0))).unwrap_or(d.max_gap);
+    let fillers = match p.get("fillers").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        None => d.fillers,
+    };
+    tx::RepeatOptions { min_words: min as usize, max_words: max as usize, max_gap, fillers }
+}
+
+fn words_text(words: &[SeqWord], r: &std::ops::Range<usize>) -> String {
+    let mut out = String::new();
+    for w in words.get(r.clone()).unwrap_or_default() {
+        if filmcraft_project::transcript::needs_space(&out, &w.text) {
+            out.push(' ');
+        }
+        out.push_str(&w.text);
+    }
+    out
+}
+
+fn secs(t: Tick) -> f64 {
+    t.0 as f64 / TICKS_PER_SECOND as f64
+}
+
+/// `transcript.findRepeats`: the retakes `removeRepeats` would remove, without editing.
+fn find_repeats(s: &mut Session, p: &Value) -> Result<Value> {
+    let words = sequence_words(s);
+    let takes = tx::find_repeat_takes(&words, &repeat_options(p));
+    let list: Vec<Value> = takes
+        .iter()
+        .filter_map(|t| {
+            let (a, b) = (words.get(t.removed.start)?, words.get(t.removed.end.checked_sub(1)?)?);
+            Some(json!({
+                "removed": words_text(&words, &t.removed),
+                "kept": words_text(&words, &t.kept),
+                "from": t.removed.start,
+                "to": t.removed.end - 1,
+                "keptFrom": t.kept.start,
+                "keptTo": t.kept.end.saturating_sub(1),
+                "start": secs(a.start),
+                "end": secs(b.end),
+            }))
+        })
+        .collect();
+    Ok(json!({"count": list.len(), "repeats": list}))
+}
+
+/// `transcript.removeRepeats`: ripple-delete the abandoned takes (one undo step).
+fn remove_repeats(s: &mut Session, p: &Value) -> Result<Value> {
+    let words = sequence_words(s);
+    let hits = tx::find_repeats(&words, &repeat_options(p));
+    let ranges = tx::filler_ranges(&words, &hits, s.sequence_rate());
+    remove_ranges(s, "Remove Repeats", ranges)
+}
+
 fn create_captions(s: &mut Session, p: &Value) -> Result<Value> {
     let words = sequence_words(s);
     captions_from_words(s, &words, p)
@@ -560,6 +625,24 @@ pub fn commands() -> Vec<CommandSpec> {
             true,
         ),
         spec("transcript.removeFillers", "Remove Filler Words", &["Sequence", "Transcript"], r#"{"fillers":[str]?}"#, has_transcript, remove_fillers, true),
+        spec(
+            "transcript.findRepeats",
+            "Find Repeats",
+            &["Sequence", "Transcript"],
+            r#"{"minWords":1..8?,"maxWords":n<=32?,"maxGapSeconds":f?,"fillers":[str]?}"#,
+            has_transcript,
+            find_repeats,
+            false,
+        ),
+        spec(
+            "transcript.removeRepeats",
+            "Remove Repeats",
+            &["Sequence", "Transcript"],
+            r#"{"minWords":1..8?,"maxWords":n<=32?,"maxGapSeconds":f?,"fillers":[str]?}"#,
+            has_transcript,
+            remove_repeats,
+            true,
+        ),
         spec(
             "transcript.createTranslatedCaptions",
             "Create English Captions…",

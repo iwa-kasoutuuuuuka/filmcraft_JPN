@@ -354,7 +354,7 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let hits: Vec<std::ops::Range<usize>> = filmcraft_edit::transcript::search(&words, &app.ui.transcript_search);
     let mut x = bar.min.x + sw + 10.0;
     let range = sel.map(|(a, b)| json!({"from": a.min(b), "to": a.max(b)}));
-    let tools: [(Icon, &str, &str, bool, &str, Value); 5] = [
+    let tools: [(Icon, &str, &str, bool, &str, Value); 6] = [
         (
             Icon::Razor,
             "text.transcript.extract",
@@ -385,6 +385,14 @@ fn transcript(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             crate::i18n::t("Remove filler words", "フィラーワードを削除"),
             true,
             "transcript.removeFillers",
+            json!({}),
+        ),
+        (
+            Icon::Loop,
+            "text.transcript.removeRepeats",
+            crate::i18n::t("Remove repeats (keep the last take)", "言い直しを削除（最後のテイクを残す）"),
+            true,
+            "transcript.removeRepeats",
             json!({}),
         ),
         (

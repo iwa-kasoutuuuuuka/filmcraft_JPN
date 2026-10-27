@@ -761,6 +761,8 @@ fn tr_ja(s: &str) -> &str {
         "Transcript" => "文字起こし",
         "Remove Pauses" => "無音区間を削除",
         "Remove Filler Words" => "フィラーワードを削除",
+        "Find Repeats" => "言い直しを検出",
+        "Remove Repeats" => "言い直しを削除",
         "Create Captions from Transcript…" => "文字起こしからキャプションを作成…",
         "Clear All Events" => "すべてのイベントを消去",
         "Enable Remix" => "リミックスを有効にする",

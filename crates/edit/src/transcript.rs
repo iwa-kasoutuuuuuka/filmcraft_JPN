@@ -297,6 +297,133 @@ pub fn filler_ranges(words: &[SeqWord], hits: &[std::ops::Range<usize>], rate: F
     out
 }
 
+/// Options for [`find_repeats`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepeatOptions {
+    /// Shortest repeated phrase, in words.
+    pub min_words: usize,
+    /// Longest repeated phrase looked for, in words.
+    pub max_words: usize,
+    /// Takes are only compared within a run of words without a pause this long (nor a speaker
+    /// change).
+    pub max_gap: Tick,
+    /// Filler words (see [`find_fillers`]): skipped when comparing takes, so "we went, um, we
+    /// went" is a repeat, and never a repeat on their own.
+    pub fillers: Vec<String>,
+}
+
+impl Default for RepeatOptions {
+    fn default() -> Self {
+        Self { min_words: 1, max_words: 8, max_gap: Tick(2 * TICKS_PER_SECOND), fillers: DEFAULT_FILLERS.iter().map(|f| f.to_string()).collect() }
+    }
+}
+
+/// A repeated take found by [`find_repeat_takes`]: the abandoned take(s) and the take kept.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepeatTake {
+    /// Word index range to remove: the false start(s) and anything said between them and the
+    /// restart.
+    pub removed: std::ops::Range<usize>,
+    /// Word index range of the restart that matched (the take kept).
+    pub kept: std::ops::Range<usize>,
+}
+
+/// Retakes: word index ranges of abandoned takes ("so the the plan", "we went to the — we went to
+/// the store", 今日は、今日はですね), keeping the last take. See [`find_repeat_takes`].
+pub fn find_repeats(words: &[SeqWord], opts: &RepeatOptions) -> Vec<std::ops::Range<usize>> {
+    find_repeat_takes(words, opts).into_iter().map(|t| t.removed).collect()
+}
+
+fn is_kana(c: char) -> bool {
+    matches!(c, '\u{3041}'..='\u{309f}' | '\u{30a0}'..='\u{30ff}')
+}
+
+/// How many abandoned words may come between an `n`-word phrase and its restart.
+fn repeat_slack(n: usize) -> usize {
+    // A one- or two-word repeat must be immediate ("the the"); longer phrases may be followed by
+    // an abandoned word or two before the restart ("I was going to Tu- I was going to say").
+    n.saturating_sub(2) / 2
+}
+
+/// Retakes with the take kept for each. Within each run of words of one speaker without a pause of
+/// `max_gap` (filler words and punctuation-only words skipped), a phrase of `min_words..=max_words`
+/// words that is said again right after it (one or two words: immediately; longer phrases may have
+/// a few abandoned words before the restart) is an abandoned take: it and the words up to the
+/// restart are removed. The longest phrase wins; takes are found left to right and a chain of
+/// takes (three tries) removes all but the last. Words are compared normalised (case and
+/// punctuation ignored) and by spelling, so a phrase split into different words by the recogniser
+/// still matches (今日は = 今日 / は). A single word must have two characters or more (Japanese
+/// particles such as の don't count) unless it is a one-letter Latin word ("I I think").
+pub fn find_repeat_takes(words: &[SeqWord], opts: &RepeatOptions) -> Vec<RepeatTake> {
+    let min_words = opts.min_words.clamp(1, 64);
+    let max_words = opts.max_words.clamp(min_words, 64);
+    let fillers: Vec<String> = opts.fillers.iter().map(|f| filler_form(f)).filter(|f| !f.is_empty()).collect();
+    let mut out: Vec<RepeatTake> = Vec::new();
+    for para in paragraphs(words, opts.max_gap.max(Tick(1))) {
+        // the words compared: (word index, normalised form)
+        let toks: Vec<(usize, String)> = para
+            .filter_map(|i| {
+                let w = words.get(i)?;
+                let n = w.normalized();
+                (!n.is_empty() && !fillers.contains(&filler_form(&w.text))).then_some((i, n))
+            })
+            .collect();
+        // how many tokens from `j` spell `target` (case-folded words concatenated)
+        let spelled = |j: usize, target: &str| -> Option<usize> {
+            let mut acc = String::new();
+            for (k, (_, t)) in toks.get(j..)?.iter().enumerate().take(max_words.saturating_mul(4)) {
+                acc.push_str(t);
+                if acc == target {
+                    return Some(k + 1);
+                }
+                if !target.starts_with(acc.as_str()) {
+                    return None;
+                }
+            }
+            None
+        };
+        let mut i = 0;
+        while i < toks.len() {
+            let mut hit = None;
+            for n in (min_words..=max_words).rev() {
+                let Some(take) = toks.get(i..i.saturating_add(n)) else { continue };
+                let target: String = take.iter().map(|(_, t)| t.as_str()).collect();
+                let chars = target.chars().count();
+                if chars < 2 && !(n == 1 && target.chars().all(|c| c.is_ascii_alphabetic())) {
+                    continue;
+                }
+                // a kana pair said twice is usually one reduplicated word split by the
+                // recogniser (いろ / いろ, どん / どん), not a restart
+                if n == 1 && chars <= 2 && target.chars().all(is_kana) {
+                    continue;
+                }
+                let first = i + n;
+                if let Some((j, m)) = (first..=first + repeat_slack(n)).find_map(|j| spelled(j, &target).map(|m| (j, m))) {
+                    hit = Some((j, m));
+                    break;
+                }
+            }
+            let Some((j, m)) = hit else {
+                i += 1;
+                continue;
+            };
+            let (Some((a, _)), Some((b, _)), Some((last, _))) = (toks.get(i), toks.get(j), toks.get(j + m - 1)) else { break };
+            let take = RepeatTake { removed: *a..*b, kept: *b..*last + 1 };
+            match out.last_mut() {
+                // a chain: the previous restart was abandoned too
+                Some(prev) if prev.removed.end == take.removed.start => {
+                    prev.removed.end = take.removed.end;
+                    prev.kept = take.kept;
+                }
+                _ => out.push(take),
+            }
+            // the restart may itself be abandoned (three takes)
+            i = j;
+        }
+    }
+    out
+}
+
 /// Sort and merge ranges (overlapping or touching).
 pub fn merge_ranges(mut r: Vec<TimeRange>) -> Vec<TimeRange> {
     r.sort_by_key(|x| x.start);

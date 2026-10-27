@@ -454,3 +454,94 @@ fn japanese_captions_break_between_phrases() {
     assert!(b.iter().all(|x| filmcraft_project::transcript::display_width(&x.text) <= 8), "{:?}", b.iter().map(|x| &x.text).collect::<Vec<_>>());
     assert_eq!(b.iter().map(|x| x.text.as_str()).collect::<String>(), "あいうえおかきくけこ");
 }
+
+fn repeats(words: &[&str]) -> Vec<std::ops::Range<usize>> {
+    find_repeats(&japanese(words, 0.3), &RepeatOptions::default())
+}
+
+#[test]
+fn immediate_duplicate_word_is_a_repeat() {
+    assert_eq!(repeats(&["so", "the", "the", "plan", "is"]), vec![1..2]);
+    // one-letter stutter
+    assert_eq!(repeats(&["I", "I", "think", "so"]), vec![0..1]);
+    // case and punctuation ignored
+    assert_eq!(repeats(&["The,", "the", "plan"]), vec![0..1]);
+}
+
+#[test]
+fn multi_word_restart_removes_the_false_start() {
+    let w = japanese(&["We", "went", "to", "the", "—", "we", "went", "to", "the", "store."], 0.3);
+    let t = find_repeat_takes(&w, &RepeatOptions::default());
+    // the dash (no letters) goes with the abandoned take
+    assert_eq!(t, vec![RepeatTake { removed: 0..5, kept: 5..9 }]);
+    // an abandoned word before the restart of a long phrase
+    assert_eq!(repeats(&["I", "was", "going", "to", "Tu-", "I", "was", "going", "to", "say", "hi"]), vec![0..5]);
+    // a filler between the takes is removed with the false start
+    assert_eq!(repeats(&["we", "went", "um", "we", "went", "home"]), vec![0..3]);
+}
+
+#[test]
+fn three_takes_keep_the_last() {
+    let w = japanese(&["today", "today", "today", "is", "sunny"], 0.3);
+    assert_eq!(find_repeat_takes(&w, &RepeatOptions::default()), vec![RepeatTake { removed: 0..2, kept: 2..3 }]);
+    assert_eq!(repeats(&["the", "plan", "the", "plan", "the", "plan", "works"]), vec![0..4]);
+}
+
+#[test]
+fn legitimate_repeats_are_kept() {
+    // the same words far apart, or with other words between short phrases
+    assert!(repeats(&["I", "like", "rivers", "and", "I", "like", "lakes"]).is_empty());
+    assert!(repeats(&["in", "the", "box", "in", "the", "bag"]).is_empty());
+    assert!(repeats(&["the", "cat", "saw", "the", "dog"]).is_empty());
+    // fillers alone are not repeats (Remove Filler Words handles them)
+    assert!(repeats(&["um", "um", "yes"]).is_empty());
+    // single-character Japanese words (particles) and split reduplicated words are not repeats
+    assert!(repeats(&["私", "の", "の", "本"]).is_empty());
+    assert!(repeats(&["いろ", "いろ", "あり", "ます"]).is_empty());
+    assert!(repeats(&[]).is_empty());
+}
+
+#[test]
+fn repeats_stay_within_a_speaker_and_a_pause() {
+    let mut w = japanese(&["the", "plan", "the", "plan", "works"], 0.3);
+    for x in &mut w[2..] {
+        x.speaker = Some("B".into());
+    }
+    assert!(find_repeats(&w, &RepeatOptions::default()).is_empty());
+    // a long pause between the takes
+    let mut w = japanese(&["the", "plan", "the", "plan", "works"], 0.3);
+    for x in &mut w[2..] {
+        x.start += s(5.0);
+        x.end += s(5.0);
+    }
+    assert!(find_repeats(&w, &RepeatOptions::default()).is_empty());
+    assert_eq!(find_repeats(&w, &RepeatOptions { max_gap: s(10.0), ..Default::default() }), vec![0..2]);
+}
+
+#[test]
+fn japanese_restarts_are_found() {
+    assert_eq!(repeats(&["今日", "は", "今日", "は", "晴れ"]), vec![0..2]);
+    // split differently by the recogniser, with a comma
+    assert_eq!(repeats(&["今日は、", "今日", "は", "です", "ね"]), vec![0..1]);
+    assert_eq!(repeats(&["えーと", "東京", "に", "東京", "に", "行き", "ます"]), vec![1..3]);
+}
+
+#[test]
+fn repeat_options_are_clamped_and_honoured() {
+    let w = japanese(&["the", "the", "we", "went", "to", "we", "went", "to", "town"], 0.3);
+    assert_eq!(find_repeats(&w, &RepeatOptions::default()), vec![0..1, 2..5]);
+    assert_eq!(find_repeats(&w, &RepeatOptions { min_words: 2, ..Default::default() }), vec![2..5]);
+    assert_eq!(find_repeats(&w, &RepeatOptions { min_words: 1, max_words: 1, ..Default::default() }), vec![0..1]);
+    // hostile values don't panic
+    let _ = find_repeats(&w, &RepeatOptions { min_words: 0, max_words: 0, max_gap: Tick(i64::MIN), fillers: vec![] });
+    let _ = find_repeats(&w, &RepeatOptions { min_words: usize::MAX, max_words: 3, max_gap: Tick(i64::MAX), fillers: vec![String::new()] });
+}
+
+#[test]
+fn repeats_are_cut_between_the_neighbouring_words() {
+    let w = japanese(&["so", "the", "the", "plan", "is", "good"], 0.4);
+    let hits = find_repeats(&w, &RepeatOptions::default());
+    let ranges = filler_ranges(&w, &hits, R);
+    assert_eq!(ranges.len(), 1);
+    assert!(ranges[0].start >= w[0].end && ranges[0].end() <= w[2].start, "{ranges:?}");
+}

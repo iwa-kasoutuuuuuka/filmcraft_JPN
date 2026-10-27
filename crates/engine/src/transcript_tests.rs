@@ -214,3 +214,65 @@ fn hostile_speakers_and_caption_rules_are_refused_or_clamped() {
         s.active_sequence().unwrap().check().unwrap();
     }
 }
+
+/// Retakes on the first A1 clip's media: "So the the plan. We went to the — we went to the store."
+fn set_retakes(s: &mut Session, item: ItemId) {
+    let sin = s.active_sequence().unwrap().audio_tracks[0].items[0].source_in;
+    let sec = |x: f64| (sin + Tick::from_seconds_f64(x)).0;
+    let texts = ["So", "the", "the", "plan.", "We", "went", "to", "the", "—", "we", "went", "to", "the", "store."];
+    let words: Vec<_> =
+        texts.iter().enumerate().map(|(i, t)| json!({"text": t, "start": sec(0.2 + i as f64 * 0.3), "end": sec(0.45 + i as f64 * 0.3)})).collect();
+    s.execute("transcript.set", json!({"item": item.0, "transcript": {"language": "en", "words": words}})).unwrap();
+}
+
+#[test]
+fn find_and_remove_repeats() {
+    let (mut s, item, _) = session();
+    set_retakes(&mut s, item);
+    let before = s.active_sequence().unwrap().duration();
+    let n = words(&mut s).len();
+    let r = s.execute("transcript.findRepeats", json!({})).unwrap();
+    assert_eq!(r["count"], 2, "{r}");
+    assert_eq!(r["repeats"][0]["removed"], "the");
+    assert_eq!(r["repeats"][0]["kept"], "the");
+    assert_eq!((r["repeats"][0]["from"].as_u64(), r["repeats"][0]["to"].as_u64()), (Some(1), Some(1)));
+    assert_eq!(r["repeats"][1]["removed"], "We went to the —");
+    assert_eq!(r["repeats"][1]["kept"], "we went to the");
+    assert!(r["repeats"][1]["end"].as_f64().unwrap() > r["repeats"][1]["start"].as_f64().unwrap());
+    // finding edits nothing
+    assert_eq!(words(&mut s).len(), n);
+    assert_eq!(s.active_sequence().unwrap().duration(), before);
+
+    let r = s.execute("transcript.removeRepeats", json!({})).unwrap();
+    assert_eq!(r["removed"], 2, "{r}");
+    assert_eq!(words(&mut s), ["So", "the", "plan.", "we", "went", "to", "the", "store."]);
+    let after = s.active_sequence().unwrap().duration();
+    assert!(after < before - Tick::from_seconds_f64(1.2), "{before:?} → {after:?}");
+    s.active_sequence().unwrap().check().unwrap();
+    assert_eq!(s.execute("transcript.findRepeats", json!({})).unwrap()["count"], 0);
+    // one undo step
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(words(&mut s).len(), n);
+    assert_eq!(s.active_sequence().unwrap().duration(), before);
+    // only the long restart
+    let r = s.execute("transcript.removeRepeats", json!({"minWords": 2})).unwrap();
+    assert_eq!(r["removed"], 1, "{r}");
+    assert_eq!(words(&mut s).len(), n - 5);
+}
+
+#[test]
+fn hostile_repeat_params_are_clamped() {
+    let (mut s, item, _) = session();
+    assert!(s.execute("transcript.removeRepeats", json!({})).is_err(), "no transcript yet");
+    set_retakes(&mut s, item);
+    for p in [
+        json!({"minWords": u64::MAX, "maxWords": u64::MAX, "maxGapSeconds": 1e300}),
+        json!({"minWords": 0, "maxWords": 0, "maxGapSeconds": -1e300}),
+        json!({"minWords": 9, "maxWords": 2, "fillers": [""]}),
+        json!({"minWords": "x", "maxWords": -3, "maxGapSeconds": "nan", "fillers": 7}),
+    ] {
+        s.execute("transcript.findRepeats", p.clone()).unwrap();
+        s.execute("transcript.removeRepeats", p).unwrap();
+        s.active_sequence().unwrap().check().unwrap();
+    }
+}
