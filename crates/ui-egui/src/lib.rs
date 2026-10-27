@@ -907,7 +907,10 @@ impl FilmcraftApp {
                 hook(&items);
             }
         }
-        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) {
+        // A text layer being typed on the Program monitor owns the keys, including in the pass that
+        // starts the edit: shortcuts run before the panels take focus, so a first key (or an input
+        // method's) would otherwise fire a single-key tool shortcut.
+        if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) || (self.ui.gfx_edit.is_some() && self.ui.focused == PanelKind::Program) {
             return;
         }
         // A dialog is open (a modal such as Recover Unsaved Changes, or a command's dialog): keys

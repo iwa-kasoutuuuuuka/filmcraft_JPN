@@ -737,6 +737,9 @@ pub struct GfxEdit {
     /// caret until it is committed.
     #[serde(default)]
     pub preedit: String,
+    /// The clause of `preedit` being converted (character range), drawn highlighted.
+    #[serde(default)]
+    pub preedit_clause: Option<(usize, usize)>,
 }
 
 fn captions_tab() -> String {
