@@ -15,19 +15,19 @@
 
 <p align="center">
   macOS、Windows、Linux、WebAssembly (ブラウザ) にネイティブ対応。<br>
-  Developed by the ArtCraft team · Japanese Localization & GPU Optimization by filmcraft_JPN
+  開発: ArtCraft チーム · 日本語化と GPU 最適化: filmcraft_JPN
 </p>
 
 <p align="center">
-  <a href="#ライセンスとクレジット"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-8b5cf6"></a>
-  <img alt="Written in pure Rust" src="https://img.shields.io/badge/pure-Rust-6a3fd6?logo=rust&logoColor=white">
-  <img alt="Runs on macOS, Windows and Linux" src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Windows%20%7C%20Linux-8b5cf6">
-  <img alt="Language: 日本語 100%" src="https://img.shields.io/badge/UI-完全日本語対応-22c55e">
-  <img alt="GPU Acceleration" src="https://img.shields.io/badge/GPU-WebGPU%20%2F%20wgpu-f59e0b">
+  <a href="#ライセンスとクレジット"><img alt="ライセンス: MIT または Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%7C%20Apache--2.0-8b5cf6"></a>
+  <img alt="ピュア Rust で実装" src="https://img.shields.io/badge/pure-Rust-6a3fd6?logo=rust&logoColor=white">
+  <img alt="macOS・Windows・Linux で動作" src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20Windows%20%7C%20Linux-8b5cf6">
+  <img alt="UI: 完全日本語対応" src="https://img.shields.io/badge/UI-完全日本語対応-22c55e">
+  <img alt="GPU アクセラレーション" src="https://img.shields.io/badge/GPU-WebGPU%20%2F%20wgpu-f59e0b">
 </p>
 
 <p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
+  <a href="https://discord.gg/artcraft"><img alt="ArtCraft の Discord コミュニティに参加" src="https://img.shields.io/badge/Discord%20%E3%81%AB%E5%8F%82%E5%8A%A0-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
 </p>
 
 <p align="center">
@@ -596,13 +596,13 @@ rustup update stable
 
 ## <a id="アーキテクチャと設計思想"></a>🏗 アーキテクチャと設計思想
 
-FilmCraft は、関心事の分離（Separation of Concerns）と厳格なレイヤリング（`L0`〜`L6`、下位の層は上位の層に依存しない）に基づき設計されています。`crates/` の 42 クレートと `apps/` の 3 つの実行体からなり、層の決まりは `cargo xtask layers` で検査されます：
+FilmCraft は、関心事の分離（Separation of Concerns）と厳格なレイヤリング（`L0`〜`L6`、下位の層は上位の層に依存しない）に基づき設計されています。`crates/` の 45 クレートと `apps/` の 3 つの実行体からなり、層の決まりは `cargo xtask layers` で検査されます：
 
 ```text
-crates/ (42 クレート) + apps/ (3 実行体)
+crates/ (45 クレート) + apps/ (3 実行体)
 ├── [L0] time / geom / color / bitstream / testkit         # 整数 Tick・幾何・色空間・ビット読み取り・テスト補助
 │        isobmff / matroska / mxf / cfb / mpegts / ogg / riff  # コンテナ (MP4/MOV, MKV/WebM, MXF, AAF/OMF, TS, Ogg, AVI)
-│        h264 / h264enc / hevc / vp9 / av1 / prores / dnx / mpeg2v / aac / ac3 / opus  # 独自コーデック
+│        h264 / h264enc / hevc / vp9 / av1 / av1enc / prores / dnx / mpeg2v / aac / ac3 / opus / flac  # 独自コーデック
 ├── [L1] frame / media / project / audio-dsp / text         # フレーム・メディア抽象・データモデル・音声DSP・文字組版(ルビ)
 ├── [L2] edit / codecs / captions / speech / interchange    # 編集コア・デコード統合・字幕・Whisper 文字起こし・EDL/XML/AAF
 ├── [L3] render / gpu / scopes / export / format / golden   # レンダリング・WebGPU 合成・スコープ・書き出し・保存形式
@@ -622,11 +622,11 @@ crates/ (42 クレート) + apps/ (3 実行体)
 
 FilmCraft は **MIT License** または **Apache License 2.0** のデュアルライセンスで提供されています。
 
-- **Copyright**: (c) 2026 ArtCraft Team and FilmCraft contributors.
+- **著作権**: (c) 2026 ArtCraft Team and FilmCraft contributors（ArtCraft チームおよび FilmCraft の貢献者）
 - **商標について**: Adobe, Premiere Pro は Adobe Inc. の登録商標です。互換性およびワークフロー説明の目的でのみ参照しています。
 - **日本語ローカライズ & GPU 最適化**: 本リポジトリ (`filmcraft_JPN`) は、日本のクリエイターコミュニティ向けに UI・ドキュメントを完全日本語化し、WebGPU 最適化を施した特別エディションです。
 
 ---
 <p align="center">
-  <sub>Made with ❤️ by the ArtCraft Team & the Japanese Localization Project</sub>
+  <sub>ArtCraft チームと日本語化プロジェクトが ❤️ を込めて制作</sub>
 </p>
