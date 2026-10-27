@@ -1925,6 +1925,7 @@ dependencies = [
  "filmcraft-ogg",
  "filmcraft-opus",
  "filmcraft-prores",
+ "filmcraft-riff",
  "filmcraft-testkit",
  "filmcraft-time",
  "filmcraft-vp9",
@@ -2280,6 +2281,13 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "filmcraft-riff"
+version = "0.2.0"
+dependencies = [
+ "filmcraft-testkit",
 ]
 
 [[package]]

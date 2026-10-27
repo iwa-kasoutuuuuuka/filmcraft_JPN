@@ -597,7 +597,7 @@ FilmCraft は、関心事の分離（Separation of Concerns）と厳格なレイ
 ```text
 crates/ (42 クレート) + apps/ (3 実行体)
 ├── [L0] time / geom / color / bitstream / testkit         # 整数 Tick・幾何・色空間・ビット読み取り・テスト補助
-│        isobmff / matroska / mxf / cfb / mpegts / ogg     # コンテナ (MP4/MOV, MKV/WebM, MXF, AAF/OMF, TS, Ogg)
+│        isobmff / matroska / mxf / cfb / mpegts / ogg / riff  # コンテナ (MP4/MOV, MKV/WebM, MXF, AAF/OMF, TS, Ogg, AVI)
 │        h264 / h264enc / hevc / vp9 / av1 / prores / dnx / mpeg2v / aac / ac3 / opus  # 独自コーデック
 ├── [L1] frame / media / project / audio-dsp / text         # フレーム・メディア抽象・データモデル・音声DSP・文字組版(ルビ)
 ├── [L2] edit / codecs / captions / speech / interchange    # 編集コア・デコード統合・字幕・Whisper 文字起こし・EDL/XML/AAF

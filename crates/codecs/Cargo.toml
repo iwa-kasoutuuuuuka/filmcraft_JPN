@@ -1,6 +1,6 @@
 [package]
 name = "filmcraft-codecs"
-description = "Container + codec hub: MP4/MOV, Matroska, MXF, Ogg and MPEG TS/PS sources, image sequences, GOP-aware seeking, decoder registry, audio decoding"
+description = "Container + codec hub: MP4/MOV, Matroska, MXF, Ogg, MPEG TS/PS and AVI sources, image sequences, GOP-aware seeking, decoder registry, audio decoding"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,6 +21,7 @@ filmcraft-mpegts = { workspace = true }
 filmcraft-mpeg2v = { workspace = true }
 filmcraft-ac3 = { workspace = true }
 filmcraft-ogg = { workspace = true }
+filmcraft-riff = { workspace = true }
 filmcraft-bitstream = { workspace = true }
 filmcraft-h264 = { workspace = true }
 filmcraft-hevc = { workspace = true }

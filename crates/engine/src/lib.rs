@@ -977,6 +977,8 @@ mod autosave_tests;
 #[cfg(test)]
 mod autoswitch_tests;
 #[cfg(test)]
+mod avi_import_tests;
+#[cfg(test)]
 mod censor_tests;
 #[cfg(test)]
 mod clip_ops_tests;
