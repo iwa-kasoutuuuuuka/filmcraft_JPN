@@ -969,6 +969,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 #[cfg(test)]
 mod aaf_omf_tests;
 #[cfg(test)]
+mod animated_image_tests;
+#[cfg(test)]
 mod audio_effects_tests;
 #[cfg(test)]
 mod audio_plugins_tests;
