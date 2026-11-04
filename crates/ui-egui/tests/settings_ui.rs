@@ -331,3 +331,57 @@ fn snap_playhead_and_return_to_beginning() {
     d.ok("ui.playback", json!({"action": "stop"}));
     assert!(ph.0 < dur.0 / 2, "restarts from the beginning: {ph:?}");
 }
+
+/// Settings FilmCraft does not act on are disabled, with the reason as their tooltip (and an
+/// automation element `settings.<key>.unavailable` carrying it).
+#[test]
+fn inactive_settings_are_disabled_with_a_reason() {
+    let mut d = Driver::demo();
+    d.menu("app.settings.playback");
+    assert!(d.has("settings.playback.enableTransmit.unavailable"), "Mercury Transmit is hardware FilmCraft does not drive");
+    assert!(!d.has("settings.playback.pauseEncoderQueue.unavailable"), "wired");
+    assert!(!d.has("settings.playback.prerollSeconds.unavailable"));
+    // a disabled checkbox does not change
+    d.click("settings.playback.enableTransmit");
+    assert_eq!(d.draft()["values"]["playback"]["enableTransmit"], false);
+    d.click("settings.playback.pauseEncoderQueue");
+    assert_eq!(d.draft()["values"]["playback"]["pauseEncoderQueue"], false, "an active one does");
+    d.click("settings.cancel");
+    d.menu("app.settings.color");
+    for k in ["color.displayColorManagement", "color.extendedDynamicRange", "color.hdrGraphicsWhite"] {
+        assert!(d.has(&format!("settings.{k}.unavailable")), "{k}");
+    }
+    d.click("settings.cancel");
+}
+
+/// Settings ▸ Timeline ▸ Set focus on the Timeline when performing Insert/Overwrite edits.
+#[test]
+fn insert_and_overwrite_focus_the_timeline_when_set() {
+    let mut d = Driver::demo();
+    let item = {
+        let p = &d.harness.state().session.project;
+        p.items.values().find(|i| matches!(i.kind, filmcraft_engine::project::ItemKind::Media(_)) && i.has_video()).unwrap().id
+    };
+    d.exec("source.open", json!({"item": item.0}));
+    d.ok("ui.set", json!({"focused": "Source"}));
+    d.menu("source.insert");
+    assert_eq!(d.inspect()["ui"]["focused"], "Source", "off (default): focus stays on the Source monitor");
+    d.exec("prefs.set", json!({"key": "timeline.focusTimelineOnEdit", "value": true}));
+    d.ok("ui.set", json!({"focused": "Source"}));
+    d.menu("source.overwrite");
+    assert_eq!(d.inspect()["ui"]["focused"], "Timeline");
+}
+
+/// Settings ▸ Playback ▸ Pause Media Encoder queue during playback: the UI tells the engine
+/// when a monitor plays.
+#[test]
+fn playback_state_reaches_the_export_queue() {
+    let mut d = Driver::demo();
+    assert!(!d.harness.state().session.playback_active);
+    d.ok("ui.playback", json!({"action": "play"}));
+    d.frames(2);
+    assert!(d.harness.state().session.playback_active);
+    d.ok("ui.playback", json!({"action": "stop"}));
+    d.frames(2);
+    assert!(!d.harness.state().session.playback_active);
+}

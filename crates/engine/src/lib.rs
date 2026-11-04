@@ -387,6 +387,10 @@ pub struct Session {
     /// get them back as `warnings` (a misspelt key, e.g. `volume` for `volumeDb`, used to be
     /// ignored without a word).
     pub last_unknown_params: Vec<String>,
+    /// The frontend is playing a monitor (set every frame by the UI). With Settings ▸ Playback ▸
+    /// "Pause Media Encoder queue during playback" the export queue starts no new export while it
+    /// is set (an export already encoding finishes).
+    pub playback_active: bool,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -475,6 +479,7 @@ impl Session {
             browser: Default::default(),
             exec_depth: 0,
             last_unknown_params: Vec::new(),
+            playback_active: false,
         }
     }
 

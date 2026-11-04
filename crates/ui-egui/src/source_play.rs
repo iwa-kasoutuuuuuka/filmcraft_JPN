@@ -79,6 +79,7 @@ impl FilmcraftApp {
             return false;
         }
         let map = [self.session.prefs.audio_hardware.map_left, self.session.prefs.audio_hardware.map_right];
+        let sum_to_mono = self.session.prefs.audio.sum_to_mono_in_source;
         let Some(a) = self.audio.as_mut() else { return false };
         let sr = a.sample_rate();
         let mut cursor = from.to_units_floor(i64::from(sr));
@@ -86,8 +87,9 @@ impl FilmcraftApp {
             let n = buf.len() / ch.max(1);
             match src.audio(cursor, n, sr) {
                 Ok(b) if !b.channels.is_empty() => {
-                    let right = b.channels.len().min(2) - 1;
-                    filmcraft_engine::settings::map_output(&b.channels[0], &b.channels[right], buf, ch, map);
+                    // Settings ▸ Audio ▸ Sum multichannel outputs to mono in Source Monitor
+                    let (l, r) = filmcraft_engine::settings::source_monitor_pair(&b.channels, sum_to_mono);
+                    filmcraft_engine::settings::map_output(&l, &r, buf, ch, map);
                 }
                 _ => buf.fill(0.0),
             }

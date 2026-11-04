@@ -769,6 +769,7 @@ pub fn commands() -> Vec<CommandSpec> {
                 // Settings ▸ Graphics ▸ Text: smart quotes, ligatures, default font
                 let gp = s.prefs.graphics.clone();
                 let text = if gp.smart_quotes { crate::settings::smart_quotes(&text) } else { text };
+                let text = if gp.hindi_digits { crate::settings::hindi_digits(&text) } else { text };
                 let (w, h) = s.active_sequence().map(|q| (q.settings.width, q.settings.height)).unwrap_or((1920, 1080));
                 let pos = vec2_p(p, "position").unwrap_or(Vec2::new(w as f64 / 2.0, h as f64 / 2.0));
                 let size = f64_p(p, "size").unwrap_or(100.0);

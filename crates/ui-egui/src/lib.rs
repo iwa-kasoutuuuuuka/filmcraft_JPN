@@ -1115,6 +1115,8 @@ impl FilmcraftApp {
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
         self.advance_source_playback(&ctx);
+        // (Settings ▸ Playback ▸ Pause Media Encoder queue during playback)
+        self.session.playback_active = self.playback.playing || self.source_playing();
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
