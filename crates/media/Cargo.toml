@@ -14,12 +14,10 @@ filmcraft-time = { workspace = true }
 filmcraft-color = { workspace = true }
 filmcraft-frame = { workspace = true }
 rayon = { workspace = true }
-# Deflate-compressed DNG tiles; pure Rust, MIT / Apache-2.0 / Zlib.
+# inflate for ZIP-compressed PSD composites and Deflate DNG tiles; pure Rust, MIT / Apache-2.0 / Zlib
 miniz_oxide = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-# inflate for ZIP-compressed PSD composites; pure Rust, MIT / Apache-2.0 / Zlib
-miniz_oxide = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
 
 [dev-dependencies]
