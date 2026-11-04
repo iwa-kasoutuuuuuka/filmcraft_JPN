@@ -1,7 +1,7 @@
 //! CDEF (7.15).
 
 use crate::frame::{FrameBuf, RowsMut};
-use crate::par::Pool;
+use crate::par::{POST_TASKS, Pool};
 use crate::spec_tables::*;
 use crate::state::FrameState;
 
@@ -23,7 +23,7 @@ pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
     let ranges = |sy: usize| -> Vec<(usize, usize)> { (0..n).map(|b| ((64 * b) >> sy, if b + 1 == n { usize::MAX } else { (64 * (b + 1)) >> sy })).collect() };
     let mut bands: Vec<[RowsMut<'_>; 3]> =
         p0.bands_mut(&ranges(0)).into_iter().zip(p1.bands_mut(&ranges(ssy))).zip(p2.bands_mut(&ranges(ssy))).map(|((a, b), c)| [a, b, c]).collect();
-    let any = pool.map_mut(&mut bands, |b, band| {
+    let any = pool.map_mut_tasks(&mut bands, POST_TASKS, |b, band| {
         for (p, dst) in band.iter_mut().enumerate() {
             let src = &fs.cur.planes[p].data;
             let start = dst.y0 * dst.stride;

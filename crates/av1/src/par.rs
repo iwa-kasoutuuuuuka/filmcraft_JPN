@@ -4,6 +4,10 @@
 #[cfg(feature = "threads")]
 use std::sync::Arc;
 
+/// Parallel tasks per post-filter pass: enough to cut a 4K frame's filter latency several
+/// times, few enough that most workers stay asleep (the frame workers keep them busy).
+pub(crate) const POST_TASKS: usize = 8;
+
 /// A handle to the decoder's worker pool (or none: run on the calling thread).
 #[derive(Clone, Default)]
 pub(crate) struct Pool {
@@ -51,6 +55,21 @@ impl Pool {
             use rayon::prelude::*;
             return pool.install(|| items.par_iter_mut().enumerate().map(|(i, t)| f(i, t)).collect());
         }
+        items.iter_mut().enumerate().map(|(i, t)| f(i, t)).collect()
+    }
+
+    /// Like `map_mut`, in at most `max_tasks` parallel tasks of consecutive items (fewer
+    /// workers woken for short jobs, so less time spent spinning idle).
+    pub fn map_mut_tasks<T: Send, R: Send>(&self, items: &mut [T], max_tasks: usize, f: impl Fn(usize, &mut T) -> R + Sync + Send) -> Vec<R> {
+        #[cfg(feature = "threads")]
+        if let Some(pool) = &self.pool
+            && items.len() > 1
+        {
+            use rayon::prelude::*;
+            let min_len = items.len().div_ceil(max_tasks.max(1));
+            return pool.install(|| items.par_iter_mut().enumerate().with_min_len(min_len).map(|(i, t)| f(i, t)).collect());
+        }
+        let _ = max_tasks;
         items.iter_mut().enumerate().map(|(i, t)| f(i, t)).collect()
     }
 

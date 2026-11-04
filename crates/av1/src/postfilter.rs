@@ -2,6 +2,7 @@
 //! super-resolution upscaling (7.16) and loop restoration (7.17).
 
 use crate::frame::RowsMut;
+use crate::par::POST_TASKS;
 use crate::spec_tables::*;
 use crate::state::FrameState;
 use crate::stats::{DecodeStats, Stage, Timer};
@@ -64,7 +65,7 @@ fn loop_filter_planes(fs: &FrameState, cur: &mut crate::frame::FrameBuf, pool: &
             // pass 0: vertical edges
             let ranges: Vec<(usize, usize)> = (0..n).map(band_rows).collect();
             let mut bands = pl.bands_mut(&ranges);
-            pool.map_mut(&mut bands, |b, band| lf_band(fs, band, plane, 0, b));
+            pool.map_mut_tasks(&mut bands, POST_TASKS, |b, band| lf_band(fs, band, plane, 0, b));
             drop(bands);
             // pass 1: horizontal edges
             for parity in 0..2 {
@@ -77,7 +78,7 @@ fn loop_filter_planes(fs: &FrameState, cur: &mut crate::frame::FrameBuf, pool: &
                     })
                     .collect();
                 let mut bands = pl.bands_mut(&ranges);
-                pool.map_mut(&mut bands, |i, band| {
+                pool.map_mut_tasks(&mut bands, POST_TASKS, |i, band| {
                     if let Some(&b) = ids.get(i) {
                         lf_band(fs, band, plane, 1, b);
                     }
