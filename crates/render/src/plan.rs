@@ -359,7 +359,7 @@ fn push_item(
         let Some(size) = crate::source_size(project, item.item) else { return };
         let (w, h) = output_size(seq, opts.scale);
         let m = Affine::scale(opts.scale as f64, opts.scale as f64).then_apply(&motion_matrix(seq, item, size, mt));
-        if let Some((img, x, y)) = crate::graphic_clip::render_graphic_tight(item, mt, size, &m, w, h) {
+        if let Some((img, x, y)) = crate::graphic_clip::render_graphic_tight_src(item, mt, size, &m, w, h, sources) {
             out.push(PlanLayer::new(cpu_frame(img), Affine::translate(x as f64, y as f64), op * extra_opacity, bl));
         }
         return;
