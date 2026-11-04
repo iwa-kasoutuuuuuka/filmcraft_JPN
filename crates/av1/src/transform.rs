@@ -81,9 +81,14 @@ impl<const L: usize> Lane for [i32; L] {
     fn rotate(a: Self, b: Self, cos: i32, sin: i32) -> (Self, Self) {
         let mut x = [0; L];
         let mut y = [0; L];
+        // Three products instead of four: with t = (a + b) * cos, a * cos - b * sin =
+        // t - b * (cos + sin) and a * sin + b * cos = t + a * (sin - cos), exact in wrapping
+        // (modulo 2^32) arithmetic.
+        let (cps, smc) = (cos.wrapping_add(sin), sin.wrapping_sub(cos));
         for l in 0..L {
-            let p = a[l].wrapping_mul(cos).wrapping_sub(b[l].wrapping_mul(sin));
-            let q = a[l].wrapping_mul(sin).wrapping_add(b[l].wrapping_mul(cos));
+            let t = a[l].wrapping_add(b[l]).wrapping_mul(cos);
+            let p = t.wrapping_sub(b[l].wrapping_mul(cps));
+            let q = t.wrapping_add(a[l].wrapping_mul(smc));
             x[l] = p.wrapping_add(1 << 11) >> 12;
             y[l] = q.wrapping_add(1 << 11) >> 12;
         }
@@ -122,6 +127,7 @@ impl<const L: usize> Lane for [i32; L] {
     }
 }
 
+#[inline(always)]
 fn brev(num_bits: u32, x: usize) -> usize {
     let mut t = 0;
     for i in 0..num_bits {
@@ -155,12 +161,45 @@ fn hd<T: Lane>(t: &mut [T], a: usize, b: usize, flip: bool, r: u32) {
 
 /// Inverse DCT of length 2^n (7.13.2.3), in place.
 pub(crate) fn inverse_dct<T: Lane>(t: &mut [T], n: u32, r: u32) {
+    // A constant length lets every loop below unroll with constant indices and angles.
+    let Some(t) = t.first_chunk_mut::<64>() else {
+        return;
+    };
+    match n {
+        2 => inverse_dct_n::<T, 2, 4>(t, r),
+        3 => inverse_dct_n::<T, 3, 8>(t, r),
+        4 => inverse_dct_n::<T, 4, 16>(t, r),
+        5 => inverse_dct_n::<T, 5, 32>(t, r),
+        _ => inverse_dct_n::<T, 6, 64>(t, r),
+    }
+}
+
+/// `inverse_dct` of a vector whose inputs from 8 on are zero (the same steps with those
+/// zeros known, so the work on them folds away; bit-identical).
+fn inverse_dct_nz8<T: Lane>(t: &mut [T], n: u32, r: u32) {
+    let Some(t) = t.first_chunk_mut::<64>() else {
+        return;
+    };
+    match n {
+        2 => inverse_dct_n::<T, 2, 4>(t, r),
+        3 => inverse_dct_n::<T, 3, 8>(t, r),
+        4 => inverse_dct_n::<T, 4, 8>(t, r),
+        5 => inverse_dct_n::<T, 5, 8>(t, r),
+        _ => inverse_dct_n::<T, 6, 8>(t, r),
+    }
+}
+
+/// The inverse DCT of length 2^N whose inputs from `NZ` on are zero.
+#[inline(always)]
+fn inverse_dct_n<T: Lane, const N: u32, const NZ: usize>(t: &mut [T; 64], r: u32) {
+    let n = N;
     // 7.13.2.2 permutation
     let len = 1usize << n;
     let mut copy = [T::ZERO; 64];
-    copy[..len].copy_from_slice(&t[..len]);
+    copy[..NZ.min(len)].copy_from_slice(&t[..NZ.min(len)]);
     for i in 0..len {
-        t[i] = copy[brev(n, i)];
+        let k = brev(n, i);
+        t[i] = if k < NZ { copy[k] } else { T::ZERO };
     }
     if n == 6 {
         for i in 0..16 {
@@ -492,7 +531,7 @@ fn inverse_wht(t: &mut [i32], shift: u32) {
     t[3] = d;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind1d {
     Dct,
     Adst,
@@ -516,8 +555,19 @@ fn col_kind(tx_type: usize) -> Kind1d {
 }
 
 /// 2D inverse transform (7.13.3). `dequant` is 64x64 (row stride 64, only the top-left 32x32
-/// may be non-zero); the residual is written to `residual` with row stride `w`.
-pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz: usize, tx_type: usize, lossless: bool, bit_depth: u32) {
+/// may be non-zero, and only its first `nz_rows` rows; `dc_only`: only `dequant[0]`); the
+/// residual is written to `residual` with row stride `w`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn inverse_transform_2d(
+    dequant: &[i32],
+    residual: &mut [i32],
+    tx_sz: usize,
+    tx_type: usize,
+    lossless: bool,
+    bit_depth: u32,
+    nz_rows: usize,
+    dc_only: bool,
+) {
     let log2w = TX_WIDTH_LOG2[tx_sz] as u32;
     let log2h = TX_HEIGHT_LOG2[tx_sz] as u32;
     let w = 1usize << log2w;
@@ -530,8 +580,21 @@ pub(crate) fn inverse_transform_2d(dequant: &[i32], residual: &mut [i32], tx_sz:
     let ck = col_kind(tx_type);
     let mut t = [0i32; 64];
     let rect2 = log2w.abs_diff(log2h) == 1;
+    let Some(residual) = residual.get_mut(..w * h) else {
+        return;
+    };
+    if dequant.len() < 64 * 64 {
+        return;
+    }
+    if nz_rows == 0 {
+        residual.fill(0);
+        return;
+    }
     if !lossless && bit_depth <= 10 {
-        let p = Tx2d { w, h, log2w, log2h, row_shift, col_shift, row_clamp, col_clamp, rk, ck, rect2 };
+        let p = Tx2d { w, h, log2w, log2h, row_shift, col_shift, row_clamp, col_clamp, rk, ck, rect2, nz_rows: nz_rows.min(32) };
+        if dc_only && rk == Kind1d::Dct && ck == Kind1d::Dct && dc_only_dct(dequant[0], residual, &p) {
+            return;
+        }
         if w >= 8 && h >= 8 {
             transform_lanes::<8>(dequant, residual, &p);
         } else {
@@ -600,6 +663,34 @@ struct Tx2d {
     rk: Kind1d,
     ck: Kind1d,
     rect2: bool,
+    /// Rows past this one are all zero.
+    nz_rows: usize,
+}
+
+/// DCT_DCT with only the DC coefficient: the 1D DCT maps an impulse at 0 to a constant (its
+/// butterflies see one non-zero input), so the row pass gives one constant row and every
+/// column the same column. Computed with the same lane arithmetic as `transform_lanes`; returns
+/// false (nothing written) if the row is not constant, which a conforming stream never causes.
+fn dc_only_dct(dc: i32, residual: &mut [i32], p: &Tx2d) -> bool {
+    let lo = -(1i32 << (p.col_clamp - 1));
+    let hi = (1i32 << (p.col_clamp - 1)) - 1;
+    let mut t = [[0i32; 1]; 64];
+    t[0] = [dc];
+    if p.rect2 {
+        t[0] = t[0].mul_round12(2896);
+    }
+    inverse_dct(&mut t[..], p.log2w, p.row_clamp);
+    let v = t[0][0];
+    if t[..p.w].iter().any(|x| x[0] != v) {
+        return false;
+    }
+    let mut c = [[0i32; 1]; 64];
+    c[0] = [round2(v, p.row_shift).clamp(lo, hi)];
+    inverse_dct(&mut c[..], p.log2h, p.col_clamp);
+    for (row, ci) in residual.chunks_exact_mut(p.w).zip(c.iter()) {
+        row.fill(round2(ci[0], p.col_shift));
+    }
+    true
 }
 
 #[inline(always)]
@@ -622,7 +713,7 @@ fn transform_lanes<const L: usize>(dequant: &[i32], residual: &mut [i32], p: &Tx
     let mut i0 = 0;
     while i0 < h {
         // Rows without coefficients (and rows 32..63) transform to zeros.
-        if i0 >= 32 || (i0..i0 + L).all(|i| dequant[i * 64..i * 64 + in_w].iter().all(|&v| v == 0)) {
+        if i0 >= p.nz_rows || (i0..i0 + L).all(|i| dequant[i * 64..i * 64 + in_w].iter().all(|&v| v == 0)) {
             residual[i0 * w..(i0 + L) * w].fill(0);
             i0 += L;
             continue;
@@ -651,7 +742,11 @@ fn transform_lanes<const L: usize>(dequant: &[i32], residual: &mut [i32], p: &Tx
         for i in 0..h {
             t[i].copy_from_slice(&residual[i * w + j0..i * w + j0 + L]);
         }
-        transform_1d(&mut t[..], p.ck, p.log2h, p.col_clamp);
+        if p.ck == Kind1d::Dct && p.nz_rows <= 8 {
+            inverse_dct_nz8(&mut t[..], p.log2h, p.col_clamp);
+        } else {
+            transform_1d(&mut t[..], p.ck, p.log2h, p.col_clamp);
+        }
         for i in 0..h {
             let out = &mut residual[i * w + j0..i * w + j0 + L];
             for l in 0..L {
@@ -665,6 +760,47 @@ fn transform_lanes<const L: usize>(dequant: &[i32], residual: &mut [i32], p: &Tx
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tiny deterministic generator (xorshift) for the shortcut tests.
+    fn rng(seed: &mut u32) -> u32 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 17;
+        *seed ^= *seed << 5;
+        *seed
+    }
+
+    /// The DC-only and leading-rows shortcuts give exactly what the full 2D transform gives.
+    #[test]
+    fn shortcuts_match_full_transform() {
+        let mut seed = 0x1234_5678u32;
+        for tx_sz in 0..TX_SIZES_ALL {
+            let (w, h) = (TX_WIDTH[tx_sz] as usize, TX_HEIGHT[tx_sz] as usize);
+            for bd in [8u32, 10] {
+                let lim = 1i32 << (7 + bd);
+                for round in 0..40 {
+                    let mut dq = vec![0i32; 64 * 64];
+                    let dc_only = round % 2 == 0;
+                    let rows = if dc_only { 1 } else { 1 + rng(&mut seed) as usize % h.min(32) };
+                    let cols = if dc_only { 1 } else { 1 + rng(&mut seed) as usize % w.min(32) };
+                    for i in 0..rows {
+                        for j in 0..cols {
+                            dq[i * 64 + j] = (rng(&mut seed) % (2 * lim as u32)) as i32 - lim;
+                        }
+                    }
+                    for tx_type in [DCT_DCT, ADST_DCT, IDTX, H_DCT, V_DCT] {
+                        if tx_type != DCT_DCT && (w > 16 || h > 16) && tx_type != IDTX {
+                            continue;
+                        }
+                        let mut want = vec![0i32; 64 * 64];
+                        let mut got = vec![0i32; 64 * 64];
+                        inverse_transform_2d(&dq, &mut want, tx_sz, tx_type, false, bd, 32, false);
+                        inverse_transform_2d(&dq, &mut got, tx_sz, tx_type, false, bd, rows, dc_only);
+                        assert_eq!(want[..w * h], got[..w * h], "tx_sz {tx_sz} type {tx_type} bd {bd} rows {rows} dc {dc_only}");
+                    }
+                }
+            }
+        }
+    }
 
     /// The DCT step list must implement an orthogonal transform: a DC-only input gives a flat
     /// output equal to DC * cos(pi/4) (in the 2^12 fixed-point scale).
