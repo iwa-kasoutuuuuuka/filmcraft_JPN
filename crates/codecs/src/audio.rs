@@ -24,7 +24,7 @@ enum Inner {
     Opus { dec: Box<filmcraft_opus::Decoder>, order: Option<&'static [usize]> },
     /// Bootstrap decoders (MP3, ALAC, FLAC, HE-AAC…) via symphonia.
     Symphonia(Box<dyn Decoder>),
-    /// Our AC-3 decoder (ATSC A/52).
+    /// Our AC-3 / E-AC-3 decoder (ATSC A/52, Annex E).
     Ac3(Box<filmcraft_ac3::Decoder>),
 }
 
@@ -122,7 +122,8 @@ impl PacketDecoder {
         self.inner = Inner::Aac { dec: Box::new(dec), asc: asc.to_vec() };
         Ok(())
     }
-    /// AC-3 (ATSC A/52).
+    /// AC-3 or E-AC-3 (ATSC A/52 and its Annex E; the decoder follows the bsid of each
+    /// syncframe).
     pub fn ac3() -> Result<Self> {
         Ok(Self { inner: Inner::Ac3(Box::new(filmcraft_ac3::Decoder::new())), channels: 0 })
     }
@@ -135,7 +136,7 @@ impl PacketDecoder {
         match c {
             C::Aac(a) => Self::aac(&a.asc, if a.sample_rate > 0 { a.sample_rate } else { rate }),
             C::Mp3 => Self::new(CODEC_TYPE_MP3, rate, None),
-            C::Ac3 { .. } => Self::ac3(),
+            C::Ac3 { .. } | C::Eac3 { .. } => Self::ac3(),
             C::Alac { cookie } => Self::new(CODEC_TYPE_ALAC, rate, Some(cookie.clone())),
             C::Flac(_) => Self::new(CODEC_TYPE_FLAC, rate, None),
             C::Opus(o) => Self::opus(filmcraft_opus::OpusHead::from_dops(&o.to_bytes()).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
@@ -165,12 +166,16 @@ impl PacketDecoder {
             Inner::Symphonia(d) => d,
             Inner::AacPending => return Err(CodecError::Decode("AAC: no configuration yet".into())),
             Inner::Ac3(d) => {
-                // a packet may hold several syncframes (MP4 / Matroska)
+                // a packet may hold several syncframes (MP4 / Matroska; E-AC-3 frames of fewer
+                // than six blocks, dependent substreams, which decode to no audio)
                 let mut out: Vec<Vec<f32>> = Vec::new();
                 let mut p = 0;
-                while p < data.len() {
-                    let f = d.decode(&data[p..]).map_err(|e| CodecError::Decode(e.to_string()))?;
-                    p += f.header.frame_bytes;
+                while let Some(rest) = data.get(p..).filter(|r| !r.is_empty()) {
+                    let f = d.decode(rest).map_err(|e| CodecError::Decode(e.to_string()))?;
+                    p += f.header.frame_bytes.max(1);
+                    if f.channels.is_empty() {
+                        continue;
+                    }
                     if out.is_empty() {
                         out = f.channels;
                     } else {
@@ -217,6 +222,18 @@ impl PacketDecoder {
 
 /// Whether AC-3 audio decodes (our ATSC A/52 decoder).
 pub const AC3_DECODER: bool = true;
+
+/// Output channels of E-AC-3 described by a `dec3` box (ETSI TS 102 366 Annex F.6): those of
+/// the first independent substream, which is what our decoder outputs (dependent substreams,
+/// the extra channels of 7.1, are skipped). `None` for a short box.
+pub fn eac3_channels(dec3: &[u8]) -> Option<u32> {
+    // data_rate(13) num_ind_sub(3), then fscod(2) bsid(5) reserved(1) asvc(1) bsmod(3)
+    // acmod(3) lfeon(1) ...
+    let b3 = *dec3.get(3)?;
+    let acmod = (b3 >> 1) & 7;
+    let lfeon = b3 & 1;
+    Some([2u32, 1, 2, 3, 3, 4, 4, 5][acmod as usize] + lfeon as u32)
+}
 
 /// An AudioSpecificConfig for AAC with these parameters (ISO/IEC 14496-3 §1.6.2.1, GA specific
 /// config with no extension flags).

@@ -120,7 +120,7 @@ fn vkind(c: &Codec) -> Option<VKind> {
 }
 
 fn audio_supported(c: &Codec) -> bool {
-    matches!(c, Codec::MpegAudio | Codec::AacAdts | Codec::AacLatm | Codec::LpcmBluray | Codec::LpcmDvd | Codec::Ac3)
+    matches!(c, Codec::MpegAudio | Codec::AacAdts | Codec::AacLatm | Codec::LpcmBluray | Codec::LpcmDvd | Codec::Ac3 | Codec::Eac3)
 }
 
 /// The coded rate unless the timestamps say otherwise (3:2 pulldown, field-rate coding). Never
@@ -496,15 +496,29 @@ impl MpegSource {
             let why = format!("{codec_name} audio in {} (FilmCraft has no decoder for it)", file.format.name());
             return self.audio_unsupported(&codec_name, why);
         }
-        let first = match file.read_unit(&self.bytes, ai, 0) {
+        let mut first = match file.read_unit(&self.bytes, ai, 0) {
             Ok(b) => b,
             Err(e) => {
                 return self.audio_unsupported(&codec_name, format!("{codec_name}: {e}"));
             }
         };
+        // E-AC-3: dependent substreams (the extra channels of 7.1) and further programs are
+        // syncframes, so units, of their own that decode to no audio: they get no duration, and
+        // the stream is described by its first decoded substream.
+        let mut eac3_lens: Option<Vec<u32>> = None;
+        if matches!(st.codec, Codec::Eac3) {
+            let head = |k: usize| file.read_unit(&self.bytes, ai, k).ok().and_then(|b| filmcraft_ac3::parse_header(&b).ok().map(|h| (h, b)));
+            let heads: Vec<_> = (0..st.units.len().min(16)).map(head).collect();
+            if let Some((_, b)) = heads.iter().flatten().find(|(h, _)| h.decodes_audio()) {
+                first = b.clone();
+            }
+            if heads.iter().flatten().any(|(h, _)| !h.decodes_audio()) {
+                eac3_lens = Some((0..st.units.len()).map(|k| head(k).map_or(0, |(h, _)| if h.decodes_audio() { h.samples as u32 } else { 0 })).collect());
+            }
+        }
         let mut latm = None;
         let (codec, rate, channels, per_frame, bits) = match &st.codec {
-            Codec::MpegAudio | Codec::AacAdts | Codec::Ac3 => {
+            Codec::MpegAudio | Codec::AacAdts | Codec::Ac3 | Codec::Eac3 => {
                 let Some(fi) = filmcraft_mpegts::frame_info(&st.codec, &first) else {
                     return self.audio_unsupported(&codec_name, format!("{codec_name}: bad frame header"));
                 };
@@ -574,6 +588,7 @@ impl MpegSource {
                 _ => 0,
             })
             .collect();
+        let lens = eac3_lens.unwrap_or(lens);
         // place units: contiguous, re-anchored at timestamp gaps of more than half a frame (PCM
         // byte streams are always contiguous)
         let origin = origin.or_else(|| st.units.iter().find_map(|u| u.pts)).unwrap_or(0);
