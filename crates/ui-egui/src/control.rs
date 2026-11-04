@@ -12,6 +12,8 @@
 //! - `ui.panel.show {panel}` / `ui.panel.close {panel}`
 //! - `ui.click {id | x,y, button?, count?, modifiers?}` / `ui.move {x,y}` / `ui.scroll {x,y,dx,dy}`
 //! - `ui.drag {from:{id|x,y}, to:{id|x,y}, steps?, modifiers?}`: synthetic press-move-release
+//!   (input by `id` waits a few frames for the element to appear and settle, then is an error:
+//!   [`APPEAR_FRAMES`], [`SETTLE_FRAMES`])
 //! - `ui.key {key, command?, shift?, alt?, ctrl?}` / `ui.type {text}`
 //! - `ui.timeline.hit {x, y}`: what the timeline shows at a point (track, clip, edge, time)
 //! - `ui.timeline.locate {clip, edge?}`: screen point of a clip body/edge (for drags)
@@ -26,9 +28,6 @@ use serde_json::{Value, json};
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
 use crate::state::{Mode, PlaybackRes, Tool};
-
-/// Prefix marking errors that may resolve after another frame.
-pub const RETRY: &str = "\u{1}";
 
 pub struct ControlRequest {
     pub method: String,
@@ -47,6 +46,12 @@ pub enum Outcome {
     Done(Value),
     /// Try again on a later frame (e.g. the element is not on screen yet).
     Retry(String),
+    /// Try again on each of the next `frames` laid-out frames (counted from when the request
+    /// arrived), then reply with `error`.
+    RetryFrames {
+        error: String,
+        frames: u64,
+    },
     /// Reply once queued synthetic input has been processed.
     AfterInput,
     Screenshot {
@@ -73,24 +78,76 @@ fn modifiers(p: &Value) -> egui::Modifiers {
     egui::Modifiers { alt: b("alt"), ctrl: b("ctrl"), shift: b("shift"), mac_cmd: cfg!(target_os = "macos") && b("command"), command: b("command") }
 }
 
-/// Resolve a point from `{id}` (element centre) or `{x, y}`.
-fn point(app: &FilmcraftApp, p: &Value) -> Result<egui::Pos2, String> {
-    if let Some(id) = p.get("id").and_then(Value::as_str) {
-        let e = app.auto.find(id).ok_or_else(|| format!("{RETRY}no element `{id}` (see ui.elements)"))?;
-        let fx = p.get("fx").and_then(Value::as_f64).unwrap_or(0.5) as f32;
-        let fy = p.get("fy").and_then(Value::as_f64).unwrap_or(0.5) as f32;
-        return Ok(egui::pos2(e.rect[0] + e.rect[2] * fx, e.rect[1] + e.rect[3] * fy));
+/// Laid-out frames input aimed at an id waits for the element to appear (a dialog a menu command
+/// just opened draws on the next frame or two) before it is an error.
+pub const APPEAR_FRAMES: u64 = 10;
+/// Laid-out frames input aimed at an id waits for the element to stop moving (a window's sizing
+/// pass, an anchored dialog being centred, a scroll or zoom animation); after that it aims at
+/// where the element was last drawn.
+pub const SETTLE_FRAMES: u64 = 30;
+
+/// Most clicks one `ui.click` queues (`count`).
+const MAX_CLICKS: u64 = 10;
+/// Most pointer moves one `ui.drag` queues (`steps`, one per frame).
+const MAX_DRAG_STEPS: u64 = 1_000;
+
+/// Why a point could not be resolved.
+enum PointError {
+    /// Bad parameters: reply with the error now.
+    Invalid(String),
+    /// The element is not on screen (yet) or still moving: retry on a later frame.
+    Wait(String),
+}
+
+impl PointError {
+    /// The outcome for a request that could not resolve its point.
+    fn outcome(self) -> Outcome {
+        match self {
+            PointError::Invalid(e) => err(e),
+            // `SETTLE_FRAMES` bounds the wait; a missing element gives up after `APPEAR_FRAMES`
+            // (`point` turns the wait into the error itself then)
+            PointError::Wait(e) => Outcome::RetryFrames { error: e, frames: SETTLE_FRAMES },
+        }
     }
-    let x = p.get("x").and_then(Value::as_f64).ok_or("need `id` or `x`,`y`")?;
-    let y = p.get("y").and_then(Value::as_f64).ok_or("need `y`")?;
+}
+
+fn missing(id: &str) -> String {
+    format!("no on-screen element with id \"{id}\" (see ui.elements)")
+}
+
+/// Resolve a point from `{id}` (element centre, or `fx`,`fy` fractions of its rect) or `{x, y}`.
+/// `waited`: laid-out frames the request has waited so far.
+fn point(app: &FilmcraftApp, p: &Value, waited: u64) -> Result<egui::Pos2, PointError> {
+    if let Some(id) = p.get("id").and_then(Value::as_str) {
+        let rect = element_rect(app, id, waited)?;
+        let f = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(0.5) as f32;
+        return Ok(egui::pos2(rect[0] + rect[2] * f("fx"), rect[1] + rect[3] * f("fy")));
+    }
+    let coord = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite());
+    let x = coord("x").ok_or_else(|| PointError::Invalid("need `id` or `x`,`y`".into()))?;
+    let y = coord("y").ok_or_else(|| PointError::Invalid("need `y`".into()))?;
     Ok(egui::pos2(x as f32, y as f32))
+}
+
+/// The rect of an on-screen element once it has settled (see [`APPEAR_FRAMES`], [`SETTLE_FRAMES`]).
+fn element_rect(app: &FilmcraftApp, id: &str, waited: u64) -> Result<[f32; 4], PointError> {
+    match app.auto.locate(id) {
+        crate::automation::Lookup::Settled(e) => Ok(e.rect),
+        crate::automation::Lookup::Moving(e) if waited + 1 >= SETTLE_FRAMES => Ok(e.rect),
+        crate::automation::Lookup::Moving(_) => Err(PointError::Wait(missing(id))),
+        // the last try: say so now rather than after the settle budget
+        crate::automation::Lookup::Missing if waited >= APPEAR_FRAMES => Err(PointError::Invalid(missing(id))),
+        crate::automation::Lookup::Missing => Err(PointError::Wait(missing(id))),
+    }
 }
 
 /// Requests that need the window laid out on screen (synthetic input, element rects, screenshots).
 const NEEDS_WINDOW: &[&str] =
     &["ui.elements", "ui.click", "ui.move", "ui.drag", "ui.scroll", "ui.key", "ui.type", "ui.screenshot", "ui.timeline.hit", "ui.timeline.locate"];
 
-pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+/// Handle one request. `waited`: laid-out frames since it arrived (requests that wait for an
+/// element are handled again each frame).
+pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest, waited: u64) -> Outcome {
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     // A minimized window lays nothing out and presents nothing: synthetic input would be dropped
@@ -288,10 +345,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(Value::Null)
         }
         "ui.click" | "ui.move" => {
-            let pos = match point(app, p) {
+            let pos = match point(app, p, waited) {
                 Ok(p) => p,
-                Err(e) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
-                Err(e) => return err(e),
+                Err(e) => return e.outcome(),
             };
             let m = modifiers(p);
             app.synthetic.push(egui::Event::PointerMoved(pos));
@@ -301,7 +357,8 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                     Some("middle") => egui::PointerButton::Middle,
                     _ => egui::PointerButton::Primary,
                 };
-                let count = p.get("count").and_then(Value::as_u64).unwrap_or(1);
+                // capped: the count is a request parameter (each click is two queued events)
+                let count = p.get("count").and_then(Value::as_u64).unwrap_or(1).min(MAX_CLICKS);
                 for _ in 0..count {
                     app.synthetic.push(egui::Event::PointerButton { pos, button, pressed: true, modifiers: m });
                     app.synthetic.push(egui::Event::PointerButton { pos, button, pressed: false, modifiers: m });
@@ -311,12 +368,12 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
         }
         "ui.drag" => {
             let (Some(from), Some(to)) = (p.get("from"), p.get("to")) else { return err("need `from` and `to`") };
-            let (a, b) = match (point(app, from), point(app, to)) {
+            let (a, b) = match (point(app, from, waited), point(app, to, waited)) {
                 (Ok(a), Ok(b)) => (a, b),
-                (Err(e), _) | (_, Err(e)) if e.starts_with(RETRY) => return Outcome::Retry(e.trim_start_matches(RETRY).to_string()),
-                (Err(e), _) | (_, Err(e)) => return err(e),
+                (Err(e), _) | (_, Err(e)) => return e.outcome(),
             };
-            let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(12).max(2);
+            // capped: one queued pointer event (one frame) per step
+            let steps = p.get("steps").and_then(Value::as_u64).unwrap_or(12).clamp(2, MAX_DRAG_STEPS);
             let m = modifiers(p);
             app.synthetic.push(egui::Event::PointerMoved(a));
             app.synthetic.push(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: m });
@@ -328,9 +385,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             Outcome::AfterInput
         }
         "ui.scroll" => {
-            let pos = match point(app, p) {
+            let pos = match point(app, p, waited) {
                 Ok(p) => p,
-                Err(e) => return err(e),
+                Err(e) => return e.outcome(),
             };
             let dx = p.get("dx").and_then(Value::as_f64).unwrap_or(0.0) as f32;
             let dy = p.get("dy").and_then(Value::as_f64).unwrap_or(0.0) as f32;
@@ -365,9 +422,9 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             Outcome::AfterInput
         }
         "ui.timeline.hit" => {
-            let pos = match point(app, p) {
+            let pos = match point(app, p, waited) {
                 Ok(p) => p,
-                Err(e) => return err(e),
+                Err(e) => return e.outcome(),
             };
             ok(crate::panels::timeline::hit_json(app, pos))
         }
@@ -387,8 +444,19 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             ok(json!({"playing": app.playback.playing, "playhead": app.session.playhead().0}))
         }
         "ui.screenshot" => {
-            let crop = s("panel").and_then(PanelKind::from_name).and_then(|pk| app.auto.find(&format!("panel.{}", pk.id())).map(|e| e.rect));
-            let crop = crop.or_else(|| s("id").and_then(|id| app.auto.find(id).map(|e| e.rect)));
+            // `panel` or `id`: crop to it once it is on screen (not silently the whole window)
+            let target = match (s("panel"), s("id")) {
+                (Some(name), _) => match PanelKind::from_name(name) {
+                    Some(pk) => Some(format!("panel.{}", pk.id())),
+                    None => return err(format!("unknown `panel` `{name}`")),
+                },
+                (None, id) => id.map(str::to_string),
+            };
+            let crop = match target.map(|id| element_rect(app, &id, waited)) {
+                Some(Ok(r)) => Some(r),
+                Some(Err(e)) => return e.outcome(),
+                None => None,
+            };
             // Bring the window on screen so a frame is presented, without taking keyboard focus.
             app.raise_for_control(ctx);
             Outcome::Screenshot { path: s("path").map(str::to_string), crop }

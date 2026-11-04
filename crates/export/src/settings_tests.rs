@@ -403,12 +403,19 @@ fn builtin_presets_are_valid_and_unique() {
 /// loudness normalization on at the platforms' level, and the sharing site's own bitrate.
 #[test]
 fn short_form_presets_are_vertical_and_loudness_normalized() {
-    for (name, kbps, max_kbps) in
-        [("TikTok 1080×1920", 10_000, 12_000), ("Instagram Reels 1080×1920", 8_000, 10_000), ("YouTube Shorts 1080×1920", 12_000, 16_000)]
-    {
+    for (name, size, kbps, max_kbps) in [
+        ("TikTok 1080×1920", (1080, 1920), 10_000, 12_000),
+        ("Instagram Reels 1080×1920", (1080, 1920), 8_000, 10_000),
+        ("YouTube Shorts 1080×1920", (1080, 1920), 12_000, 16_000),
+        // feed posts: square and 4:5 portrait, and landscape for X
+        ("Instagram Feed Square 1080×1080", (1080, 1080), 8_000, 10_000),
+        ("Instagram Feed Portrait 1080×1350", (1080, 1350), 8_000, 10_000),
+        ("Facebook Feed 1080×1350", (1080, 1350), 8_000, 10_000),
+        ("X (Twitter) 1920×1080", (1920, 1080), 10_000, 12_000),
+    ] {
         let p = presets::find_builtin(name).unwrap_or_else(|| panic!("{name} is a built-in preset"));
         let s = &p.settings;
-        assert_eq!((p.category.as_str(), s.format, s.frame_size, s.frame_rate), ("Web & Social", Format::H264, Some((1080, 1920)), None), "{name}");
+        assert_eq!((p.category.as_str(), s.format, s.frame_size, s.frame_rate), ("Web & Social", Format::H264, Some(size), None), "{name}");
         assert_eq!(s.scaling, Scaling::ScaleToFill, "{name}");
         assert_eq!((s.bitrate_kbps, s.max_bitrate_kbps, s.bitrate_mode), (kbps, Some(max_kbps), BitrateMode::Vbr1Pass), "{name}");
         assert_eq!((s.audio.codec, s.audio.sample_rate), (AudioCodec::Aac, Some(48_000)), "{name}");

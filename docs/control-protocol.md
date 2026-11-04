@@ -39,6 +39,15 @@ window). While the window is minimized, requests that need it laid out (`ui.elem
 `ui.move`, `ui.drag`, `ui.scroll`, `ui.key`, `ui.type`, `ui.screenshot`, `ui.timeline.*`) fail at
 once with an error saying so; engine commands, `ui.inspect` and `ui.set` keep working.
 
+**Input by id.** `ui.click`, `ui.move`, `ui.drag` (`from` / `to`), `ui.scroll`, `ui.timeline.hit`
+with `{id}` and `ui.screenshot` with `{id}` or `{panel}` aim at the element's rect as last laid out,
+so they can follow a request that opened it (`ui.menu.invoke {"id": "graphics.newChart"}` then
+`ui.click {"id": "chartEditor.kind.line"}`): they wait up to 10 laid-out frames for the element to
+appear and up to 30 for it to stop moving (a window's sizing pass, a dialog being centred, a zoom
+animation; after that they aim at where it was last drawn). An id that does not show up is an error,
+`{"ok": false, "error": "no on-screen element with id \"…\" (see ui.elements)"}`, which MCP's
+`ui_click` / `ui_drag` report as a tool error. `count` is capped at 10 clicks and `steps` at 1000.
+
 Element ids are stable, e.g. `timeline.clip.<id>`, `timeline.track.V1.lock`, `tools.Razor`,
 `project.item.<id>`, `effects.item.gaussian_blur`, `panel.tab.Timeline`, `program.transport.playback.toggle`.
 
