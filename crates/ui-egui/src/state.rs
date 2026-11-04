@@ -481,6 +481,9 @@ pub struct UiState {
     /// open when Some). See `panels::clip_dialogs`.
     #[serde(default)]
     pub clip_dialog: Option<ClipDialogDraft>,
+    /// The Animated Chart editor (open when Some). See `panels::chart_editor`.
+    #[serde(default)]
+    pub chart_editor: Option<ChartEditorDraft>,
     /// M3.11 menu items: their dialog, Dynamic Audio Waveforms, the Media Browser selection. See
     /// `panels::menu_dialogs`.
     #[serde(default)]
@@ -516,6 +519,33 @@ pub struct ClipDialogDraft {
     #[serde(default)]
     pub info: serde_json::Value,
     #[serde(default)]
+    pub error: String,
+}
+
+/// The tab shown in the middle of the Animated Chart editor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChartTab {
+    #[default]
+    Preview,
+    Data,
+}
+
+/// The chart being edited in the Animated Chart editor.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ChartEditorDraft {
+    /// The chart clip being edited (None: a new chart).
+    pub clip: Option<u64>,
+    pub chart: filmcraft_project::chart::ChartSpec,
+    /// Clip length in seconds (a new chart's; the clip's when editing).
+    pub seconds: f64,
+    pub tab: ChartTab,
+    /// Preview time in seconds.
+    pub time: f64,
+    pub playing: bool,
+    /// Text in the table paste box.
+    pub paste: String,
     pub error: String,
 }
 
@@ -799,6 +829,7 @@ impl Default for UiState {
             edit_cameras: None,
             guide_dialog: None,
             clip_dialog: None,
+            chart_editor: None,
             extras: Default::default(),
             gfx_templates: Default::default(),
             panels: Default::default(),

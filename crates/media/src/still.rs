@@ -1,4 +1,5 @@
-//! Still images (PNG, JPEG, GIF (first frame), WebP, TIFF, BMP) as media sources.
+//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD) as media sources. Animated PNG, GIF and
+//! WebP files open as movies instead ([`crate::animated`]); here they would show their first frame.
 
 use std::sync::Arc;
 
@@ -6,6 +7,17 @@ use filmcraft_frame::VideoFrame;
 use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 
 use crate::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
+
+pub mod psd;
+
+/// A decoded picture: straight-alpha RGBA8, top row first.
+pub struct Raster {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    /// Whether any pixel is not fully opaque.
+    pub has_alpha: bool,
+}
 
 /// Default still duration (Premiere's preference default is 5 seconds).
 pub const DEFAULT_STILL_DURATION: Tick = Tick(5 * TICKS_PER_SECOND);
@@ -18,6 +30,7 @@ pub fn sniff(b: &[u8]) -> bool {
         || b.starts_with(b"II*\0")
         || b.starts_with(b"MM\0*")
         || b.starts_with(b"BM")
+        || psd::sniff(b)
 }
 
 pub struct StillSource {
@@ -27,6 +40,10 @@ pub struct StillSource {
 
 impl StillSource {
     pub fn decode(name: &str, bytes: &[u8]) -> Result<Self> {
+        if psd::sniff(bytes) {
+            let r = psd::decode(name, bytes)?;
+            return Ok(Self::from_rgba(name, r.width, r.height, r.rgba, r.has_alpha, bytes.len() as u64));
+        }
         let img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(format!("{name}: {e}")))?;
         let has_alpha = img.color().has_alpha();
         let rgba = img.to_rgba8();

@@ -147,7 +147,8 @@ EffectInstance
 ```
 
 - **Graphic clips** ([graphics.md](graphics.md)) reference a `Graphic` canvas item; their text and
-  shape layers are hidden `graphic_text` / `graphic_shape` effect instances on the track item.
+  shape layers are hidden `graphic_text` / `graphic_shape` effect instances on the track item; an
+  animated chart is `GraphicMeta::chart` on the track item.
 - Everything is plain serde data. `Sequence::check()` validates the invariants (no overlaps, unique
   ids), and the engine runs it after every sequence edit.
 - Timeline positions are sequence ticks; `source_in` and keyframes are in media time, so trims and
@@ -627,7 +628,8 @@ file.exportMedia {path, preset?, settings?, format?, range?, …}     export.qui
   overlays, video limiter, loudness normalization), Metadata (`udta` `©nam`, `©ART`, `©cpy`, `©des`,
   `©cmt`). `settings.summary()` / `estimate_bytes()` feed Export mode's Summary.
 - **Presets.** `export::presets::builtin_presets()` are our own definitions (Match Source adaptive
-  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920, ProRes,
+  H.264 at 0.2 / 0.1 / 0.05 bits per pixel, 1080p / 2160p delivery, vertical 1080×1920 and its
+  TikTok / Instagram Reels / YouTube Shorts variants with loudness normalized to −14 LUFS, ProRes,
   ProRes 4444 / 4444 XQ (with or without alpha), DNxHR, MXF OP1a (DNxHR HQ / ProRes 422 HQ / H.264) and OP-Atom (DNxHR, Avid), image sequences, GIF, WAV / AIFF / FLAC). User presets and favourites persist in
   `<data dir>/export-presets.json` (`export.presets.*`).
 - **Queue.** `export.queue.add` snapshots the project and the resolved settings (several sequences
