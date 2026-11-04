@@ -59,8 +59,9 @@ fn cdef_block(fs: &FrameState, out: &mut [RowsMut<'_>; 3], r: usize, c: usize, i
         return false;
     }
     let coeff_shift = fs.bit_depth - 8;
-    let (y_dir, var) = direction(fs, r, c);
     let cp = &fs.fh.cdef;
+    // The direction and variance only matter for a non-zero primary strength (luma or chroma).
+    let (y_dir, var) = if cp.y_pri[idx] != 0 || (fs.num_planes > 1 && cp.uv_pri[idx] != 0) { direction(fs, r, c) } else { (0, 0) };
     let mut pri = (cp.y_pri[idx] << coeff_shift) as i32;
     let sec = (cp.y_sec[idx] << coeff_shift) as i32;
     let dir = if pri == 0 { 0 } else { y_dir };
