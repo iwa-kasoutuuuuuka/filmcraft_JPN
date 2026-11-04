@@ -196,6 +196,12 @@ impl Mp4Source {
                 ),
                 CodecConfig::Pcm(p) => (p.sample_rate as u32, p.channels, Some(p.bits as u32)),
                 CodecConfig::Opus(o) => (crate::audio::OPUS_RATE, (o.output_channels as u32).max(1), None),
+                // the sample entry's channel count is not meaningful for E-AC-3 (often 2)
+                CodecConfig::Eac3 { dec3 } => (
+                    if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale },
+                    crate::audio::eac3_channels(dec3).unwrap_or(ap.channels).max(1),
+                    None,
+                ),
                 _ => (if ap.sample_rate > 0.0 { ap.sample_rate as u32 } else { t.timescale }, ap.channels.max(1), None),
             };
             AudioStreamInfo { sample_rate: rate.max(1), channels: ch.max(1), codec: codec_label(&entry.codec), bits_per_sample: bits }
@@ -457,6 +463,8 @@ fn codec_label(c: &CodecConfig) -> String {
         }
         CodecConfig::Pcm(p) => format!("PCM {}-bit{}", p.bits, if p.float { " float" } else { "" }),
         CodecConfig::Opus(_) => "Opus".into(),
+        CodecConfig::Ac3 { .. } => "AC-3".into(),
+        CodecConfig::Eac3 { .. } => "E-AC-3".into(),
         CodecConfig::Dnx { fourcc } if fourcc.0 == *b"AVdh" => "Avid DNxHR".into(),
         CodecConfig::Dnx { .. } => "Avid DNxHD".into(),
         other => other.name().to_string(),

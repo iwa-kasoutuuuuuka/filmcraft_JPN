@@ -56,7 +56,7 @@ fn headers_and_gains() {
     let b = [0x0B, 0x77, 0, 0, 30, 8 << 3, 0b1110_0001, 0b0100_0000];
     let h = parse_header(&b).unwrap();
     assert_eq!((h.sample_rate, h.bitrate_kbps, h.frame_bytes, h.acmod, h.lfeon, h.channels()), (48_000, 448, 1792, 7, true, 6));
-    assert_eq!(parse_header(&[0x0B, 0x77, 0, 0, 0, 16 << 3, 0, 0]), Err(Error::Unsupported("bsid 16 (E-AC-3)".into())));
+    assert_eq!(parse_header(&[0x0B, 0x77, 0, 0, 0, 17 << 3, 0, 0]), Err(Error::Unsupported("bsid 17".into())));
     assert_eq!(dynrng_gain(0), 1.0);
     assert!((dynrng_gain(0b1110_0000) - 0.5).abs() < 1e-7);
     assert!((dynrng_gain(0b0111_1111) - 16.0 * 63.0 / 64.0).abs() < 1e-5);

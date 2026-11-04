@@ -212,6 +212,8 @@ fn codec_label(c: &Codec) -> String {
         Codec::Pcm { bits, float, .. } => format!("PCM {bits}-bit{}", if *float { " float" } else { "" }),
         Codec::Mp3 => "MP3".into(),
         Codec::Mp2 => "MPEG Audio".into(),
+        Codec::Ac3 => "AC-3".into(),
+        Codec::Eac3 => "E-AC-3".into(),
         Codec::Other(id) if id == "V_MPEG2" => "MPEG-2 Video".into(),
         Codec::Other(id) if id == "V_MPEG1" => "MPEG-1 Video".into(),
         other => other.name().to_string(),
@@ -279,6 +281,15 @@ impl MkvSource {
             if let Some(h) = opus_head(&t.codec) {
                 rate = crate::audio::OPUS_RATE;
                 channels = h.channels as u32;
+            }
+            // E-AC-3: Channels counts dependent substreams (7.1), which we skip; the first
+            // syncframe says what is decoded
+            if matches!(t.codec, Codec::Eac3)
+                && let Ok(first) = file.read_sample(&bytes, i, 0)
+                && let Ok(h) = filmcraft_ac3::parse_header(&first)
+            {
+                channels = h.channels() as u32;
+                rate = h.sample_rate;
             }
             AudioStreamInfo { sample_rate: rate, channels, codec: codec_label(&t.codec), bits_per_sample: a.bit_depth.map(|b| b as u32) }
         });
@@ -353,7 +364,7 @@ impl MkvSource {
             Codec::Opus { head } => PacketDecoder::opus(filmcraft_opus::OpusHead::parse(head).map_err(|e| CodecError::Unsupported(format!("Opus: {e}")))?),
             Codec::Mp3 => PacketDecoder::new(CODEC_TYPE_MP3, rate, None),
             Codec::Mp2 => PacketDecoder::mpeg_audio(2, rate),
-            Codec::Ac3 => PacketDecoder::ac3(),
+            Codec::Ac3 | Codec::Eac3 => PacketDecoder::ac3(),
             // symphonia wants the STREAMINFO block body: skip `fLaC` + the 4-byte block header.
             Codec::Flac { private } => PacketDecoder::new(CODEC_TYPE_FLAC, rate, private.get(8..42).map(<[u8]>::to_vec)),
             Codec::Vorbis { headers } if headers.len() == 3 => {

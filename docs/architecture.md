@@ -54,7 +54,7 @@ and `filmcraft-cli`.
 | `av1` | L0 | AV1 decoder (Main profile; bit-exact with libdav1d; see its README for the stage table) |
 | `mpeg2v` | L0 | MPEG-2 video (Main / 4:2:2 profile; frame and field pictures, dual prime) and MPEG-1 video decoder ([README](../crates/mpeg2v/README.md)) |
 | `aac` | L0 | AAC-LC decoder and encoder |
-| `ac3` | L0 | AC-3 (ATSC A/52) decoder ([README](../crates/ac3/README.md)) |
+| `ac3` | L0 | AC-3 and E-AC-3 (ATSC A/52, Annex E) decoder ([README](../crates/ac3/README.md)) |
 | `flac` | L0 | FLAC encoder (RFC 9639): fixed / LPC predictors, partitioned Rice codes, stereo decorrelation, STREAMINFO MD5; 8–24-bit, 1–8 channels (decoding stays in `codecs` via symphonia) ([README](../crates/flac/README.md)) |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
