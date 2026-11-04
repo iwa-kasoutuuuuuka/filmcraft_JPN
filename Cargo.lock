@@ -2179,6 +2179,7 @@ dependencies = [
  "filmcraft-frame",
  "filmcraft-time",
  "image",
+ "miniz_oxide 0.8.9",
  "png",
  "rayon",
  "serde",

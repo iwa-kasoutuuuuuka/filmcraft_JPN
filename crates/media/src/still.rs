@@ -1,4 +1,4 @@
-//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD) as media sources. Animated PNG, GIF and
+//! Still images (PNG, JPEG, GIF, WebP, TIFF, BMP, PSD, DNG camera raw) as media sources. Animated PNG, GIF and
 //! WebP files open as movies instead ([`crate::animated`]); here they would show their first frame.
 
 use std::sync::Arc;
@@ -8,6 +8,7 @@ use filmcraft_time::{FrameRate, TICKS_PER_SECOND, Tick};
 
 use crate::{FrameRequest, MediaError, MediaInfo, MediaKind, MediaSource, Result, VideoStreamInfo};
 
+pub mod dng;
 pub mod psd;
 
 /// A decoded picture: straight-alpha RGBA8, top row first.
@@ -38,17 +39,26 @@ pub struct StillSource {
     frame: Arc<VideoFrame>,
 }
 
+/// Decode any supported still image (DNG camera raw files are developed to sRGB; a DNG is a TIFF,
+/// so it is recognised before the TIFF decoder sees it).
+pub fn decode_raster(name: &str, bytes: &[u8]) -> Result<Raster> {
+    if psd::sniff(bytes) {
+        return psd::decode(name, bytes);
+    }
+    if dng::sniff(bytes) {
+        return dng::decode(name, bytes);
+    }
+    let img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(format!("{name}: {e}")))?;
+    let has_alpha = img.color().has_alpha();
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(Raster { width, height, rgba: rgba.into_raw(), has_alpha })
+}
+
 impl StillSource {
     pub fn decode(name: &str, bytes: &[u8]) -> Result<Self> {
-        if psd::sniff(bytes) {
-            let r = psd::decode(name, bytes)?;
-            return Ok(Self::from_rgba(name, r.width, r.height, r.rgba, r.has_alpha, bytes.len() as u64));
-        }
-        let img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(format!("{name}: {e}")))?;
-        let has_alpha = img.color().has_alpha();
-        let rgba = img.to_rgba8();
-        let (w, h) = rgba.dimensions();
-        Ok(Self::from_rgba(name, w, h, rgba.into_raw(), has_alpha, bytes.len() as u64))
+        let r = decode_raster(name, bytes)?;
+        Ok(Self::from_rgba(name, r.width, r.height, r.rgba, r.has_alpha, bytes.len() as u64))
     }
 
     pub fn from_rgba(name: &str, w: u32, h: u32, rgba: Vec<u8>, has_alpha: bool, file_size: u64) -> Self {

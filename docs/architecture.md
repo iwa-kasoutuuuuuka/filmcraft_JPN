@@ -58,7 +58,7 @@ and `filmcraft-cli`.
 | `flac` | L0 | FLAC encoder (RFC 9639): fixed / LPC predictors, partitioned Rice codes, stereo decorrelation, STREAMINFO MD5; 8–24-bit, 1–8 channels (decoding stays in `codecs` via symphonia) ([README](../crates/flac/README.md)) |
 | `testkit` | L0 | test-only helpers, used only as a dev-dependency: ffmpeg/ffprobe discovery, fixture dirs, golden images ([testing.md](testing.md)) |
 | `frame` | L1 | `VideoFrame` (planar YUV / RGBA8 / linear RGBA f32, colour metadata), `AudioBuffer` |
-| `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills, image sequences, WAV / Broadcast WAV |
+| `media` | L1 | `MediaSource` trait, probing/openers, frame cache, generators, stills (including DNG camera raw, [camera-raw.md](camera-raw.md)), image sequences, WAV / Broadcast WAV |
 | `project` | L1 | document model, effect definitions, keyframes |
 | `audio-dsp` | L1 | loudness metering (BS.1770 / R128), audio effects, channel layouts (BS.775 up/downmix, 5.1 panner), music remix analysis; the audio plug-in hosting interface and catalogue (`plugin`; hosts live in `platform`); no dependencies |
 | `text` | L1 | text engine: font database (bundled OFL fonts + system fonts), shaping (harfrust), bidi, line breaking, paragraph layout, glyph/path rasteriser, strokes ([crates/text/README.md](../crates/text/README.md)) |
