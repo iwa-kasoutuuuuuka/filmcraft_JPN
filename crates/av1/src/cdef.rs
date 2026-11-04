@@ -1,35 +1,57 @@
 //! CDEF (7.15).
 
-use crate::frame::{FrameBuf, Plane};
+use crate::frame::{FrameBuf, RowsMut};
+use crate::par::Pool;
 use crate::spec_tables::*;
 use crate::state::FrameState;
 
 /// Run CDEF on `fs.cur`; returns the CdefFrame, or None when no block is filtered (CdefFrame
-/// equals CurrFrame).
-pub(crate) fn apply(fs: &FrameState) -> Option<FrameBuf> {
+/// equals CurrFrame). Rows of 64x64 blocks are independent (each reads CurrFrame and writes its
+/// own rows of CdefFrame), so they run in parallel on `pool`.
+pub(crate) fn apply(fs: &FrameState, pool: &Pool) -> Option<FrameBuf> {
     let fh = &fs.fh;
     if fh.coded_lossless || fh.allow_intrabc || !fs.seq.enable_cdef {
         return None;
     }
     let (mi_rows, mi_cols) = (fh.mi_rows as usize, fh.mi_cols as usize);
-    let mut out = fs.cur.clone();
-    let mut any = false;
-    let mut r = 0;
-    while r < mi_rows {
-        let mut c = 0;
-        while c < mi_cols {
-            let idx = fs.cdef_idx(r & !15, c & !15);
-            if idx >= 0 && cdef_block(fs, &mut out, r, c, idx as usize) {
-                any = true;
+    // Every band first copies its rows of CurrFrame (the last band down to the end of the
+    // allocation), then filters them in place: the copy runs in parallel too.
+    let mut out = fs.cur.scratch_like();
+    let n = mi_rows.div_ceil(16).max(1);
+    let ssy = fs.ssy;
+    let [p0, p1, p2] = &mut out.planes;
+    let ranges = |sy: usize| -> Vec<(usize, usize)> { (0..n).map(|b| ((64 * b) >> sy, if b + 1 == n { usize::MAX } else { (64 * (b + 1)) >> sy })).collect() };
+    let mut bands: Vec<[RowsMut<'_>; 3]> =
+        p0.bands_mut(&ranges(0)).into_iter().zip(p1.bands_mut(&ranges(ssy))).zip(p2.bands_mut(&ranges(ssy))).map(|((a, b), c)| [a, b, c]).collect();
+    let any = pool.map_mut(&mut bands, |b, band| {
+        for (p, dst) in band.iter_mut().enumerate() {
+            let src = &fs.cur.planes[p].data;
+            let start = dst.y0 * dst.stride;
+            match src.get(start..start + dst.data.len()) {
+                Some(s) => dst.data.copy_from_slice(s),
+                None => dst.data.fill(0),
             }
-            c += 2;
         }
-        r += 2;
-    }
-    any.then_some(out)
+        let mut any = false;
+        let mut r = 16 * b;
+        while r < mi_rows.min(16 * b + 16) {
+            let mut c = 0;
+            while c < mi_cols {
+                let idx = fs.cdef_idx(r & !15, c & !15);
+                if idx >= 0 && cdef_block(fs, band, r, c, idx as usize) {
+                    any = true;
+                }
+                c += 2;
+            }
+            r += 2;
+        }
+        any
+    });
+    drop(bands);
+    any.into_iter().any(|a| a).then_some(out)
 }
 
-fn cdef_block(fs: &FrameState, out: &mut FrameBuf, r: usize, c: usize, idx: usize) -> bool {
+fn cdef_block(fs: &FrameState, out: &mut [RowsMut<'_>; 3], r: usize, c: usize, idx: usize) -> bool {
     let mi = &fs.mi;
     let sk = |rr: usize, cc: usize| -> bool { if rr < mi.rows && cc < mi.cols { mi.skip[mi.idx(rr, cc)] } else { true } };
     let skip = sk(r, c) && sk(r + 1, c) && sk(r, c + 1) && sk(r + 1, c + 1);
@@ -45,7 +67,8 @@ fn cdef_block(fs: &FrameState, out: &mut FrameBuf, r: usize, c: usize, idx: usiz
     let var_str = if (var >> 6) != 0 { (31 - ((var >> 6) as u32).leading_zeros()).min(12) as i32 } else { 0 };
     pri = if var != 0 { (pri * (4 + var_str) + 8) >> 4 } else { 0 };
     let damping = cp.damping as i32 + coeff_shift as i32;
-    filter(fs, out, 0, r, c, pri, sec, damping, dir);
+    let [o0, o1, o2] = out;
+    filter(fs, o0, 0, r, c, pri, sec, damping, dir);
     if fs.num_planes == 1 {
         return true;
     }
@@ -53,8 +76,8 @@ fn cdef_block(fs: &FrameState, out: &mut FrameBuf, r: usize, c: usize, idx: usiz
     let sec = (cp.uv_sec[idx] << coeff_shift) as i32;
     let dir = if pri == 0 { 0 } else { CDEF_UV_DIR[fs.ssx][fs.ssy][y_dir] as usize };
     let damping = cp.damping as i32 + coeff_shift as i32 - 1;
-    filter(fs, out, 1, r, c, pri, sec, damping, dir);
-    filter(fs, out, 2, r, c, pri, sec, damping, dir);
+    filter(fs, o1, 1, r, c, pri, sec, damping, dir);
+    filter(fs, o2, 2, r, c, pri, sec, damping, dir);
     true
 }
 
@@ -125,7 +148,7 @@ fn constrain(diff: i32, threshold: i32, adj: u32) -> i32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize, pri: i32, sec: i32, damping: i32, dir: usize) {
+fn filter(fs: &FrameState, dst: &mut RowsMut<'_>, plane: usize, r: usize, c: usize, pri: i32, sec: i32, damping: i32, dir: usize) {
     if pri == 0 && sec == 0 {
         // Every tap contributes 0 and the clamp to [min, max] keeps x: CdefFrame = CurrFrame.
         return;
@@ -169,7 +192,6 @@ fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize,
     let sec_taps = [CDEF_SEC_TAPS[pri_tap][0] as i32, CDEF_SEC_TAPS[pri_tap][1] as i32];
     let adj = |t: i32| if t == 0 { 0 } else { (damping - (31 - (t as u32).leading_zeros()) as i32).max(0) as u32 };
     let (pri_adj, sec_adj) = (adj(pri), adj(sec));
-    let dst = &mut out.planes[plane];
     if all_avail {
         // Every tap is available: whole rows at a time (constrain() with threshold 0 is 0).
         let mut taps = [(0isize, 0i32, 0i32, 0u32); 12];
@@ -193,7 +215,9 @@ fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize,
         // The centre sample is read even where CdefAvailable is 0 (8x8 blocks straddling an odd
         // MiRows / MiCols edge).
         let srow = &src.row(y0 + i)[x0..x0 + w];
-        let drow = &mut dst.row_mut(y0 + i)[x0..x0 + w];
+        let Some(drow) = dst.row_mut(y0 + i).and_then(|r| r.get_mut(x0..x0 + w)) else {
+            return;
+        };
         for j in 0..w {
             let ci = ((i + 2) * PAD_STRIDE + j + 2) as isize;
             let x = srow[j] as i32;
@@ -230,7 +254,12 @@ fn filter(fs: &FrameState, out: &mut FrameBuf, plane: usize, r: usize, c: usize,
 /// CDEF of a block whose taps are all available, `W` samples per row. Samples (at most 12
 /// bits), differences and the weighted tap sum all fit in i16, which doubles the SIMD width.
 #[inline(always)]
-fn filter_rows<const W: usize>(buf: &[i32; PAD_STRIDE * PAD_STRIDE], taps: &[(isize, i32, i32, u32); 12], dst: &mut Plane, (y0, x0, h): (usize, usize, usize)) {
+fn filter_rows<const W: usize>(
+    buf: &[i32; PAD_STRIDE * PAD_STRIDE],
+    taps: &[(isize, i32, i32, u32); 12],
+    dst: &mut RowsMut<'_>,
+    (y0, x0, h): (usize, usize, usize),
+) {
     let mut b16 = [0i16; PAD_STRIDE * PAD_STRIDE];
     for (d, &s) in b16.iter_mut().zip(buf.iter()) {
         *d = s as i16;
@@ -259,7 +288,9 @@ fn filter_rows<const W: usize>(buf: &[i32; PAD_STRIDE * PAD_STRIDE], taps: &[(is
                 min[j] = min[j].min(p[j]);
             }
         }
-        let drow = &mut dst.row_mut(y0 + i)[x0..x0 + W];
+        let Some(drow) = dst.row_mut(y0 + i).and_then(|r| r.get_mut(x0..x0 + W)) else {
+            return;
+        };
         for j in 0..W {
             let s = sum[j];
             drow[j] = (x[j] + ((8 + s - (s < 0) as i16) >> 4)).max(min[j]).min(max[j]) as u16;

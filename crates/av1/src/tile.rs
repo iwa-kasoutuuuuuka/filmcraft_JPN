@@ -94,10 +94,13 @@ pub(crate) struct TileDecoder<'a, 'f> {
     color_map_y: Vec<u8>,
     color_map_uv: Vec<u8>,
     plane_tx_type: usize,
+    /// Scan order and end of block of the last coeffs( ): the only Quant[] positions written.
+    cur_scan: &'static [u16],
+    cur_eob: usize,
     pub pred_buf: [Vec<i32>; 2],
     pub mask: Vec<i32>,
     /// Intermediate rows of the sub-pixel filters (up to 2 x 128 + 8 rows of 128 with 2:1 scaled references).
-    pub mc_tmp: Vec<i32>,
+    pub mc_tmp: crate::inter::McTmp,
     /// Coefficient levels of the current transform block, padded (see TX_PAD).
     levels: Vec<u8>,
 }
@@ -142,9 +145,11 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             color_map_y: vec![0; 64 * 64],
             color_map_uv: vec![0; 64 * 64],
             plane_tx_type: 0,
+            cur_scan: &[],
+            cur_eob: 0,
             pred_buf: [vec![0; 128 * 128], vec![0; 128 * 128]],
             mask: vec![0; 128 * 128],
-            mc_tmp: vec![0; (2 * 128 + 8) * 128],
+            mc_tmp: crate::inter::McTmp::new(),
             levels: vec![0; (32 + TX_PAD) * (32 + TX_PAD)],
         }
     }
@@ -1655,8 +1660,8 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         let h4 = TX_HEIGHT[tx_sz] as usize >> 2;
         let tx_sz_ctx = (TX_SIZE_SQR[tx_sz] as usize + TX_SIZE_SQR_UP[tx_sz] as usize + 1) >> 1;
         let ptype = (plane > 0) as usize;
-        let seg_eob = if tx_sz == TX_16X64 || tx_sz == TX_64X16 { 512 } else { 1024.min(TX_WIDTH[tx_sz] as usize * TX_HEIGHT[tx_sz] as usize) };
-        self.quant[..seg_eob].iter_mut().for_each(|q| *q = 0);
+        // Only Quant[ scan[ 0 .. eob ] ] is read (by reconstruct), and coeffs writes all of it,
+        // so the rest needs no clearing.
         let mut eob = 0usize;
         let mut cul_level = 0u32;
         let mut dc_category = 0u8;
@@ -1672,6 +1677,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
             }
             self.plane_tx_type = self.compute_tx_type(plane, tx_sz, x4, y4);
             let scan = self.get_scan(tx_sz);
+            self.cur_scan = scan;
             let eob_multisize = (TX_WIDTH_LOG2[tx_sz] as usize).min(5) + (TX_HEIGHT_LOG2[tx_sz] as usize).min(5) - 4;
             let tx_class = get_tx_class(self.plane_tx_type);
             let ectx = (tx_class != TX_CLASS_2D) as usize;
@@ -1797,6 +1803,7 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
                 self.t.left_dc[plane][y4 + i] = dc_category;
             }
         }
+        self.cur_eob = eob;
         eob
     }
 
@@ -1931,31 +1938,47 @@ impl<'a, 'f> TileDecoder<'a, 'f> {
         let qm_level = if fh.quant.using_qmatrix { fh.seg_qm_level[plane][self.b.segment_id] } else { 15 };
         let use_qm = fh.quant.using_qmatrix && t < IDTX && qm_level < 15;
         let lim = 1i64 << (7 + bd);
-        // inverse_transform_2d reads only the top-left tw x th coefficients (stride 64)
-        for i in 0..th {
-            self.dequant[i * 64..i * 64 + tw].fill(0);
-        }
-        for i in 0..th {
-            for j in 0..tw {
-                let qv = self.quant[i * tw + j];
-                if qv == 0 {
-                    continue;
-                }
-                let q = if i == 0 && j == 0 { dc_q } else { ac_q };
-                let q2 = if use_qm {
-                    let m = QUANTIZER_MATRIX[qm_level as usize][(plane > 0) as usize][QM_OFFSET[tx_sz] as usize + i * tw + j] as i64;
-                    (q * m + 16) >> 5
-                } else {
-                    q
-                };
-                let dq = qv as i64 * q2;
-                let mag = (dq.abs() & 0xFFFFFF) / dq_denom;
-                let dq2 = if dq < 0 { -mag } else { mag };
-                self.dequant[i * 64 + j] = dq2.clamp(-lim, lim - 1) as i32;
+        // Dequant[] is all zero outside the positions written here, which are cleared again
+        // after the inverse transform (which reads the top-left tw x th, stride 64).
+        let log2tw = log2w.min(5);
+        let scan = self.cur_scan;
+        let scan = &scan[..self.cur_eob.min(scan.len())];
+        let mut nz_rows = 0;
+        let mut dc_only = true;
+        for &p in scan {
+            let pos = p as usize;
+            let Some(&qv) = self.quant.get(pos) else {
+                continue;
+            };
+            if qv == 0 {
+                continue;
             }
+            let (i, j) = (pos >> log2tw, pos & (tw - 1));
+            if i >= th {
+                continue;
+            }
+            let q = if pos == 0 { dc_q } else { ac_q };
+            let q2 = if use_qm {
+                let m = QUANTIZER_MATRIX[qm_level as usize][(plane > 0) as usize][QM_OFFSET[tx_sz] as usize + pos] as i64;
+                (q * m + 16) >> 5
+            } else {
+                q
+            };
+            let dq = qv as i64 * q2;
+            let mag = (dq.abs() & 0xFFFFFF) / dq_denom;
+            let dq2 = if dq < 0 { -mag } else { mag };
+            self.dequant[i * 64 + j] = dq2.clamp(-lim, lim - 1) as i32;
+            nz_rows = nz_rows.max(i + 1);
+            dc_only &= pos == 0;
         }
         let lossless = self.b.lossless;
-        inverse_transform_2d(&self.dequant, &mut self.residual, tx_sz, t, lossless, bd);
+        inverse_transform_2d(&self.dequant, &mut self.residual, tx_sz, t, lossless, bd, nz_rows, dc_only);
+        for &p in scan {
+            let pos = p as usize;
+            if let Some(d) = self.dequant.get_mut((pos >> log2tw) * 64 + (pos & (tw - 1))) {
+                *d = 0;
+            }
+        }
         let pl = &mut self.t.cur.planes[plane];
         let max = (1i32 << bd) - 1;
         for i in 0..h {
