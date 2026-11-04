@@ -244,10 +244,26 @@ fn number(app: &mut FilmcraftApp, ui: &mut Ui, key: &str, value: f64, range: (f6
     (r.changed() && x != value).then_some(x)
 }
 
+/// The tooltip of a setting FilmCraft does not act on.
+pub fn unavailable_text(u: settings::Unavailable) -> &'static str {
+    match u {
+        settings::Unavailable::NotApplicable => crate::i18n::t(
+            "Not available in FilmCraft: this setting refers to an Adobe service, hardware or a feature FilmCraft does not have.",
+            "FilmCraft では使用できません: Adobe のサービスやハードウェア、または FilmCraft にない機能のための設定です。",
+        ),
+        settings::Unavailable::NotYet => crate::i18n::t(
+            "Not available yet: FilmCraft keeps this value but does not act on it.",
+            "まだ使用できません: 値は保持されますが、FilmCraft の動作には反映されません。",
+        ),
+    }
+}
+
 fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Field) {
-    let enabled = f.enabled_by.is_none_or(|k| get(&d.values, k).as_bool().unwrap_or(true));
+    // a setting FilmCraft does not act on is shown disabled, with the reason as its tooltip
+    let unavailable = if f.wired { None } else { settings::unavailable(f.key) };
+    let enabled = unavailable.is_none() && f.enabled_by.is_none_or(|k| get(&d.values, k).as_bool().unwrap_or(true));
     let cur = get(&d.values, f.key).clone();
-    ui.add_enabled_ui(enabled, |ui| {
+    let row = ui.add_enabled_ui(enabled, |ui| {
         ui.horizontal(|ui| {
             if f.indent {
                 ui.add_space(22.0);
@@ -343,6 +359,12 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
             }
         });
     });
+    if let Some(u) = unavailable {
+        let text = unavailable_text(u);
+        let rect = row.response.rect;
+        ui.interact(rect, egui::Id::new(("settings-unavailable", f.key)), Sense::hover()).on_hover_text(text);
+        app.auto.add(&format!("settings.{}.unavailable", f.key), rect, text);
+    }
 }
 
 /// A colour swatch (opens a picker) and its `#rrggbb` text.

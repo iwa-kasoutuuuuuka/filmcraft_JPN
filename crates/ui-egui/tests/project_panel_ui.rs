@@ -447,6 +447,26 @@ fn bins_open_in_place_in_a_tab_or_in_a_window() {
     assert_eq!(name, "Camera A");
 }
 
+/// Settings ▸ General ▸ Show "Project:" and "Bin:" in Project panel tab.
+#[test]
+fn tab_titles_follow_the_project_bin_prefix_setting() {
+    let mut d = project_driver();
+    d.exec("project.view.set", json!({"view": "list"}));
+    let (bin, _) = d.footage();
+    let bin_name = d.app().session.project.root.find_bin(filmcraft_project::BinId(bin)).unwrap().name.clone();
+    let project = d.app().session.project.name.clone();
+    d.app().session.prefs.general.bins_double_click = "openNewTab".into();
+    d.frames(2);
+    double_click_bin(&mut d, bin, false);
+    d.wait_for("project.tab.0");
+    assert_eq!(d.label("project.tab.project"), format!("Project: {project}"), "on by default");
+    assert_eq!(d.label("project.tab.0"), format!("Bin: {bin_name}"));
+    d.exec("prefs.set", json!({"key": "general.showProjectBinInTab", "value": false}));
+    d.frames(3);
+    assert_eq!(d.label("project.tab.project"), project);
+    assert_eq!(d.label("project.tab.0"), bin_name);
+}
+
 #[test]
 fn footer_buttons_are_wired() {
     let mut d = project_driver();

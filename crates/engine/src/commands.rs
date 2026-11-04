@@ -387,6 +387,10 @@ fn import_source(
     {
         v.frame_rate = crate::settings::timebase_rate(&s.prefs.media.indeterminate_timebase);
     }
+    // Settings ▸ Media ▸ Timecode ▸ Generate Timecode: ignore the file's own start timecode
+    if s.prefs.media.timecode == "generate" {
+        info.start_timecode = None;
+    }
     let path_s = path.to_string();
     let id = s.edit(&format!("Import {name}"), |p, _| {
         Ok(p.add_item(
@@ -1482,6 +1486,10 @@ fn build() -> Vec<CommandSpec> {
             s.state.source_item = Some(item);
             s.state.source_playhead = st;
             s.events.push(crate::Event::OpenSource(item));
+            // Settings ▸ Timeline ▸ Match frame sets in point
+            if s.prefs.timeline.match_frame_sets_in {
+                s.execute("project.setMarks", json!({"item": item.0, "in": st.0}))?;
+            }
             Ok(json!({"item": item.0}))
         }),
         // ================= Markers =================
@@ -3006,7 +3014,8 @@ fn install_project(s: &mut Session, mut proj: filmcraft_project::Project, path: 
     s.offline = Default::default();
     // the Timeline tabs open when it was saved, else its first sequence (it always opened the
     // first one, e.g. a multi-camera source sequence instead of the edit)
-    let saved = proj.open_sequences.take().unwrap_or_default();
+    // (Settings ▸ Timeline ▸ Restore open sequences when opening projects off: just the first)
+    let saved = proj.open_sequences.take().filter(|_| s.prefs.timeline.restore_open_sequences).unwrap_or_default();
     let is_seq = |id: &ItemId| proj.sequence(*id).is_some();
     let mut tabs: Vec<ItemId> = saved.tabs.iter().copied().filter(is_seq).collect();
     tabs.dedup();

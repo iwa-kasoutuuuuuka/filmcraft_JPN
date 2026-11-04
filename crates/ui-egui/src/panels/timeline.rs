@@ -1434,17 +1434,20 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 let v = &mut app.ui.timeline;
                 v.target_pps = (v.target_pps * f).clamp(0.05, 24_000.0);
                 app.tl.zoom_anchor = Some((anchor_t, p.x));
-            } else if mods.shift && scroll.y.abs() > 0.0 {
-                if layout.rows.iter().find(|r| r.kind == TrackKind::Video).is_some_and(|r| p.y < r.rect.max.y + 200.0) && p.y < layout.content.center().y {
-                    app.ui.timeline.v_scroll -= scroll.y;
-                } else {
-                    app.ui.timeline.a_scroll -= scroll.y;
-                }
             } else if scroll.x.abs() > 0.0 || scroll.y.abs() > 0.0 {
-                let d = if scroll.x.abs() > scroll.y.abs() { scroll.x } else { scroll.y };
-                let v = &mut app.ui.timeline;
-                v.target_scroll = (v.target_scroll - d as f64 / v.pps).max(0.0);
-                v.scroll = v.target_scroll;
+                // Settings ▸ Timeline ▸ Timeline Mouse Scrolling (Shift swaps time and tracks)
+                let (d, tracks) = filmcraft_engine::settings::timeline_wheel(&app.session.prefs.timeline.mouse_scrolling, scroll.x, scroll.y, mods.shift);
+                if tracks.abs() > 0.0 {
+                    if layout.rows.iter().find(|r| r.kind == TrackKind::Video).is_some_and(|r| p.y < r.rect.max.y + 200.0) && p.y < layout.content.center().y {
+                        app.ui.timeline.v_scroll -= tracks;
+                    } else {
+                        app.ui.timeline.a_scroll -= tracks;
+                    }
+                } else if d.abs() > 0.0 {
+                    let v = &mut app.ui.timeline;
+                    v.target_scroll = (v.target_scroll - d as f64 / v.pps).max(0.0);
+                    v.scroll = v.target_scroll;
+                }
             }
         }
     }

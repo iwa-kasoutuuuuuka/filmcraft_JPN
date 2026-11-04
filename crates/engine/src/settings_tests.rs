@@ -494,3 +494,195 @@ fn hardware_decoding_setting_drives_the_decoder_switch() {
     assert_eq!(s.prefs.hardware_mode(), filmcraft_codecs::hw::HwMode::Auto);
     assert!(settings::field("playback.hardwareDecoding").is_some_and(|f| f.wired && matches!(f.kind, Kind::Choice(_))));
 }
+
+// ------------------------------------------------------------------ settings wired later (docs/preferences.md)
+
+#[test]
+fn media_hardware_decoding_off_turns_decoding_off() {
+    let mut s = Session::default();
+    assert_eq!(s.prefs.hardware_mode(), filmcraft_codecs::hw::HwMode::Auto);
+    set(&mut s, "media.hardwareDecoding", json!(false));
+    assert_eq!(s.prefs.hardware_mode(), filmcraft_codecs::hw::HwMode::Off, "the Media page's switch also turns it off");
+    set(&mut s, "media.hardwareDecoding", json!(true));
+    assert_eq!(s.prefs.hardware_mode(), filmcraft_codecs::hw::HwMode::Auto);
+}
+
+#[test]
+fn match_frame_sets_in_point_when_asked() {
+    let mut s = demo();
+    let seq = s.active_sequence().unwrap().clone();
+    let clip = seq.video_tracks.iter().flat_map(|t| t.items.iter()).next().unwrap().clone();
+    s.set_playhead(clip.start + Tick(clip.duration.0 / 2));
+    let mark_in = |s: &Session, item: ItemId| s.project.item(item).and_then(|i| i.as_media()).and_then(|m| m.mark_in);
+    // off (default): Match Frame only shows the frame
+    let item = ItemId(s.execute("sequence.matchFrame", json!({})).unwrap()["item"].as_u64().unwrap());
+    let st = s.state.source_playhead;
+    assert_eq!(mark_in(&s, item), None);
+    set(&mut s, "timeline.matchFrameSetsIn", json!(true));
+    s.execute("sequence.matchFrame", json!({})).unwrap();
+    assert_eq!(mark_in(&s, item), Some(st), "the Source In point is the matched frame");
+    assert!(settings::unavailable("timeline.matchFrameSetsIn").is_none());
+}
+
+#[test]
+fn hindi_digits_in_new_text() {
+    assert_eq!(settings::hindi_digits("Take 12, 2024"), "Take ١٢, ٢٠٢٤");
+    let mut s = demo();
+    let text = |s: &Session| {
+        let c = s.state.selection[0];
+        let it = s.active_sequence().unwrap().find_item(c).unwrap().1.clone();
+        it.effects.iter().rev().find(|e| e.effect.contains("text")).map(|e| e.params["text"].value.clone()).unwrap()
+    };
+    s.execute("graphics.newText", json!({"text": "Day 3"})).unwrap();
+    assert_eq!(text(&s), ParamValue::Text("Day 3".into()));
+    set(&mut s, "graphics.hindiDigits", json!(true));
+    s.execute("graphics.newText", json!({"text": "Day 3", "newClip": true})).unwrap();
+    assert_eq!(text(&s), ParamValue::Text("Day ٣".into()));
+}
+
+/// A mono 16-bit Broadcast WAV whose `bext` time reference is 01:00:00:00 at 23.976 fps.
+fn write_bwf(path: &Path) {
+    let samples = 4800u32;
+    let tr: u64 = 86_400 * 2002;
+    let mut bext = vec![0u8; 602];
+    bext[338..342].copy_from_slice(&(tr as u32).to_le_bytes());
+    bext[342..346].copy_from_slice(&((tr >> 32) as u32).to_le_bytes());
+    let mut v = Vec::new();
+    v.extend_from_slice(b"RIFF\0\0\0\0WAVEfmt ");
+    v.extend_from_slice(&16u32.to_le_bytes());
+    v.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    v.extend_from_slice(&1u16.to_le_bytes()); // mono
+    v.extend_from_slice(&48_000u32.to_le_bytes());
+    v.extend_from_slice(&96_000u32.to_le_bytes());
+    v.extend_from_slice(&2u16.to_le_bytes());
+    v.extend_from_slice(&16u16.to_le_bytes());
+    v.extend_from_slice(b"bext");
+    v.extend_from_slice(&(bext.len() as u32).to_le_bytes());
+    v.extend_from_slice(&bext);
+    v.extend_from_slice(b"data");
+    v.extend_from_slice(&(samples * 2).to_le_bytes());
+    v.extend(std::iter::repeat_n(0u8, samples as usize * 2));
+    let riff = (v.len() - 8) as u32;
+    v[4..8].copy_from_slice(&riff.to_le_bytes());
+    std::fs::write(path, v).unwrap();
+}
+
+#[test]
+fn generate_timecode_ignores_the_files_timecode() {
+    let dir = tmp_dir("prefs-timecode");
+    let wav = dir.join("bwf.wav");
+    write_bwf(&wav);
+    let mut s = Session::default();
+    let start_tc = |s: &mut Session| {
+        let r = s.execute("file.import", json!({"paths": [wav.to_string_lossy()]})).unwrap();
+        let id = ItemId(r["items"][0].as_u64().unwrap_or_else(|| panic!("{r}")));
+        s.project.item(id).and_then(|i| i.as_media()).and_then(|m| m.info.start_timecode)
+    };
+    assert_eq!(start_tc(&mut s), Some(86_400), "Use Media Source: the file's 01:00:00:00");
+    set(&mut s, "media.timecode", json!("generate"));
+    assert_eq!(start_tc(&mut s), None, "Generate Timecode: starts at 00:00:00:00");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn restore_open_sequences_off_opens_only_the_first() {
+    let dir = tmp_dir("prefs-restore-tabs");
+    let path = dir.join("tabs.fcproj").to_string_lossy().to_string();
+    let mut s = Session::default();
+    let a = s.execute("file.newSequence", json!({"name": "A"})).unwrap()["sequence"].as_u64().unwrap();
+    let b = s.execute("file.newSequence", json!({"name": "B"})).unwrap()["sequence"].as_u64().unwrap();
+    s.execute("file.saveAs", json!({"path": path})).unwrap();
+    let tabs = |t: &Session| t.state.open_sequences.iter().map(|i| i.0).collect::<Vec<_>>();
+    let mut t = Session::default();
+    t.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!((tabs(&t), t.state.active_sequence.map(|i| i.0)), (vec![a, b], Some(b)), "on (default): the saved tabs");
+    let mut u = Session::default();
+    set(&mut u, "timeline.restoreOpenSequences", json!(false));
+    u.execute("file.open", json!({"path": path})).unwrap();
+    assert_eq!((tabs(&u), u.state.active_sequence.map(|i| i.0)), (vec![a], Some(a)), "off: just the first sequence");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn export_queue_waits_while_playing() {
+    let dir = tmp_dir("prefs-queue-pause");
+    let add = |s: &mut Session, name: &str, start: bool| -> u64 {
+        let out = dir.join(name).to_string_lossy().to_string();
+        let p = json!({"preset": "Waveform Audio 48 kHz 16-bit", "path": out, "range": "custom", "startSeconds": 0, "endSeconds": 0.25, "start": start});
+        s.execute("export.queue.add", p).unwrap()["added"][0].as_u64().unwrap()
+    };
+    let status = |s: &mut Session, id: u64| {
+        let l = s.execute("export.queue.list", json!({})).unwrap();
+        l["items"].as_array().unwrap().iter().find(|i| i["id"] == id).unwrap()["status"].clone()
+    };
+    let mut s = demo();
+    let id = add(&mut s, "a.wav", false);
+    assert!(s.prefs.playback.pause_encoder_queue, "on by default");
+    s.playback_active = true;
+    s.execute("export.queue.start", json!({})).unwrap();
+    s.pump_jobs(std::time::Duration::from_millis(10));
+    assert_eq!(status(&mut s, id), "ready", "held back during playback");
+    // playback stops: it starts
+    s.playback_active = false;
+    s.pump_jobs(std::time::Duration::from_millis(10));
+    assert_ne!(status(&mut s, id), "ready");
+    // with the setting off it starts during playback too
+    let mut s2 = demo();
+    set(&mut s2, "playback.pauseEncoderQueue", json!(false));
+    s2.playback_active = true;
+    let id2 = add(&mut s2, "b.wav", true);
+    assert_ne!(status(&mut s2, id2), "ready");
+    // let the encodes finish before the folder goes
+    s.execute("export.queue.start", json!({"wait": true})).unwrap();
+    s2.execute("export.queue.start", json!({"wait": true})).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn source_monitor_sums_multichannel_to_mono() {
+    let ch = vec![vec![0.6, 0.6], vec![0.0, 0.0], vec![0.3, 0.3], vec![0.3, 0.3]];
+    let (l, r) = settings::source_monitor_pair(&ch, true);
+    assert_eq!(l, r);
+    assert!((l[0] - 0.3).abs() < 1e-6, "every channel heard: {l:?}");
+    let (l, r) = settings::source_monitor_pair(&ch, false);
+    assert_eq!((l[0], r[0]), (0.6, 0.0), "off: the first two channels");
+    // stereo and mono clips are not affected
+    assert_eq!(settings::source_monitor_pair(&[vec![0.5], vec![0.1]], true), (vec![0.5], vec![0.1]));
+    assert_eq!(settings::source_monitor_pair(&[vec![0.2]], true), (vec![0.2], vec![0.2]));
+    assert_eq!(settings::source_monitor_pair(&[], true), (vec![], vec![]));
+}
+
+#[test]
+fn timeline_mouse_scrolling_and_its_migration() {
+    // (time, tracks)
+    assert_eq!(settings::timeline_wheel("horizontal", 0.0, 10.0, false), (10.0, 0.0));
+    assert_eq!(settings::timeline_wheel("horizontal", 0.0, 10.0, true), (0.0, 10.0));
+    assert_eq!(settings::timeline_wheel("vertical", 0.0, 10.0, false), (0.0, 10.0));
+    assert_eq!(settings::timeline_wheel("vertical", 0.0, 10.0, true), (10.0, 0.0));
+    assert_eq!(settings::timeline_wheel("vertical", 8.0, 1.0, false), (8.0, 0.0), "a sideways swipe scrolls time");
+    // egui delivers Shift+wheel as a sideways delta
+    assert_eq!(settings::timeline_wheel("horizontal", 10.0, 0.0, true), (0.0, 10.0));
+    assert_eq!(settings::timeline_wheel("vertical", 10.0, 0.0, true), (10.0, 0.0));
+    assert_eq!(settings::TimelinePrefs::default().mouse_scrolling, "horizontal");
+    // a v2 file's "vertical" had no effect (the wheel scrolled time): it stays that way
+    let p = Preferences::from_value(json!({"version": 2, "timeline": {"mouseScrolling": "vertical"}}));
+    assert_eq!(p.timeline.mouse_scrolling, "horizontal");
+    let p = Preferences::from_value(json!({"version": 3, "timeline": {"mouseScrolling": "vertical"}}));
+    assert_eq!(p.timeline.mouse_scrolling, "vertical");
+}
+
+#[test]
+fn every_inactive_setting_says_why() {
+    for (_, f) in settings::fields() {
+        assert_eq!(settings::unavailable(f.key).is_some(), !f.wired, "{}", f.key);
+    }
+    assert_eq!(settings::unavailable("playback.enableTransmit"), Some(settings::Unavailable::NotApplicable));
+    assert_eq!(settings::unavailable("audio.scrubAudio"), Some(settings::Unavailable::NotYet));
+    assert_eq!(settings::unavailable("timeline.stillImageDuration"), None);
+    let mut s = Session::default();
+    let schema = s.execute("prefs.schema", json!({"category": "playback"})).unwrap();
+    let fields = schema["categories"][0]["fields"].as_array().unwrap();
+    let get = |k: &str| fields.iter().find(|f| f["key"] == k).unwrap()["unavailable"].clone();
+    assert_eq!(get("playback.enableTransmit"), "notApplicable");
+    assert_eq!(get("playback.pauseEncoderQueue"), Value::Null);
+}

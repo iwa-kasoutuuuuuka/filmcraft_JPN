@@ -24,8 +24,10 @@ use crate::{EngineError, Result, Session};
 
 /// Version of the preferences file layout ([`crate::autosave::Preferences::version`]).
 /// v1: Auto Save, Audio (mixer automation), Playback (pre/postroll), Trim, Media (proxies), guides,
-/// Essential Sound presets. v2: every Settings category.
-pub const PREFS_VERSION: u32 = 2;
+/// Essential Sound presets. v2: every Settings category. v3: Timeline Mouse Scrolling takes effect
+/// (v2 files said `vertical`, the old default, while the wheel scrolled horizontally; they are
+/// migrated to `horizontal` so nothing changes for them).
+pub const PREFS_VERSION: u32 = 3;
 
 // ------------------------------------------------------------------ category values
 
@@ -414,7 +416,8 @@ pub struct TimelinePrefs {
     pub still_image_unit: String,
     /// "Timeline Playback Auto-Scrolling": `noScroll` | `pageScroll` | `smoothScroll`.
     pub auto_scroll: String,
-    /// "Timeline Mouse Scrolling": `vertical` | `horizontal`.
+    /// "Timeline Mouse Scrolling": `horizontal` (default: the wheel scrolls time, Shift+wheel the
+    /// tracks) | `vertical` (the wheel scrolls the tracks, Shift+wheel time).
     pub mouse_scrolling: String,
     /// Default Audio Tracks per media type: `useFile` | `mono` | `stereo` | `5.1` | `adaptive`.
     pub mono_media_tracks: String,
@@ -442,7 +445,7 @@ impl Default for TimelinePrefs {
             still_image_duration: 5.0,
             still_image_unit: "seconds".into(),
             auto_scroll: "pageScroll".into(),
-            mouse_scrolling: "vertical".into(),
+            mouse_scrolling: "horizontal".into(),
             mono_media_tracks: "useFile".into(),
             stereo_media_tracks: "useFile".into(),
             surround_media_tracks: "useFile".into(),
@@ -558,8 +561,74 @@ pub struct Field {
     pub indent: bool,
     /// Only editable while this boolean key is on.
     pub enabled_by: Option<&'static str>,
-    /// Whether FilmCraft acts on the value (false = remembered for parity, no effect yet).
+    /// Whether FilmCraft acts on the value (false = remembered for parity, no effect; the dialog
+    /// shows it disabled with [`unavailable`]'s reason as the tooltip).
     pub wired: bool,
+}
+
+/// Why a setting has no effect in FilmCraft.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unavailable {
+    /// It belongs to an Adobe service or application, to hardware FilmCraft does not drive, or to
+    /// a feature FilmCraft does not have (importing other projects, writing into media files).
+    NotApplicable,
+    /// Not implemented yet: the value is kept but nothing reads it.
+    NotYet,
+}
+
+/// Settings that refer to things FilmCraft does not have ([`Unavailable::NotApplicable`]).
+const NOT_APPLICABLE: &[&str] = &[
+    "general.projectsDoubleClick",
+    "general.projectsOptDoubleClick",
+    "general.showCompatibilityIssues",
+    "audio.editInAuditionLocation",
+    "color.displayColorManagement",
+    "color.extendedDynamicRange",
+    "color.hdrGraphicsWhite",
+    "labels.defaults.dynamicLink",
+    "labels.defaults.bin",
+    "labels.defaults.captions",
+    "media.writeXmpId",
+    "media.validateContentCredentials",
+    "media.writeClipMarkersToXmp",
+    "media.enableXmpLinking",
+    "media.allowDuplicateMedia",
+    "media.createFolderForImportedProjects",
+    "media.proresHardwareEncoding",
+    "mediaCache.saveNextToMedia",
+    "mediaCache.databaseLocation",
+    "playback.enableTransmit",
+    "plugins.developerMode",
+];
+
+/// Why the setting `key` does nothing, or None when FilmCraft acts on it (or there is no such
+/// setting).
+pub fn unavailable(key: &str) -> Option<Unavailable> {
+    let f = field(key)?;
+    if f.wired {
+        None
+    } else if NOT_APPLICABLE.contains(&key) {
+        Some(Unavailable::NotApplicable)
+    } else {
+        Some(Unavailable::NotYet)
+    }
+}
+
+impl Unavailable {
+    /// `notApplicable` | `notYet` (`prefs.schema`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Unavailable::NotApplicable => "notApplicable",
+            Unavailable::NotYet => "notYet",
+        }
+    }
+    /// The explanation (English; frontends translate it).
+    pub fn reason(self) -> &'static str {
+        match self {
+            Unavailable::NotApplicable => "Not available in FilmCraft: this setting refers to an Adobe service, hardware or a feature FilmCraft does not have.",
+            Unavailable::NotYet => "Not available yet: FilmCraft keeps this value but does not act on it.",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -686,9 +755,9 @@ static CATEGORIES: &[Category] = &[
             Row::Group(
                 "Bins",
                 &[
-                    f("general.binsDoubleClick", "Double-click", Kind::Choice(BIN_OPEN), false),
-                    f("general.binsCmdDoubleClick", "+ Cmd", Kind::Choice(BIN_OPEN), false),
-                    f("general.binsOptDoubleClick", "+ Opt", Kind::Choice(BIN_OPEN), false),
+                    f("general.binsDoubleClick", "Double-click", Kind::Choice(BIN_OPEN), true),
+                    f("general.binsCmdDoubleClick", "+ Cmd", Kind::Choice(BIN_OPEN), true),
+                    f("general.binsOptDoubleClick", "+ Opt", Kind::Choice(BIN_OPEN), true),
                 ],
             ),
             Row::Group(
@@ -704,7 +773,7 @@ static CATEGORIES: &[Category] = &[
             b("general.showWorkspaceResetWarning", "Show Workspace Reset Warning dialog on double click", false),
             b("general.showProjectLoadErrors", "Show Project Load Error Dialog", false),
             b("general.showCompatibilityIssues", "Show system compatibility issues at startup", false),
-            b("general.showProjectBinInTab", "Show \"Project:\" and \"Bin:\" in Project panel tab", false),
+            b("general.showProjectBinInTab", "Show \"Project:\" and \"Bin:\" in Project panel tab", true),
             b("general.showMaskTrackerPreview", "Show Mask Tracker Preview", false),
         ],
     },
@@ -725,7 +794,7 @@ static CATEGORIES: &[Category] = &[
             f("audio.automatchTime", "Automatch Time", float(0.0, 30.0, 3, "seconds"), true),
             f("audio.mixdownType", "5.1 Mixdown Type", Kind::Choice(MIXDOWN), true),
             f("audio.largeVolumeAdjustment", "Large Volume Adjustment", float(0.0, 96.0, 0, "dB"), true),
-            b("audio.sumToMonoInSource", "Sum multichannel outputs to mono in Source Monitor", false),
+            b("audio.sumToMonoInSource", "Sum multichannel outputs to mono in Source Monitor", true),
             b("audio.scrubAudio", "Play audio while scrubbing in Source and Program Monitors", false),
             b("audio.maintainPitchShuttling", "Maintain pitch while shuttling", false),
             b("audio.muteInputDuringRecording", "Mute input during timeline recording", false),
@@ -750,7 +819,7 @@ static CATEGORIES: &[Category] = &[
         title: "Audio Hardware",
         rows: &[
             f("audioHardware.deviceClass", "Device Class", Kind::Device(DeviceList::Hosts), true),
-            f("audioHardware.defaultInput", "Default Input", Kind::Device(DeviceList::Inputs), false),
+            f("audioHardware.defaultInput", "Default Input", Kind::Device(DeviceList::Inputs), true),
             f("audioHardware.defaultOutput", "Default Output", Kind::Device(DeviceList::Outputs), true),
             f("audioHardware.bufferSize", "I/O Buffer Size", Kind::Choice(BUFFERS), true),
             f("audioHardware.sampleRate", "Sample Rate", Kind::Choice(RATES), true),
@@ -814,7 +883,7 @@ static CATEGORIES: &[Category] = &[
                 "Text",
                 &[
                     b("graphics.ligatures", "Ligatures", true),
-                    b("graphics.hindiDigits", "Hindi digits", false),
+                    b("graphics.hindiDigits", "Hindi digits", true),
                     b("graphics.smartQuotes", "Smart quotes", true),
                     f("graphics.paragraphDirection", "Default paragraph direction", Kind::Choice(DIRECTION), false),
                     f("graphics.textLineJoin", "Stroke line join", Kind::Choice(JOIN), false),
@@ -869,7 +938,7 @@ static CATEGORIES: &[Category] = &[
         title: "Media",
         rows: &[
             f("media.indeterminateTimebase", "Indeterminate Media Timebase", Kind::Choice(TIMEBASE), true),
-            f("media.timecode", "Timecode", Kind::Choice(TIMECODE), false),
+            f("media.timecode", "Timecode", Kind::Choice(TIMECODE), true),
             f("media.frameCount", "Frame Count", Kind::Choice(FRAME_COUNT), false),
             f("media.defaultMediaScaling", "Default Media Scaling", Kind::Choice(SCALING), true),
             b("media.writeXmpId", "Write XMP ID to files on import", false),
@@ -881,7 +950,7 @@ static CATEGORIES: &[Category] = &[
             b("media.allowDuplicateMedia", "Allow duplicate media during project import", false),
             b("media.createFolderForImportedProjects", "Create folder for imported projects", false),
             b("media.autoHideDependentClips", "Automatically Hide Dependent Clips", false),
-            b("media.importImageSequences", "Import numbered stills as image sequences", false),
+            b("media.importImageSequences", "Import numbered stills as image sequences", true),
             Row::Group(
                 "Growing Files",
                 &[
@@ -890,7 +959,7 @@ static CATEGORIES: &[Category] = &[
                     sub("media.growingRefreshSeconds", "Refresh growing Files Every", int(1.0, 3600.0, "seconds"), "media.refreshGrowingFiles", false),
                 ],
             ),
-            b("media.hardwareDecoding", "Enable hardware accelerated decoding (requires restart)", false),
+            b("media.hardwareDecoding", "Enable hardware accelerated decoding (requires restart)", true),
             b("media.proresHardwareEncoding", "Enable ProRes hardware accelerated encoding, if available", false),
         ],
     },
@@ -959,7 +1028,7 @@ static CATEGORIES: &[Category] = &[
             f("playback.prerollSeconds", "Preroll", float(0.0, 60.0, 0, "seconds"), true),
             f("playback.postrollSeconds", "Postroll", float(0.0, 60.0, 0, "seconds"), true),
             f("playback.stepManyFrames", "Step forward/back many", int(1.0, 1000.0, "frames"), true),
-            b("playback.pauseEncoderQueue", "Pause Media Encoder queue during playback", false),
+            b("playback.pauseEncoderQueue", "Pause Media Encoder queue during playback", true),
             b("playback.enableTransmit", "Enable Mercury Transmit", false),
             b("playback.disableVideoInBackground", "Disable video output when in the background", false),
             b("playback.draftDecode", "Draft decoding at reduced playback resolution (H.264: faster, some frames less filtered)", true),
@@ -985,7 +1054,7 @@ static CATEGORIES: &[Category] = &[
             f("timeline.audioTransitionDuration", "Audio Transition Default Duration", Kind::Duration { unit_key: "timeline.audioTransitionUnit" }, true),
             f("timeline.stillImageDuration", "Still Image Default Duration", Kind::Duration { unit_key: "timeline.stillImageUnit" }, true),
             f("timeline.autoScroll", "Timeline Playback Auto-Scrolling", Kind::Choice(AUTO_SCROLL), true),
-            f("timeline.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), false),
+            f("timeline.mouseScrolling", "Timeline Mouse Scrolling", Kind::Choice(MOUSE_SCROLL), true),
             Row::Group(
                 "Default Audio Tracks",
                 &[
@@ -1001,8 +1070,8 @@ static CATEGORIES: &[Category] = &[
             b("timeline.outOfSyncUnlinked", "Display out of sync indicators for unlinked clips", false),
             b("timeline.playAfterRendering", "Play after rendering previews", true),
             b("timeline.clipMismatchWarning", "Show Clip Mismatch Warning dialog", false),
-            b("timeline.matchFrameSetsIn", "Match frame sets in point", false),
-            b("timeline.restoreOpenSequences", "Restore open sequences when opening projects", false),
+            b("timeline.matchFrameSetsIn", "Match frame sets in point", true),
+            b("timeline.restoreOpenSequences", "Restore open sequences when opening projects", true),
             b("timeline.addTracksAutomatically", "Add tracks automatically when editing source clips onto the Timeline", false),
         ],
     },
@@ -1134,6 +1203,29 @@ pub fn migrate(v: &mut Value) {
         // pre/postroll; v2 stores them as reals, which serde reads either way.
         m.insert("version".into(), json!(2));
     }
+    if ver < 3 {
+        // v2 stored "Timeline Mouse Scrolling: Vertical" (the default) but the wheel scrolled
+        // horizontally: keep what those users had
+        if let Some(t) = m.get_mut("timeline").and_then(Value::as_object_mut)
+            && t.get("mouseScrolling").and_then(Value::as_str) == Some("vertical")
+        {
+            t.insert("mouseScrolling".into(), json!("horizontal"));
+        }
+        m.insert("version".into(), json!(3));
+    }
+}
+
+/// Timeline Mouse Scrolling: what a wheel turn of (`dx`, `dy`) points does (without Alt/Cmd, which
+/// zoom). Returns (time scroll, track scroll) in points. Shift swaps the two; a sideways wheel or
+/// trackpad swipe always scrolls time.
+pub fn timeline_wheel(mode: &str, dx: f32, dy: f32, shift: bool) -> (f32, f32) {
+    // egui reports Shift+wheel as a sideways scroll: that is still the wheel
+    let (dx, dy) = if shift && dy == 0.0 { (0.0, dx) } else { (dx, dy) };
+    if dx.abs() > dy.abs() {
+        return (dx, 0.0);
+    }
+    let vertical = (mode == "vertical") != shift;
+    if vertical { (0.0, dy) } else { (dy, 0.0) }
 }
 
 impl crate::autosave::Preferences {
@@ -1144,7 +1236,11 @@ impl crate::autosave::Preferences {
     }
 
     /// The hardware decoding mode this setting selects.
+    /// Settings ▸ Media ▸ "Enable hardware accelerated decoding" off turns it off as well.
     pub fn hardware_mode(&self) -> filmcraft_codecs::hw::HwMode {
+        if !self.media.hardware_decoding {
+            return filmcraft_codecs::hw::HwMode::Off;
+        }
         match self.playback.hardware_decoding.as_str() {
             "off" => filmcraft_codecs::hw::HwMode::Off,
             _ => filmcraft_codecs::hw::HwMode::Auto,
@@ -1195,6 +1291,27 @@ pub fn smart_quotes(s: &str) -> String {
         prev = Some(c);
     }
     out
+}
+
+/// Settings ▸ Graphics ▸ Text ▸ Hindi digits: ASCII digits as Arabic-Indic digits (`0` → `٠`, …
+/// `9` → `٩`), as typed into Arabic text.
+pub fn hindi_digits(s: &str) -> String {
+    s.chars().map(|c| if c.is_ascii_digit() { char::from_u32(0x0660 + (c as u32 - '0' as u32)).unwrap_or(c) } else { c }).collect()
+}
+
+/// The Source Monitor's stereo pair from a clip's channels: Settings ▸ Audio ▸ "Sum multichannel
+/// outputs to mono in Source Monitor" mixes every channel of a clip with more than two (their
+/// average, on both sides) so none is silent; otherwise the first two play (mono on both sides).
+pub fn source_monitor_pair(channels: &[Vec<f32>], sum_to_mono: bool) -> (Vec<f32>, Vec<f32>) {
+    let Some(first) = channels.first() else { return (Vec::new(), Vec::new()) };
+    if sum_to_mono && channels.len() > 2 {
+        let n = channels.iter().map(Vec::len).min().unwrap_or(0);
+        let k = channels.len() as f32;
+        let mono: Vec<f32> = (0..n).map(|i| channels.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() / k).collect();
+        return (mono.clone(), mono);
+    }
+    let right = channels.get(1).unwrap_or(first);
+    (first.clone(), right.clone())
 }
 
 /// Interleave a stereo mix into a device buffer of `ch` channels following Output Mapping: left
@@ -1415,7 +1532,7 @@ fn schema(s: &mut Session, p: &Value) -> Result<Value> {
                 .into_iter()
                 .filter(|(cat, _)| *cat == c.id)
                 .map(|(_, f)| {
-                    json!({"key": f.key, "label": f.label, "kind": kind_json(f.kind), "wired": f.wired, "enabledBy": f.enabled_by, "value": s.prefs.get(f.key)})
+                    json!({"key": f.key, "label": f.label, "kind": kind_json(f.kind), "wired": f.wired, "unavailable": unavailable(f.key).map(Unavailable::id), "enabledBy": f.enabled_by, "value": s.prefs.get(f.key)})
                 })
                 .collect();
             json!({"id": c.id, "title": c.title, "command": format!("app.settings.{}", c.id), "fields": fields})
