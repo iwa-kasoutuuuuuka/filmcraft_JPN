@@ -54,8 +54,15 @@ pub const SHORT_FORM_PEAK_DBTP: f64 = -1.0;
 
 /// H.264 1080×1920 (9:16) at the sequence's frame rate, scaled to fill, loudness normalized.
 fn short_form(kbps: u32, max_kbps: u32) -> ExportSettings {
+    social((1080, 1920), kbps, max_kbps)
+}
+
+/// H.264 at a social platform's frame size and the sequence's frame rate, scaled to fill (a 16:9
+/// sequence is cropped to a square or 4:5 feed post rather than letterboxed), loudness normalized
+/// like the short-form presets.
+fn social(size: (u32, u32), kbps: u32, max_kbps: u32) -> ExportSettings {
     let loudness = LoudnessNormalization { enabled: true, target_lufs: SHORT_FORM_LUFS, true_peak_dbtp: SHORT_FORM_PEAK_DBTP };
-    ExportSettings { scaling: Scaling::ScaleToFill, effects: ExportEffects { loudness, ..Default::default() }, ..h264(Some((1080, 1920)), kbps, max_kbps) }
+    ExportSettings { scaling: Scaling::ScaleToFill, effects: ExportEffects { loudness, ..Default::default() }, ..h264(Some(size), kbps, max_kbps) }
 }
 
 /// The settings a format starts from when it is picked in Export mode: H.264 as the default preset
@@ -166,6 +173,30 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             web,
             "H.264 9:16 portrait, scaled to fill, VBR 1 pass, 12 Mbps, loudness normalized to −14 LUFS",
             short_form(12_000, 16_000),
+        ),
+        p(
+            "Instagram Feed Square 1080×1080",
+            web,
+            "H.264 1:1 square feed post, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS",
+            social((1080, 1080), 8_000, 10_000),
+        ),
+        p(
+            "Instagram Feed Portrait 1080×1350",
+            web,
+            "H.264 4:5 portrait feed post, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS",
+            social((1080, 1350), 8_000, 10_000),
+        ),
+        p(
+            "Facebook Feed 1080×1350",
+            web,
+            "H.264 4:5 portrait feed video, scaled to fill, VBR 1 pass, 8 Mbps, loudness normalized to −14 LUFS",
+            social((1080, 1350), 8_000, 10_000),
+        ),
+        p(
+            "X (Twitter) 1920×1080",
+            web,
+            "H.264 16:9 landscape, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS",
+            social((1920, 1080), 10_000, 12_000),
         ),
         p("Apple ProRes 422 HQ", bc, "QuickTime, ProRes 422 HQ, 24-bit 48 kHz PCM", mov(Format::ProRes, "hq")),
         p("Apple ProRes 422", bc, "QuickTime, ProRes 422, 24-bit 48 kHz PCM", mov(Format::ProRes, "standard")),
