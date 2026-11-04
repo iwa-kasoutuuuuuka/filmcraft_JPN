@@ -12,6 +12,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ItemId;
+
 /// Most categories (rows) a chart keeps.
 pub const MAX_CATEGORIES: usize = 200;
 /// Most steps (columns, e.g. years) a chart keeps.
@@ -108,6 +110,45 @@ pub const PALETTES: &[(&str, &[[u8; 3]])] = &[
     ("Mono", &[[230, 230, 230], [200, 200, 200], [170, 170, 170], [140, 140, 140], [110, 110, 110], [80, 80, 80]]),
 ];
 
+/// Longest file path kept for a category image (in characters).
+pub const MAX_PATH_CHARS: usize = 4096;
+
+/// A category's picture (a flag, a logo): a project media item whose first frame is drawn beside
+/// the category's bar, column or legend entry.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ChartImage {
+    /// The project item holding the picture (a still, or a movie's first frame).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<ItemId>,
+    /// The file the picture came from. Commands import it into the project (and set `item`)
+    /// when `item` is missing; the renderer only reads `item`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub path: String,
+}
+
+impl ChartImage {
+    pub fn of_item(item: ItemId) -> ChartImage {
+        ChartImage { item: Some(item), path: String::new() }
+    }
+}
+
+/// How category pictures are cropped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImageShape {
+    #[default]
+    Circle,
+    /// A square with rounded corners.
+    Rounded,
+}
+
+impl ImageShape {
+    fn is_default(&self) -> bool {
+        *self == ImageShape::Circle
+    }
+}
+
 /// An animated chart.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -143,6 +184,12 @@ pub struct ChartSpec {
     pub intro_seconds: f64,
     /// Seconds the last step holds at the clip end.
     pub hold_seconds: f64,
+    /// A picture per category (aligned with `categories`; missing entries have none).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<Option<ChartImage>>,
+    /// How the pictures are cropped.
+    #[serde(skip_serializing_if = "ImageShape::is_default")]
+    pub image_shape: ImageShape,
 }
 
 impl Default for ChartSpec {
@@ -165,6 +212,8 @@ impl Default for ChartSpec {
             decimals: 0,
             intro_seconds: 1.0,
             hold_seconds: 1.0,
+            images: Vec::new(),
+            image_shape: ImageShape::Circle,
         }
     }
 }
@@ -214,7 +263,86 @@ impl ChartSpec {
         c.decimals = c.decimals.min(6);
         c.intro_seconds = finite(c.intro_seconds).clamp(0.0, 60.0);
         c.hold_seconds = finite(c.hold_seconds).clamp(0.0, 60.0);
+        c.images.resize(c.categories.len(), None);
+        for img in c.images.iter_mut() {
+            if let Some(i) = img {
+                i.path = i.path.chars().take(MAX_PATH_CHARS).collect();
+                if i.item.is_none() && i.path.trim().is_empty() {
+                    *img = None;
+                }
+            }
+        }
+        if c.images.iter().all(Option::is_none) {
+            c.images.clear();
+        }
         c
+    }
+
+    /// The picture of category `i`, if it has one.
+    pub fn image(&self, i: usize) -> Option<&ChartImage> {
+        self.images.get(i).and_then(Option::as_ref)
+    }
+
+    /// Whether any category has a picture.
+    pub fn has_images(&self) -> bool {
+        self.images.iter().any(Option::is_some)
+    }
+
+    /// Set (or with `None` clear) the picture of category `i` (ignored past the last category).
+    pub fn set_image(&mut self, i: usize, image: Option<ChartImage>) {
+        if i >= self.categories.len() {
+            return;
+        }
+        if self.images.len() <= i {
+            self.images.resize(i + 1, None);
+        }
+        if let Some(slot) = self.images.get_mut(i) {
+            *slot = image;
+        }
+    }
+
+    /// Remove category `i` with its values and picture.
+    pub fn remove_category(&mut self, i: usize) {
+        if i >= self.categories.len() {
+            return;
+        }
+        self.categories.remove(i);
+        if i < self.values.len() {
+            self.values.remove(i);
+        }
+        if i < self.images.len() {
+            self.images.remove(i);
+        }
+    }
+
+    /// Move category `from` to place `to` (its values and picture move with it).
+    pub fn move_category(&mut self, from: usize, to: usize) {
+        let n = self.categories.len();
+        if from >= n || to >= n || from == to {
+            return;
+        }
+        self.values.resize(n, Vec::new());
+        self.images.resize(n, None);
+        let c = self.categories.remove(from);
+        self.categories.insert(to, c);
+        let v = self.values.remove(from);
+        self.values.insert(to, v);
+        let im = self.images.remove(from);
+        self.images.insert(to, im);
+    }
+
+    /// Replace the table (e.g. a pasted one), keeping each picture with the category of the same
+    /// name.
+    pub fn set_table(&mut self, categories: Vec<String>, steps: Vec<String>, values: Vec<Vec<f64>>) {
+        let old: Vec<(String, ChartImage)> =
+            self.categories.iter().zip(&self.images).filter_map(|(c, i)| i.clone().map(|i| (c.trim().to_string(), i))).collect();
+        self.images = categories.iter().map(|c| old.iter().find(|(n, _)| n == c.trim()).map(|(_, i)| i.clone())).collect();
+        self.categories = categories;
+        self.steps = steps;
+        self.values = values;
+        if !self.has_images() {
+            self.images.clear();
+        }
     }
 
     /// The value of `category` at `step` (zero when missing or not finite).

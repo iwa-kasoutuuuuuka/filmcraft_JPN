@@ -210,9 +210,10 @@ column, line, area, pie or donut chart, drawn behind the clip's layers.
   bars and wedges are filled `filmcraft_text::Path`s, lines are stroked as quads with round
   joins, labels go through the text engine (so Japanese and other scripts use the font
   fallbacks). Designed on the canvas (the sequence frame), so Motion scales it crisply.
-  `chart_rgba` renders a standalone preview.
-- **Commands.** `graphics.newChart {kind?, chart?, table?, title?, theme?, palette?, seconds=8,
-  track?, time?}` places a clip at the playhead; `graphics.setChart {clip?, …}` changes one (one
+  `chart_rgba` renders a standalone preview (`chart_rgba_with` / `draw_chart_with` with the
+  category pictures).
+- **Commands.** `graphics.newChart {kind?, chart?, table?, title?, theme?, palette?, images?,
+  imageShape?, seconds=8, track?, time?}` places a clip at the playhead; `graphics.setChart {clip?, …}` changes one (one
   undo step); `graphics.chart {clip?}` returns the chart and its table as tab-separated text.
   `table` takes a spreadsheet paste or CSV (corner cell and step names on the first row, then a
   category and its values per row). Values from files and commands are sanitized
@@ -220,6 +221,23 @@ column, line, area, pie or donut chart, drawn behind the clip's layers.
 - **Editor** (`panels::chart_editor`, `UiState::chart_editor`). Opened by Graphics ▸ New Layer ▸
   Animated Chart… and by Edit Chart… on a chart clip's right-click menu; automation ids
   `chartEditor.*`.
+- **Category pictures** (flags, logos). `ChartSpec::images` holds one optional `ChartImage
+  {item, path}` per category (aligned with `categories`; omitted from the JSON when empty, so
+  older projects read unchanged) and `imageShape` (`circle`, the default, or `rounded`). `item`
+  is a project media item whose first frame is the picture; `path` is the file it came from. The
+  renderer gets pixels only through its `SourceProvider` (`chart::chart_images`, thumbnails at
+  most 256 px cached per item and decoded frame), never by reading files. Bars (race and plain)
+  show the picture just past the bar's end, as tall as the bar, before the value, so it rides with
+  the bar as a race reorders; columns show it on top of the column; line, area, pie and donut
+  charts use it as the legend chip. A missing item or one that will not decode just draws
+  nothing. In commands, `images` is an array aligned with the categories or an object keyed by
+  category name; an entry is `null`, an item id, a file path or `{item, path}`. A path is
+  imported into the project (a file already imported is reused) and an item without a picture is
+  refused. A new `table` keeps each picture with the category of the same name. In the editor's
+  Data tab each row has a picture cell (`chartEditor.image.<r>` / `chooseImage.<r>` pick a still
+  with the host file dialog and import it, `imageItem.<r>` uses a project item, `clearImage.<r>`
+  removes it), plus `rowUp.<r>`, `rowDown.<r>` and `deleteRow.<r>`, which move values and
+  pictures together; `imageShape.circle` / `imageShape.rounded` choose the crop.
 
 ## Captions, source graphics and fonts
 
