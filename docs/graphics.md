@@ -196,6 +196,31 @@ Automation ids: `essentialGraphics.tab.browse|edit`, `gfxTemplates.search`, `gfx
 `exportTemplate.*`, `replaceFonts.*`; `ui.set {"gfxTemplates": {...}, "gfxEdit": {...}}` sets the
 panel state and the Type-tool selection.
 
+## Animated charts
+
+A graphic clip can hold a chart (`GraphicMeta::chart`, a `filmcraft_project::chart::ChartSpec`):
+a data table (`categories` × `steps`, `values[category][step]`) shown as a bar chart race, bar,
+column, line, area, pie or donut chart, drawn behind the clip's layers.
+
+- **Timing.** The chart grows in over `introSeconds` (ease-out), plays the steps evenly across the
+  rest of the clip and holds the last step for `holdSeconds`. Between steps values move linearly;
+  in a race the ranks glide (smoothstep), so bars swap places smoothly. `chart::state_at` gives
+  the values, ranks and current step at a clip time.
+- **Rendering** (`filmcraft_render::chart`). Vectors straight into the output, like layers:
+  bars and wedges are filled `filmcraft_text::Path`s, lines are stroked as quads with round
+  joins, labels go through the text engine (so Japanese and other scripts use the font
+  fallbacks). Designed on the canvas (the sequence frame), so Motion scales it crisply.
+  `chart_rgba` renders a standalone preview.
+- **Commands.** `graphics.newChart {kind?, chart?, table?, title?, theme?, palette?, seconds=8,
+  track?, time?}` places a clip at the playhead; `graphics.setChart {clip?, …}` changes one (one
+  undo step); `graphics.chart {clip?}` returns the chart and its table as tab-separated text.
+  `table` takes a spreadsheet paste or CSV (corner cell and step names on the first row, then a
+  category and its values per row). Values from files and commands are sanitized
+  (`ChartSpec::sanitized`): at most 200 categories and 1000 steps, non-finite values count as 0.
+- **Editor** (`panels::chart_editor`, `UiState::chart_editor`). Opened by Graphics ▸ New Layer ▸
+  Animated Chart… and by Edit Chart… on a chart clip's right-click menu; automation ids
+  `chartEditor.*`.
+
 ## Captions, source graphics and fonts
 
 | Command | Menu | Params |

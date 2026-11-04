@@ -16,6 +16,7 @@ pub mod autosave;
 pub mod autoswitch;
 pub mod captions;
 pub mod censor;
+pub mod charts;
 pub mod clip_ops;
 pub mod color;
 pub mod commands;

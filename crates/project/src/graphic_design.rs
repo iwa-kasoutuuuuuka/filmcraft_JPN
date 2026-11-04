@@ -401,6 +401,9 @@ pub struct GraphicMeta {
     /// The graphics template this graphic was made from, with its editable properties.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub template: Option<crate::gtemplate::TemplateLink>,
+    /// An animated chart drawn behind the layers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chart: Option<Box<crate::chart::ChartSpec>>,
 }
 
 fn is_roll_off(r: &Roll) -> bool {

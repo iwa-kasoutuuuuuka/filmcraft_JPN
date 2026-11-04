@@ -98,20 +98,22 @@ pub(crate) fn graphic_source(p: &mut filmcraft_project::Project, w: u32, h: u32,
 /// topmost clip at the playhead that is free for the duration (a track is added if needed).
 fn new_graphic_clip(s: &mut Session, layer: filmcraft_project::EffectInstance, name: &str, p: &Value) -> Result<ClipId> {
     let seconds = f64_p(p, "seconds").unwrap_or(5.0).max(0.01);
-    place_video_clip(s, name, p, "New Graphic", vec![layer], move |pr, (w, h, rate)| {
+    place_video_clip(s, name, p, "New Graphic", vec![layer], None, move |pr, (w, h, rate)| {
         let src = graphic_source(pr, w, h, rate);
         (src, rate.snap_nearest(Tick::from_seconds_f64(seconds)).max(rate.frame_duration()))
     })
 }
 
 /// Place a video clip of the item `source` returns (with its duration) at the playhead (or
-/// `time`), above the clips there, as one undo step; selects it.
+/// `time`), above the clips there, as one undo step; selects it. `graphic` becomes the clip's
+/// graphic settings (a chart, for one).
 pub(crate) fn place_video_clip(
     s: &mut Session,
     name: &str,
     p: &Value,
     label: &str,
     extra: Vec<filmcraft_project::EffectInstance>,
+    graphic: Option<Box<filmcraft_project::graphic_design::GraphicMeta>>,
     source: impl FnOnce(&mut filmcraft_project::Project, (u32, u32, filmcraft_time::FrameRate)) -> (ItemId, Tick),
 ) -> Result<ClipId> {
     let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
@@ -129,6 +131,9 @@ pub(crate) fn place_video_clip(
         let mut ti = pr.make_track_item(src, TrackKind::Video, t, TimeRange::new(Tick::ZERO, dur), rate).ok_or_else(|| bad("graphics.newText", "bad item"))?;
         ti.name = name;
         ti.effects.extend(extra);
+        if graphic.is_some() {
+            ti.graphic = graphic;
+        }
         for e in &mut ti.effects {
             filmcraft_project::resolve_auto_points(e, (w, h), (w, h));
         }
@@ -653,7 +658,7 @@ fn menu_commands() -> Vec<CommandSpec> {
                     return Err(bad("graphics.newFromFile", "the file has no picture"));
                 }
                 let (name, dur) = (pi.name.clone(), pi.duration());
-                let clip = place_video_clip(s, &name, p, "New Layer from File", Vec::new(), move |_, _| (item, dur))?;
+                let clip = place_video_clip(s, &name, p, "New Layer from File", Vec::new(), None, move |_, _| (item, dur))?;
                 s.state.graphic_layers.clear();
                 Ok(json!({"clip": clip.0, "item": item.0}))
             },

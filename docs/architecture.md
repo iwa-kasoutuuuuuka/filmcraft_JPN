@@ -147,7 +147,8 @@ EffectInstance
 ```
 
 - **Graphic clips** ([graphics.md](graphics.md)) reference a `Graphic` canvas item; their text and
-  shape layers are hidden `graphic_text` / `graphic_shape` effect instances on the track item.
+  shape layers are hidden `graphic_text` / `graphic_shape` effect instances on the track item; an
+  animated chart is `GraphicMeta::chart` on the track item.
 - Everything is plain serde data. `Sequence::check()` validates the invariants (no overlaps, unique
   ids), and the engine runs it after every sequence edit.
 - Timeline positions are sequence ticks; `source_in` and keyframes are in media time, so trims and

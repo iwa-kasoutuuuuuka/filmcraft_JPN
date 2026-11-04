@@ -1791,6 +1791,17 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
                 ui.close();
             }
         }
+        if app.session.is_enabled("graphics.setChart") {
+            let label = crate::i18n::t("Edit Chart…", "チャートを編集…");
+            let b = ui.button(label);
+            app.auto.add("timeline.context.graphics.setChart", b.rect, "Edit Chart…");
+            if b.clicked() {
+                if let Err(e) = crate::menus::invoke(app, ui.ctx(), "graphics.setChart", json!({})) {
+                    app.ui.status = e;
+                }
+                ui.close();
+            }
+        }
         ui.separator();
         let lm = ui.menu_button(crate::i18n::t("Label", "ラベル"), |ui| {
             for l in filmcraft_project::Label::ALL {
