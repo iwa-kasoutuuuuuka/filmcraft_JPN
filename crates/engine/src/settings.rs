@@ -1037,6 +1037,7 @@ static CATEGORIES: &[Category] = &[
             f("narration.pauseSeconds", "Pause after each line", float(0.0, 30.0, 2, "seconds"), true),
             b("narration.captions", "Make captions from the lines", true),
             f("narration.captionMaxChars", "Split captions longer than", int(0.0, 10_000.0, "characters"), true),
+            b("narration.creditRoll", "Add a credit roll of the voices at the end", true),
             Row::Note(
                 "Narration uses the free AivisSpeech or VOICEVOX app, installed and started separately; FilmCraft talks to it on this computer. Every voice has its own terms: credit the voices you use (Generate Narration lists the credits).",
             ),

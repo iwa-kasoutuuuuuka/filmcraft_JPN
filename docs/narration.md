@@ -45,7 +45,12 @@ If you changed the engine's port, set it in **Settings ▸ Narration** (`narrati
   every line on an audio track at the playhead, back to back with the pauses, and adds a caption
   track whose captions are exactly the lines, timed to their audio. The whole thing is one
   **Undo** ("Synthesize Narration").
-- Afterwards the **credits** of the voices used are shown with **Copy Credits**.
+- **Credit roll at the end** (Settings ▸ Narration ▸ "Add a credit roll of the voices at the
+  end", off by default): after generating, add or update a rolling credit of the voices at the
+  end of the sequence.
+- Afterwards the **credits** of every voice the sequence uses are shown with **Copy Credits**,
+  **Add to Credit Roll** (エンドロールに追加) and **Export Description Text** (説明欄用テキストを書き出す).
+  See [Credits in the video and the description](#credits-in-the-video-and-the-description).
 
 ## Where the audio goes
 
@@ -115,6 +120,46 @@ For AivisSpeech the licence comes from the engine's model list (`/aivm_models`) 
 one; otherwise the credit says to check the model's licence. `tts.voiceTerms` returns the full
 terms text the engine ships for a voice (`policy`). See also [voice-terms.md](voice-terms.md).
 
+## Credits in the video and the description
+
+FilmCraft remembers which voice made every narration item, so the credits can't be forgotten:
+
+- **Where it is stored.** `tts.synthesize` writes two metadata fields on each WAV item it imports,
+  saved with the project (no format change):
+  - `Narration Credit`: the credit line, for example `VOICEVOX:ずんだもん`. Edit it in the
+    Metadata panel when a voice's terms want a longer form (for example
+    `VOICEVOX:もち子(cv 明日葉よもぎ)`); the roll and the description text use your text.
+  - `Narration Voice`: the whole credit as JSON (engine, speaker, uuid, model, licence, URLs).
+- **What is credited.** The narration items **still used in the sequence** (clips on its tracks,
+  nested sequences included), one line per voice in timeline order. Narration you deleted from
+  the timeline is not credited. `scope: "project"` credits every narration item in the project.
+  Credits accumulate over any number of Generate Narration runs.
+- **In the video: Graphics and Titles ▸ Add Narration Credit Roll** (`tts.addCreditRoll`) adds a
+  graphic clip named **Narration Credits** at the end of the sequence: a heading ("Voices", or
+  「音声」 in the Japanese interface), then one credit per line, centred, rolling up from below the
+  frame until it has left the top (Roll, start and end off screen). It uses the default text font,
+  or the bundled Japanese face when the font is Automatic and the text has Japanese in it. It is
+  an ordinary graphic: change its font, size or speed in Essential Graphics. Running the command
+  again (or generating more narration) **updates that clip** instead of adding another one: the
+  text follows the voices, and it moves to the new end when narration was added after it. Rename
+  the clip to stop that. Each add / update is one Undo.
+- **Generating with the roll.** `tts.synthesize {creditRoll: true}` (or the dialog's checkbox, or
+  the preference) adds or updates the roll after placing the lines, in the same undo step. When a
+  roll already exists it is kept up to date after every generation unless `creditRoll: false`.
+- **In the description: Graphics and Titles ▸ Export Narration Credits** (`tts.exportCredits`)
+  writes a UTF-8 text file with a heading and the credit lines. For AivisSpeech voices whose model
+  the engine reported, the model name, licence and AivisHub page are indented under the line:
+
+  ```text
+  音声:
+  VOICEVOX:ずんだもん
+  AivisSpeech:まお
+    モデル: まお / ライセンス: ACML 1.0 / https://hub.aivis-project.com/aivm-models/…
+  ```
+
+  The default file is `<project name>_credits.txt` next to the saved project, else `credits.txt`
+  in the narration folder; an existing file of that name is replaced. `path` picks another file.
+
 ## Commands
 
 | command | params | returns |
@@ -123,7 +168,10 @@ terms text the engine ships for a voice (`policy`). See also [voice-terms.md](vo
 | `tts.voices` | `engine?`, `url?`, `refresh?` | `voices: [{engine, speaker, style, id, uuid, voice: "Speaker/Style"}]`, `errors` (engines that did not answer). Without `engine`, every engine that answers. Cached for 30 s. |
 | `tts.voiceTerms` | `engine?`, `speaker_uuid` or `voice`, `url?` | `{speaker, uuid, policy, credit, license, model, modelUrl, termsUrl, note}` |
 | `tts.preview` | `engine?`, `text`, `voice?`, prosody, `url?` | `{path, seconds, voice, credit}`: a temporary WAV; the project is not changed |
-| `tts.synthesize` | see below | `{clips, items, files, dir, track, trackId, captionTrack, captions, start, end, lines, credits, creditText}` |
+| `tts.synthesize` | see below | `{clips, items, files, dir, track, trackId, captionTrack, captions, start, end, lines, credits, creditText}`, plus `creditRoll` (the `tts.addCreditRoll` result) or `creditRollError` when the roll was added / updated |
+| `tts.credits` | `sequence?`, `scope?` (`sequence` \| `project`) | `{credits, creditText}`: the credits of the narration used (same objects as `tts.synthesize`'s `credits`) |
+| `tts.addCreditRoll` | `seconds?` (default 4 + 0.5 per line, 5–30), `title?` (default "Voices" / 「音声」; `""` = none), `extra?` (lines added after the credits), `at?` (`"end"` (default), ticks, or `{seconds\|frame\|timecode}`) | `{clip, updated, moved, start, duration, text, credits}`; adds or updates the **Narration Credits** roll; one undo step |
+| `tts.exportCredits` | `path?`, `sequence?`, `scope?` | `{path, text, creditText, credits}`: writes the description text |
 
 `tts.synthesize` parameters:
 
@@ -144,6 +192,7 @@ terms text the engine ships for a voice (`policy`). See also [voice-terms.md](vo
 | `name` | file name prefix (default `Narration`) |
 | `dir` | folder for the WAVs |
 | `url` | engine address for this call |
+| `creditRoll` | add or update the credit roll after placing (default: Settings ▸ Narration ▸ credit roll, off). An existing roll is updated anyway unless this is `false` |
 
 Notes on the engines' parameters: AivisSpeech uses `intonation` as the strength of the style's
 emotion and ignores it for the Normal style; changing `pitch` can lower its quality.
@@ -161,7 +210,9 @@ emotion and ignores it for the Normal style; changing `pitch` can lower its qual
 1. `tts.engines` to see which engine runs (ask the user to start the app if none does).
 2. `tts.voices {engine}` to pick voices.
 3. `tts.synthesize {engine, lines}` — one call places all the narration with captions.
-4. Show the user `creditText` and remind them to check each voice's terms
+4. Put the credits in: `tts.addCreditRoll` (in the video) and/or `tts.exportCredits` (text for
+   the description). `tts.credits` lists them at any time.
+5. Show the user `creditText` and remind them to check each voice's terms
    (`tts.voiceTerms`) before publishing.
 
 ## Limits

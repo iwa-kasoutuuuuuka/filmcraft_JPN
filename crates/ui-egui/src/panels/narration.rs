@@ -4,15 +4,16 @@
 //! The dialog lists the lines (voice, text, speed), takes a pasted script (`話者: セリフ` per
 //! line), previews a line (the WAV opens in the system's player), and **Generate** renders the
 //! audio on a worker thread, then runs `tts.synthesize {prepared}` to import and place it with
-//! captions as one undo step. Afterwards it shows the voices' credits with Copy, and each voice's
-//! terms.
+//! captions as one undo step. Afterwards it shows the credits of every voice the sequence uses
+//! (`tts.credits`) with Copy, Add to Credit Roll (`tts.addCreditRoll`) and Export Description
+//! Text (`tts.exportCredits`), and each voice's terms.
 //!
 //! The open dialog lives in `UiState::narration` (serde), so agents can read and fill it with
 //! `ui.get` / `ui.set`. Automation ids (`narration.*`): `engine.<aivisspeech|voicevox>`,
 //! `refresh`, `getEngine`, `voice.<i>` (and `voice.<i>.<k>` in its list), `text.<i>`,
 //! `speed.<i>`, `up.<i>`, `down.<i>`, `remove.<i>`, `preview.<i>`, `terms.<i>`, `add`, `script`,
-//! `addScript`, `captions`, `pause`, `generate`, `cancel`, `copyCredits`, `openTerms`,
-//! `closeTerms`.
+//! `addScript`, `captions`, `creditRoll`, `pause`, `generate`, `cancel`, `copyCredits`,
+//! `addCreditRoll`, `exportCredits`, `openTerms`, `closeTerms`.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -89,6 +90,8 @@ pub struct NarrationDraft {
     /// The script paste box.
     pub script: String,
     pub captions: bool,
+    /// Add / update the credit roll at the end after generating (`creditRoll`).
+    pub credit_roll: bool,
     /// Silence after each line (seconds).
     pub pause: f64,
     /// Rendering in the background.
@@ -133,7 +136,21 @@ pub fn error_text(e: &str) -> String {
 
 /// `tts.synthesize` without parameters opens the dialog.
 pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<Value, String>> {
-    if id != "tts.synthesize" || params.as_object().is_some_and(|m| !m.is_empty()) {
+    let bare = params.as_object().is_none_or(|m| m.is_empty());
+    // the menu's Add Narration Credit Roll / Export Narration Credits: say what happened
+    if bare && matches!(id, "tts.addCreditRoll" | "tts.exportCredits") {
+        let r = app.session.execute(id, json!({})).map_err(|e| error_text(&e.to_string()));
+        app.ui.status = match &r {
+            Ok(v) if id == "tts.exportCredits" => {
+                crate::tf!("Wrote the description text to {}.", "説明欄用テキストを {} に書き出しました。", v["path"].as_str().unwrap_or_default())
+            }
+            Ok(v) if v["updated"] == true => crate::i18n::t("Updated the credit roll at the end.", "エンドロールのクレジットを更新しました。").to_string(),
+            Ok(_) => crate::i18n::t("Added a credit roll at the end.", "エンドロールにクレジットを追加しました。").to_string(),
+            Err(e) => e.clone(),
+        };
+        return Some(r);
+    }
+    if id != "tts.synthesize" || !bare {
         return None;
     }
     if app.session.active_sequence().is_none() {
@@ -143,6 +160,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
     let mut d = NarrationDraft {
         engine: prefs.default_engine().id().to_string(),
         captions: prefs.captions,
+        credit_roll: prefs.credit_roll,
         pause: prefs.pause_seconds,
         lines: vec![DraftLine { voice: prefs.default_voice.clone(), ..Default::default() }],
         ..Default::default()
@@ -200,7 +218,40 @@ fn params_of(d: &NarrationDraft) -> Value {
             v
         })
         .collect();
-    json!({"engine": d.engine, "lines": lines, "captions": d.captions, "pause": d.pause})
+    let mut p = json!({"engine": d.engine, "lines": lines, "captions": d.captions, "pause": d.pause});
+    // only when ticked: unticked, an existing roll still follows the new narration
+    if d.credit_roll {
+        p["creditRoll"] = json!(true);
+    }
+    p
+}
+
+/// The credits of every voice the sequence uses (falls back to `fallback`, the generation's own).
+fn load_credits(app: &mut FilmcraftApp, d: &mut NarrationDraft, fallback: &[Value]) {
+    let creds = app.session.execute("tts.credits", json!({})).ok().and_then(|v| v["credits"].as_array().cloned()).filter(|a| !a.is_empty());
+    let creds = creds.unwrap_or_else(|| fallback.to_vec());
+    d.credits = creds.iter().filter_map(|c| c["credit"].as_str().map(str::to_string)).collect();
+    d.credit_notes = creds.iter().filter_map(|c| c["note"].as_str().map(str::to_string)).collect();
+    d.credit_notes.dedup();
+}
+
+/// Add Narration Credit Roll / Export Narration Credits from the dialog.
+fn credit_action(app: &mut FilmcraftApp, d: &mut NarrationDraft, export: bool) {
+    d.error.clear();
+    let id = if export { "tts.exportCredits" } else { "tts.addCreditRoll" };
+    match app.session.execute(id, json!({})) {
+        Ok(v) => {
+            d.status = if export {
+                crate::tf!("Wrote the description text to {}.", "説明欄用テキストを {} に書き出しました。", v["path"].as_str().unwrap_or_default())
+            } else if v["updated"] == true {
+                crate::i18n::t("Updated the credit roll at the end.", "エンドロールのクレジットを更新しました。").to_string()
+            } else {
+                crate::i18n::t("Added a credit roll at the end.", "エンドロールにクレジットを追加しました。").to_string()
+            };
+            app.ui.status = d.status.clone();
+        }
+        Err(e) => d.error = error_text(&e.to_string()),
+    }
 }
 
 /// Add the lines of a pasted script, mapping speaker names to voices of the engine.
@@ -286,8 +337,7 @@ fn poll(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mut NarrationDraft) {
     match app.session.execute("tts.synthesize", p) {
         Ok(v) => {
             let creds = v["credits"].as_array().cloned().unwrap_or_default();
-            d.credits = creds.iter().filter_map(|c| c["credit"].as_str().map(str::to_string)).collect();
-            d.credit_notes = creds.iter().filter_map(|c| c["note"].as_str().map(str::to_string)).collect();
+            load_credits(app, d, &creds);
             let n = v["clips"].as_array().map_or(0, Vec::len);
             let track = v["track"].as_str().unwrap_or_default().to_string();
             d.status = crate::tf!("Placed {} narration clips on {}.", "{} 個のナレーションクリップを {} に配置しました。", n, track);
@@ -340,6 +390,7 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let mut do_generate = false;
     let mut do_preview: Option<usize> = None;
     let mut do_terms: Option<String> = None;
+    let mut do_credit: Option<bool> = None;
     let mut open_url: Option<String> = None;
     let accent = app.tokens.accent;
     let ja = crate::i18n::is_japanese();
@@ -486,6 +537,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 let r = ui.checkbox(&mut d.captions, crate::i18n::t("Make captions", "キャプションを作成"));
                 push(&mut elems, "captions", &r, "Make captions");
+                let r = ui.checkbox(&mut d.credit_roll, crate::i18n::t("Credit roll at the end", "最後にエンドロール"));
+                push(&mut elems, "creditRoll", &r, "Credit roll at the end");
                 ui.label(crate::i18n::t("Pause after each line:", "各行のあとの間:"));
                 let r = ui.add(egui::DragValue::new(&mut d.pause).speed(0.05).range(0.0..=30.0).suffix(crate::i18n::t(" s", " 秒")));
                 push(&mut elems, "pause", &r, "Pause");
@@ -517,12 +570,24 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 for n in d.credit_notes.iter().take(8) {
                     ui.label(RichText::new(n).weak().small());
                 }
-                let r = ui.button(crate::i18n::t("Copy Credits", "クレジットをコピー"));
-                push(&mut elems, "copyCredits", &r, "Copy Credits");
-                if r.clicked() {
-                    ctx.copy_text(text);
-                    app.ui.status = crate::i18n::t("Credits copied.", "クレジットをコピーしました。").into();
-                }
+                ui.horizontal(|ui| {
+                    let r = ui.button(crate::i18n::t("Copy Credits", "クレジットをコピー"));
+                    push(&mut elems, "copyCredits", &r, "Copy Credits");
+                    if r.clicked() {
+                        ctx.copy_text(text);
+                        app.ui.status = crate::i18n::t("Credits copied.", "クレジットをコピーしました。").into();
+                    }
+                    let r = ui.add_enabled(!d.busy, egui::Button::new(crate::i18n::t("Add to Credit Roll", "エンドロールに追加")));
+                    push(&mut elems, "addCreditRoll", &r, "Add to Credit Roll");
+                    if r.clicked() {
+                        do_credit = Some(false);
+                    }
+                    let r = ui.button(crate::i18n::t("Export Description Text", "説明欄用テキストを書き出す"));
+                    push(&mut elems, "exportCredits", &r, "Export Description Text");
+                    if r.clicked() {
+                        do_credit = Some(true);
+                    }
+                });
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -605,6 +670,9 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     }
     if do_generate {
         generate(app, ctx, &mut d);
+    }
+    if let Some(export) = do_credit {
+        credit_action(app, &mut d, export);
     }
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && d.terms.is_none() && !d.busy {
         close = true;
