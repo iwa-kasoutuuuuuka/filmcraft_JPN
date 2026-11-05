@@ -28,6 +28,20 @@ enum Inner {
     Ac3(Box<filmcraft_ac3::Decoder>),
 }
 
+/// Channel order for AAC's standard configurations 3–6 (ISO/IEC 14496-3 Table 1.19: centre
+/// first, then the front pair, surrounds, LFE): output channel → decoded channel, giving the
+/// WAV/SMPTE order (L R C LFE Ls Rs) the mixer and the 5.1 downmix use. `None` when the decoded
+/// channel count doesn't match the configuration (or for mono / stereo / PCE layouts).
+fn aac_to_wav_order(channel_config: u8, channels: usize) -> Option<&'static [usize]> {
+    match (channel_config, channels) {
+        (3, 3) => Some(&[1, 2, 0]),
+        (4, 4) => Some(&[1, 2, 0, 3]),
+        (5, 5) => Some(&[1, 2, 0, 3, 4]),
+        (6, 6) => Some(&[1, 2, 0, 5, 3, 4]),
+        _ => None,
+    }
+}
+
 /// Opus always decodes at 48 kHz (RFC 7845 §5.1: the input rate in the header is informational).
 pub const OPUS_RATE: u32 = 48_000;
 
@@ -147,7 +161,10 @@ impl PacketDecoder {
     pub fn decode(&mut self, data: &[u8], ts: u64) -> Result<Vec<Vec<f32>>> {
         let dec = match &mut self.inner {
             Inner::Aac { dec, .. } => {
-                let out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
+                let mut out = dec.decode(data).map_err(|e| CodecError::Decode(e.to_string()))?;
+                if let Some(order) = aac_to_wav_order(dec.config().channel_config, out.len()) {
+                    out = order.iter().map(|&c| out.get_mut(c).map(std::mem::take).unwrap_or_default()).collect();
+                }
                 self.channels = out.len();
                 return Ok(out);
             }

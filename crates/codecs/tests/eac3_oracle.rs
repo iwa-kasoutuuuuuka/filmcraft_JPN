@@ -92,3 +92,29 @@ fn dependent_substreams_in_a_packet_are_skipped() {
     let mut d = filmcraft_codecs::audio::PacketDecoder::ac3().unwrap();
     assert!(d.decode(&first[..100], 0).is_err());
 }
+
+/// 5.1 AAC comes out of our decoder in the WAV / SMPTE order (L R C LFE Ls Rs) the mixer and
+/// the BS.775 fold-down assume, not AAC's own element order (C, L/R, surrounds, LFE): before,
+/// the centre landed in the left channel. Each channel carries its own tone, so a swap shows as
+/// a low SNR on the swapped channels.
+#[test]
+fn aac_51_channels_come_out_in_wav_order() {
+    let ff = filmcraft_testkit::require_ffmpeg!();
+    let f = fixture(&ff, "aac_51_order.mp4", &["-f", "lavfi", "-i", SURROUND, "-t", "1", "-c:a", "aac", "-b:a", "384k", "-f", "mp4"])
+        .unwrap_or_else(|| panic!("could not generate aac_51_order.mp4"));
+    let src = filmcraft_codecs::open_bytes("aac_51_order.mp4", bytes(&f)).unwrap();
+    assert_eq!(src.info().audio.as_ref().map(|a| a.channels), Some(6));
+    let want = ffmpeg_audio_f32(&ff, &f, &[]);
+    let n = want.len() / 6;
+    let buf = src.audio(0, n, 48_000).unwrap();
+    for c in 0..6 {
+        let (mut sig, mut err) = (0f64, 0f64);
+        for i in 4000..n - 4000 {
+            let (x, y) = (buf.channels[c][i] as f64, want[i * 6 + c] as f64);
+            sig += y * y;
+            err += (x - y) * (x - y);
+        }
+        let snr = 10.0 * (sig / err.max(1e-30)).log10();
+        assert!(snr >= 20.0, "channel {c}: SNR {snr:.1} dB against ffmpeg (swapped channels?)");
+    }
+}

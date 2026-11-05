@@ -319,6 +319,19 @@ fn raw_channels(item: &TrackItem, src: &dyn filmcraft_media::MediaSource, x0: i6
     if buf.channels.is_empty() {
         return out;
     }
+    if w == 2 && item.source_channels.is_empty() && buf.channel_count() == 6 {
+        // a 5.1 source on a stereo track with no channels picked: the BS.775 fold-down, so the
+        // centre and surrounds aren't lost (Modify ▸ Audio Channels still picks any two)
+        let src: Vec<&[f32]> = buf.channels.iter().map(Vec::as_slice).collect();
+        let conv = chans::convert(&src, Layout::Surround51, Layout::Stereo, Mixdown::FrontRear);
+        for (dst, ch) in out.iter_mut().zip(&conv) {
+            let m = n.min(ch.len());
+            if let (Some(d), Some(s)) = (dst.get_mut(off..off + m), ch.get(..m)) {
+                d.copy_from_slice(s);
+            }
+        }
+        return out;
+    }
     if w == 2 {
         let (left, right) = source_pair(item, buf.channel_count());
         for (c, dst) in out.iter_mut().enumerate() {
