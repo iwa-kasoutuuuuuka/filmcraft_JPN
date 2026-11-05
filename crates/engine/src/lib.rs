@@ -51,6 +51,7 @@ pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod silence;
+pub mod speech_synth;
 pub mod sync;
 pub mod text_style;
 pub mod transcript;
@@ -377,6 +378,9 @@ pub struct Session {
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
     /// feature `whisper`). Hosts and tests install one here.
     pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
+    /// Speech synthesiser for `speech.synthesize` (None = the Qwen3-TTS helper script run as an
+    /// external process). Hosts and tests install one here.
+    pub synthesizer: Option<Arc<dyn filmcraft_speech::Synthesizer>>,
     /// The Events panel log: failed commands, job results, auto-save errors, messages.
     pub log: panels::EventLog,
     /// Media Browser navigation (directory, back / forward history, selected files).
@@ -479,6 +483,7 @@ impl Session {
             export_queue: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
+            synthesizer: None,
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
@@ -1061,6 +1066,8 @@ mod settings_tests;
 mod shortcuts_tests;
 #[cfg(test)]
 mod silence_tests;
+#[cfg(test)]
+mod speech_synth_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
