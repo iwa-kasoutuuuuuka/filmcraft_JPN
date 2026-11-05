@@ -34,13 +34,13 @@ pub fn tts_dir(s: &Session) -> Option<PathBuf> {
 }
 
 /// A file name for a line id: its characters that are safe in a file name, else the index.
-fn file_stem(id: &str, index: usize) -> String {
+pub(crate) fn file_stem(id: &str, index: usize) -> String {
     let safe: String = id.chars().filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.')).take(64).collect();
     if safe.is_empty() || safe.chars().all(|c| c == '.') { format!("line-{index:04}") } else { safe }
 }
 
 /// The synthesizer to use: the installed one, else the external script from the params.
-fn synthesizer(s: &Session, p: &Value) -> Arc<dyn Synthesizer> {
+pub(crate) fn synthesizer(s: &Session, p: &Value) -> Arc<dyn Synthesizer> {
     if let Some(t) = &s.synthesizer {
         return t.clone();
     }
@@ -55,6 +55,8 @@ fn voice_of(p: &Value, fallback: &Voice) -> Voice {
     Voice {
         ref_audio: str_p(p, "refAudio").map(PathBuf::from).or_else(|| fallback.ref_audio.clone()),
         ref_text: str_p(p, "refText").map(str::to_string).or_else(|| fallback.ref_text.clone()),
+        speaker: str_p(p, "speaker").map(str::to_string).or_else(|| fallback.speaker.clone()),
+        instruct: str_p(p, "instruct").map(str::to_string).or_else(|| fallback.instruct.clone()),
     }
 }
 

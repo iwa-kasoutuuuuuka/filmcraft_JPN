@@ -64,8 +64,12 @@ In order: the command's `python` / `script` params; the `FILMCRAFT_TTS_PYTHON` /
 executable (and up to three directories above it, so a `target/<profile>/` build finds the source
 tree), in the current directory, and in the source tree the engine was built from. The interpreter
 defaults to `python` on the PATH; a virtual environment's `python.exe` is the usual value. The
-script runs with `-I` (isolated: no site customisation or current-directory imports) and UTF-8
-I/O.
+script runs as `python -X utf8 -I script.py`: UTF-8 mode is asked for on the command line because
+`-I` (isolated: no site customisation, no current-directory imports, no user site-packages, so a
+`pip install --user` is invisible; install into the interpreter or a venv) makes Python ignore
+`PYTHONUTF8`, and a Japanese Windows console would otherwise garble ids and paths. A script that
+prints nothing for an hour is stopped (a stalled download, a hung GPU); a line the script never
+reports counts as failed.
 
 ## The protocol
 

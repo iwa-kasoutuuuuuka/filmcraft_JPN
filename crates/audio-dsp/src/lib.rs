@@ -6,6 +6,7 @@
 //!   registry ([`effects()`]) describing every effect's parameters (range, unit, default) so the
 //!   engine and UI can build controls generically.
 //! * [`biquad`] — RBJ-cookbook biquads (TDF-II) with analytic magnitude response.
+//! * [`lipsync`] — mouth shapes (closed / half / open) from the loudness of a voice.
 //! * [`sync`] — offset between two recordings of one event (GCC-PHAT, sample-accurate).
 //! * [`channels`] — channel layouts, ITU-R BS.775 up/downmix, 5.1 mixdown types, the 5.1 panner.
 //! * [`plugin`] — the audio plug-in hosting interface (VST3): the catalogue of installed plug-ins
@@ -27,6 +28,7 @@ pub mod design;
 pub mod ducking;
 pub mod effects;
 pub mod fft;
+pub mod lipsync;
 pub mod loudness;
 pub mod oversample;
 pub mod plugin;

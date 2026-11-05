@@ -28,13 +28,19 @@ const MAX_LINE_SECONDS: f64 = 20.0 * 60.0;
 const STDERR_TAIL: usize = 2_000;
 
 /// The voice a line is spoken in: a reference recording to clone (a few seconds of clean speech)
-/// and, for the best match, its transcript. Neither: the model's default voice.
+/// and, for the best match, its transcript; or, without a recording, one of the model's preset
+/// `speaker`s with a free-text `instruct` direction ("angry", "whispering"). Nothing: the preset
+/// for the line's language.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Voice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_audio: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruct: Option<String>,
 }
 
 /// One line to speak.
@@ -169,6 +175,37 @@ impl Synthesizer for FixedSynthesizer {
     }
 }
 
+/// Read one line (up to a newline, at most [`MAX_RAW_LINE`] bytes kept) of a child's output into
+/// `buf`, whatever bytes it holds. False at the end of the stream or on a read error.
+fn read_raw_line(r: &mut impl BufRead, buf: &mut Vec<u8>) -> bool {
+    buf.clear();
+    loop {
+        let chunk = match r.fill_buf() {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return !buf.is_empty(),
+        };
+        if chunk.is_empty() {
+            return !buf.is_empty();
+        }
+        let (take, found) = match chunk.iter().position(|b| *b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (chunk.len(), false),
+        };
+        if buf.len() < MAX_RAW_LINE {
+            let room = MAX_RAW_LINE - buf.len();
+            buf.extend_from_slice(chunk.get(..take.min(room)).unwrap_or_default());
+        }
+        r.consume(take);
+        if found {
+            return true;
+        }
+    }
+}
+
+/// Longest line of a child's output kept (the rest of a longer line is dropped).
+const MAX_RAW_LINE: usize = 1 << 20;
+
 /// One line of the script's stdout.
 #[derive(Debug, PartialEq)]
 pub enum Event {
@@ -222,7 +259,13 @@ pub struct ExternalSynthesizer {
     pub device: Option<String>,
     /// `--language` for lines without one (None: the script's default, Japanese).
     pub language: Option<String>,
+    /// How long the script may print nothing before it is stopped (a stalled download or a hung
+    /// GPU). Model downloads print nothing on stdout, so this is generous.
+    pub idle_timeout: std::time::Duration,
 }
+
+/// The default [`ExternalSynthesizer::idle_timeout`].
+pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// The script's path relative to a FilmCraft checkout or install.
 pub const SCRIPT_RELATIVE: &str = "tools/qwen3-tts/filmcraft_tts.py";
@@ -259,7 +302,7 @@ impl ExternalSynthesizer {
                 roots.into_iter().map(|r| r.join(SCRIPT_RELATIVE)).find(|p| p.is_file())
             })
             .unwrap_or_else(|| PathBuf::from(SCRIPT_RELATIVE));
-        Self { python, script, model: None, device: None, language: None }
+        Self { python, script, model: None, device: None, language: None, idle_timeout: IDLE_TIMEOUT }
     }
 
     /// Whether the script file exists (the interpreter is only known once it runs).
@@ -269,8 +312,10 @@ impl ExternalSynthesizer {
 
     fn command(&self) -> Command {
         let mut c = Command::new(&self.python);
-        c.arg("-I").arg(&self.script);
-        c.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+        // `-I` (isolated) makes Python ignore PYTHONUTF8 / PYTHONIOENCODING, so UTF-8 mode is asked
+        // for on the command line: without it a Windows console code page (cp932) garbles ids and
+        // paths that are not ASCII.
+        c.arg("-X").arg("utf8").arg("-I").arg(&self.script);
         c
     }
 
@@ -315,6 +360,12 @@ impl ExternalSynthesizer {
             if let Some(t) = &l.voice.ref_text {
                 j["refText"] = json!(t);
             }
+            if let Some(sp) = &l.voice.speaker {
+                j["speaker"] = json!(sp);
+            }
+            if let Some(i) = &l.voice.instruct {
+                j["instruct"] = json!(i);
+            }
             if let Some(lang) = &l.language {
                 j["language"] = json!(lang);
             }
@@ -326,7 +377,11 @@ impl ExternalSynthesizer {
 
 impl Synthesizer for ExternalSynthesizer {
     fn id(&self) -> String {
-        "qwen3-tts".into()
+        // the script's name is part of the id: another script (another model) is another voice
+        match self.script.file_name() {
+            Some(n) => format!("qwen3-tts:{}", n.to_string_lossy()),
+            None => "qwen3-tts".into(),
+        }
     }
 
     fn synthesize(&self, lines: &[Line], progress: ProgressFn) -> Result<Outcome, SpeechError> {
@@ -364,28 +419,53 @@ impl ExternalSynthesizer {
             let _ = child.kill();
             return Err(SpeechError::Io("no stdout from the TTS script".into()));
         };
-        // stderr is drained on its own thread so a chatty model cannot block the pipe
+        // stderr is drained on its own thread so a chatty model cannot block the pipe. It is read
+        // as bytes to the end whatever it holds: Windows tools print in the console's code page
+        // (cp932 for Japanese), and a reader that stopped at the first invalid UTF-8 would close
+        // the pipe and make the script's next write fail with "Invalid argument".
         let stderr = child.stderr.take();
         let err_thread = std::thread::spawn(move || {
-            let mut s = String::new();
+            let mut keep: Vec<u8> = Vec::new();
             if let Some(e) = stderr {
                 let mut r = BufReader::new(e);
-                let mut line = String::new();
-                while matches!(r.read_line(&mut line), Ok(n) if n > 0) {
-                    s.push_str(&line);
-                    line.clear();
-                    if s.len() > STDERR_TAIL * 4 {
-                        s.drain(..s.len() - STDERR_TAIL * 2);
+                let mut buf = Vec::new();
+                while read_raw_line(&mut r, &mut buf) {
+                    keep.extend_from_slice(&buf);
+                    if keep.len() > STDERR_TAIL * 4 {
+                        keep.drain(..keep.len() - STDERR_TAIL * 2);
                     }
                 }
             }
-            s
+            String::from_utf8_lossy(&keep).into_owned()
+        });
+        // stdout is read on a thread too, so the main loop can give up on a script that has gone
+        // silent; the reader ends when the pipe closes (the child exits or is killed)
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut raw = Vec::new();
+            while read_raw_line(&mut reader, &mut raw) {
+                if tx.send(std::mem::take(&mut raw)).is_err() {
+                    break;
+                }
+            }
         });
         let mut out = Outcome::default();
         let mut done = None;
         let mut cancelled = false;
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        let mut timed_out = false;
+        loop {
+            let raw = match rx.recv_timeout(self.idle_timeout) {
+                Ok(raw) => raw,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            // a line that is not UTF-8 is noise (lossy), never the end of the conversation
+            let line = String::from_utf8_lossy(&raw);
             match parse_event(&line) {
                 Some(Event::Progress(p, status)) => {
                     if !progress(p, &status) {
@@ -397,6 +477,8 @@ impl ExternalSynthesizer {
                 Some(Event::Spoken { id, out: path, sample_rate, seconds }) => {
                     if lines.iter().any(|l| l.id == id) {
                         out.spoken.push(Spoken { id, path, sample_rate, duration: Tick::from_seconds_f64(seconds) });
+                    } else {
+                        out.failed.push((id, "the script reported a line that was not asked for".into()));
                     }
                 }
                 Some(Event::Failed { id, error }) => out.failed.push((id, error)),
@@ -405,10 +487,13 @@ impl ExternalSynthesizer {
             }
         }
         let status = child.wait();
-        let stderr_tail: String = err_thread.join().unwrap_or_default().chars().rev().take(STDERR_TAIL).collect::<Vec<_>>().into_iter().rev().collect();
         if cancelled {
             return Err(SpeechError::Cancelled);
         }
+        if timed_out {
+            return Err(SpeechError::Model(format!("the TTS script printed nothing for {} s and was stopped", self.idle_timeout.as_secs())));
+        }
+        let stderr_tail: String = err_thread.join().unwrap_or_default().chars().rev().take(STDERR_TAIL).collect::<Vec<_>>().into_iter().rev().collect();
         if done.is_none() {
             let why = match status {
                 Ok(s) if !s.success() => format!("the TTS script exited with {s}"),
@@ -418,8 +503,13 @@ impl ExternalSynthesizer {
             let tail = stderr_tail.trim();
             return Err(SpeechError::Model(if tail.is_empty() { why } else { format!("{why}: {tail}") }));
         }
-        if out.spoken.is_empty() && !out.failed.is_empty() {
-            let (id, e) = &out.failed[0];
+        // a line the script said nothing about is a failure, not a silent loss
+        for l in lines {
+            if !out.spoken.iter().any(|s| s.id == l.id) && !out.failed.iter().any(|(id, _)| id == &l.id) {
+                out.failed.push((l.id.clone(), "the script did not report this line".into()));
+            }
+        }
+        if let (true, Some((id, e))) = (out.spoken.is_empty(), out.failed.first()) {
             return Err(SpeechError::Model(format!("no line was spoken; line {id}: {e}")));
         }
         progress(1.0, "Done");
@@ -507,7 +597,7 @@ mod tests {
     fn fake() -> Option<ExternalSynthesizer> {
         let python = python()?;
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/qwen3-tts/tests/fake_tts.py");
-        Some(ExternalSynthesizer { python, script, model: None, device: None, language: Some("Japanese".into()) })
+        Some(ExternalSynthesizer { python, script, model: None, device: None, language: Some("Japanese".into()), idle_timeout: IDLE_TIMEOUT })
     }
 
     #[test]
@@ -518,7 +608,7 @@ mod tests {
         };
         let dir = std::env::temp_dir().join(format!("filmcraft-synth-ext-{}", std::process::id()));
         let mut lines = vec![line("a", "こんにちは", &dir.join("a.wav")), line("b", "FAIL", &dir.join("b.wav"))];
-        lines[0].voice = Voice { ref_audio: None, ref_text: Some("x".into()) };
+        lines[0].voice = Voice { ref_audio: None, ref_text: Some("x".into()), speaker: Some("Ono_Anna".into()), instruct: None };
         let mut progress = Vec::new();
         let out = e
             .synthesize(&lines, &mut |p, s| {
@@ -537,6 +627,80 @@ mod tests {
         let probe = e.probe().unwrap();
         assert_eq!(probe["ok"], json!(true));
         assert_eq!(probe["fake"], json!(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: a script that wrote cp932 text (not UTF-8) and a lot of output to stderr made
+    /// the reader stop and close the pipe, so the script's next write failed with "Invalid
+    /// argument" and every line failed.
+    #[test]
+    fn external_survives_output_that_is_not_utf8() {
+        let Some(e) = fake() else {
+            eprintln!("no python: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("filmcraft-synth-noise-{}", std::process::id()));
+        let lines = vec![line("a", "NOISE", &dir.join("a.wav")), line("b", "あ", &dir.join("b.wav"))];
+        let out = e.synthesize(&lines, &mut |_, _| true).unwrap();
+        assert_eq!(out.spoken.len(), 2, "{out:?}");
+        assert!(out.failed.is_empty(), "{out:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn raw_lines_are_read_whatever_they_hold() {
+        let data: &[u8] = b"abc\n\xff\xfe\nlast";
+        let mut r = std::io::BufReader::new(data);
+        let mut buf = Vec::new();
+        assert!(read_raw_line(&mut r, &mut buf) && buf == b"abc\n");
+        assert!(read_raw_line(&mut r, &mut buf) && buf == b"\xff\xfe\n");
+        assert!(read_raw_line(&mut r, &mut buf) && buf == b"last");
+        assert!(!read_raw_line(&mut r, &mut buf));
+        // a line longer than the cap is cut, and reading goes on after it
+        let mut long = vec![b'x'; MAX_RAW_LINE + 10];
+        long.extend_from_slice(b"\nnext\n");
+        let mut r = std::io::BufReader::new(&long[..]);
+        assert!(read_raw_line(&mut r, &mut buf) && buf.len() == MAX_RAW_LINE);
+        assert!(read_raw_line(&mut r, &mut buf) && buf == b"next\n");
+    }
+
+    /// Regression: `-I` made Python ignore the UTF-8 settings, so on a Japanese Windows the ids
+    /// and paths came back in cp932, no longer matched, and the lines vanished without an error.
+    #[test]
+    fn external_keeps_japanese_ids_and_paths() {
+        let Some(e) = fake() else {
+            eprintln!("no python: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("filmcraft-synth-日本語-{}", std::process::id()));
+        let lines = vec![line("台詞-1", "こんにちは", &dir.join("台詞-1.wav"))];
+        let out = e.synthesize(&lines, &mut |_, _| true).unwrap();
+        assert_eq!(out.spoken.len(), 1, "{out:?}");
+        assert_eq!(out.spoken[0].id, "台詞-1");
+        assert_eq!(out.spoken[0].path.file_name().unwrap(), "台詞-1.wav");
+        assert!(out.spoken[0].path.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn external_stops_a_silent_script_and_reports_forgotten_lines() {
+        let Some(e) = fake() else {
+            eprintln!("no python: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("filmcraft-synth-idle-{}", std::process::id()));
+        let quick = ExternalSynthesizer { idle_timeout: std::time::Duration::from_millis(1500), ..e.clone() };
+        let started = std::time::Instant::now();
+        let err = quick.synthesize(&[line("a", "HANG", &dir.join("a.wav"))], &mut |_, _| true).unwrap_err();
+        assert!(matches!(err, SpeechError::Model(ref m) if m.contains("printed nothing")), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(30), "the hung script was not stopped");
+        // a script that says nothing about a line: that line fails, the rest are spoken
+        let lines = vec![line("a", "SKIP", &dir.join("a.wav")), line("b", "x", &dir.join("b.wav"))];
+        let out = e.synthesize(&lines, &mut |_, _| true).unwrap();
+        assert_eq!(out.spoken.len(), 1);
+        assert_eq!(out.failed.len(), 1);
+        assert_eq!(out.failed[0].0, "a");
+        assert!(out.failed[0].1.contains("did not report"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

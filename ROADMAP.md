@@ -81,8 +81,9 @@ In priority order. Agents should prefer this work over adding more checklist ite
 8. **AI features** with openly licensed local models: transcription (on by default since the app and CLI build it), text-based
    editing, speech enhancement, reframing. Text-to-speech and voice cloning (`speech.synthesize`)
    run Qwen3-TTS as an external Python script (`tools/qwen3-tts/`, [docs/text-to-speech.md](docs/text-to-speech.md));
-   the rest of the novel-to-anime pipeline (script model, automatic assembly, lip sync) is
-   sketched in [docs/novel-to-anime.md](docs/novel-to-anime.md).
+   the script model with voice picking, incremental synthesis and lip-sync analysis
+   (`script.*`, [docs/script.md](docs/script.md)) is in; automatic assembly of a script into a
+   sequence is next ([docs/novel-to-anime.md](docs/novel-to-anime.md)).
 9. **The web app shell**: file access, WebCodecs, audio.
 
 ### Where we're going

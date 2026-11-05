@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import wave
 
 
@@ -34,6 +35,18 @@ def main():
     ok = failed = 0
     for i, j in enumerate(jobs):
         emit({"progress": 0.05 + 0.95 * i / max(len(jobs), 1), "status": f"Synthesising {i + 1}/{len(jobs)}"})
+        if "NOISE" in j["text"]:
+            # what a real run does on Windows: a console-code-page (cp932) message on stderr and a
+            # lot of progress-bar output, and a stdout line that is not UTF-8
+            sys.stderr.buffer.write(("'sox' は、内部コマンドまたは外部コマンドとして認識されていません。\n").encode("cp932") * 3)
+            sys.stderr.buffer.write(b"x" * 300000 + b"\n")
+            sys.stderr.buffer.flush()
+            sys.stdout.buffer.write(b"\xff\xfe not json \x80\n")
+            sys.stdout.buffer.flush()
+        if "HANG" in j["text"]:
+            time.sleep(120)
+        if "SKIP" in j["text"]:
+            continue  # says nothing about this job
         if "CRASH" in j["text"]:
             sys.stderr.write("simulated crash\n")
             sys.stderr.flush()

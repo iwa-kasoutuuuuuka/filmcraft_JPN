@@ -172,8 +172,12 @@ class Models:
         self.ids = {"base": base_id, "custom": custom_id}
         self.device = device
         self.loaded: dict[str, object] = {}
+        # a model that failed to load (after its retry) is not tried again for every remaining job
+        self.failed: dict[str, BaseException] = {}
 
     def get(self, kind: str):
+        if kind in self.failed:
+            raise self.failed[kind]
         if kind not in self.loaded:
             # The first load also downloads the weights. On Windows the Hugging Face cache can
             # fail once while linking the freshly downloaded blobs (WinError 1314, no symlink
@@ -186,6 +190,7 @@ class Models:
                     break
                 except Exception as e:  # noqa: BLE001
                     if attempt == 2:
+                        self.failed[kind] = e
                         raise
                     emit({"progress": 0.0, "status": f"Loading {self.ids[kind]} failed ({type(e).__name__}); retrying once"})
             self.loaded[kind] = model
@@ -255,6 +260,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--instruct", help="free-text direction for a preset speaker (with --text)")
     ap.add_argument("--device", help="cuda:0 / cpu (default: CUDA if available)")
     a = ap.parse_args(argv)
+    # the host starts Python with -X utf8; this covers a script started by hand on a code-page console
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
 
     if a.probe:
         return probe()

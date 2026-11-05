@@ -45,6 +45,7 @@ pub mod relink;
 pub mod remix;
 pub mod scene_detect;
 pub mod scopes;
+pub mod script_tools;
 pub mod sequence_extras;
 pub mod sequence_tools;
 pub mod settings;
@@ -1058,6 +1059,8 @@ mod relink_tests;
 mod remix_tests;
 #[cfg(test)]
 mod scopes_tests;
+#[cfg(test)]
+mod script_tools_tests;
 #[cfg(test)]
 mod sequence_tools_tests;
 #[cfg(test)]
