@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod anime;
 pub mod audio_plugins;
 pub mod autosave;
 pub mod autoswitch;
@@ -47,12 +48,14 @@ pub mod relink;
 pub mod remix;
 pub mod scene_detect;
 pub mod scopes;
+pub mod script_tools;
 pub mod sequence_extras;
 pub mod sequence_tools;
 pub mod settings;
 pub mod shortcut_presets;
 pub mod shortcuts;
 pub mod silence;
+pub mod speech_synth;
 pub mod sync;
 pub mod text_style;
 pub mod transcript;
@@ -381,6 +384,9 @@ pub struct Session {
     /// Speech recogniser for `transcript.generate` (None = the Whisper model named by the command,
     /// feature `whisper`). Hosts and tests install one here.
     pub transcriber: Option<Arc<dyn filmcraft_speech::Transcriber>>,
+    /// Speech synthesiser for `speech.synthesize` (None = the Qwen3-TTS helper script run as an
+    /// external process). Hosts and tests install one here.
+    pub synthesizer: Option<Arc<dyn filmcraft_speech::Synthesizer>>,
     /// The Events panel log: failed commands, job results, auto-save errors, messages.
     pub log: panels::EventLog,
     /// Media Browser navigation (directory, back / forward history, selected files).
@@ -488,6 +494,7 @@ impl Session {
             export_queue: Default::default(),
             stepped: Vec::new(),
             transcriber: None,
+            synthesizer: None,
             log: Default::default(),
             browser: Default::default(),
             exec_depth: 0,
@@ -1024,6 +1031,8 @@ mod aaf_omf_tests;
 #[cfg(test)]
 mod animated_image_tests;
 #[cfg(test)]
+mod anime_tests;
+#[cfg(test)]
 mod audio_effects_tests;
 #[cfg(test)]
 mod audio_plugins_tests;
@@ -1084,6 +1093,8 @@ mod remix_tests;
 #[cfg(test)]
 mod scopes_tests;
 #[cfg(test)]
+mod script_tools_tests;
+#[cfg(test)]
 mod sequence_tools_tests;
 #[cfg(test)]
 mod settings_tests;
@@ -1091,6 +1102,8 @@ mod settings_tests;
 mod shortcuts_tests;
 #[cfg(test)]
 mod silence_tests;
+#[cfg(test)]
+mod speech_synth_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

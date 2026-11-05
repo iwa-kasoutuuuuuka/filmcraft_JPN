@@ -1,0 +1,47 @@
+{
+  "_about": "A readable plain-text scenario: '名前「台詞」', '名前（心の声）', plain narration, @commands, ■ scene headers. Copy it and change the patterns to match another game's files (docs/game-import.md).",
+  "encoding": "auto",
+  "language": "Japanese",
+  "narrator": "narrator",
+  "narrator_name": "語り",
+  "scene": {
+    "start": "^■\\s*(?P<id>[^\\s]+)\\s*(?P<title>.*)$"
+  },
+  "ignore": [
+    "^\\s*$",
+    "^//",
+    "^;",
+    "^#"
+  ],
+  "commands": [
+    {"match": "^@bgm_stop\\b", "set": "bgm_stop"},
+    {"match": "^@bgm\\s+(?P<file>\\S+)", "set": "bgm"},
+    {"match": "^@bg\\s+(?P<file>\\S+)", "set": "background"},
+    {"match": "^@se\\s+(?P<file>\\S+)", "set": "sfx"},
+    {"match": "^@face\\s+(?P<speaker>\\S+)\\s+(?P<expr>\\S+)", "set": "expression"},
+    {"match": "^@wait\\s+(?P<sec>[0-9.]+)", "set": "pause"},
+    {"match": "^@pov\\s+(?P<speaker>\\S+)", "set": "pov"},
+    {"match": "^@when\\s+(?P<when>\\S+)", "set": "when"},
+    {"match": "^@requires\\s+(?P<ids>.+)$", "set": "requires"}
+  ],
+  "rules": [
+    {"match": "^(?:\\[(?P<voice>[A-Za-z0-9_]+)\\])?(?P<speaker>[^「『（(\\[\\]]+?)[ \\u3000]*[「『](?P<text>.*)[」』]$", "kind": "dialogue"},
+    {"match": "^(?:\\[(?P<voice>[A-Za-z0-9_]+)\\])?(?P<speaker>[^「『（(\\[\\]]+?)[ \\u3000]*[（(](?P<text>.*)[）)]$", "kind": "monologue"},
+    {"match": "^(?:\\[(?P<voice>[A-Za-z0-9_]+)\\])?(?P<text>.+)$", "kind": "narration"}
+  ],
+  "ruby": [
+    {"match": "\\[(?P<base>[^/\\[\\]]+)/(?P<yomi>[^\\[\\]]+)\\]", "to": "｜\\g<base>《\\g<yomi>》"}
+  ],
+  "strip": [
+    "\\\\n",
+    "<br>"
+  ],
+  "assets": {
+    "backgrounds": "bg",
+    "sprites": "chara",
+    "bgm": "bgm",
+    "se": "se",
+    "voice": "voice"
+  },
+  "characters": {}
+}

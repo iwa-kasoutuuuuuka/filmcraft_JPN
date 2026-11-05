@@ -11,6 +11,11 @@
 //! - [`diarize`]: speaker labelling by clustering per-chunk MFCC statistics (classical, no model).
 //! - [`mel`]: the log-mel front end shared by Whisper and diarization.
 //! - [`vad`]: energy-based tightening of word bounds (keeps pauses out of words).
+//! - [`synth`]: text-to-speech, the other direction: the [`Synthesizer`] trait and
+//!   [`ExternalSynthesizer`], which runs the Qwen3-TTS helper script (`tools/qwen3-tts/`, Python)
+//!   as an external process. FilmCraft links no Python.
+//! - [`tts`]: the client for local AivisSpeech / VOICEVOX engines over their localhost HTTP API
+//!   (feature `tts`).
 //!
 //! See `docs/transcripts.md` for the user-facing behaviour and accuracy numbers.
 
@@ -19,6 +24,7 @@
 pub mod diarize;
 pub mod mel;
 pub mod models;
+pub mod synth;
 pub mod tts;
 pub mod vad;
 #[cfg(feature = "whisper")]
@@ -26,6 +32,7 @@ pub mod whisper;
 
 use filmcraft_project::Transcript;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
+pub use synth::{ExternalSynthesizer, FixedSynthesizer, Line as SynthLine, Outcome as SynthOutcome, Spoken, Synthesizer, Voice};
 
 /// The sample rate every transcriber takes.
 pub const SAMPLE_RATE: u32 = 16_000;
