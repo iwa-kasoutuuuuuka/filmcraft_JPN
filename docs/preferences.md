@@ -44,6 +44,7 @@ wired one has none.
 | General ▸ Bins ▸ Double-click / + Cmd / + Opt | read by the Project panel, but marked unwired | marked wired | (already worked: `panels::project::open_bin`) | `project_panel_ui::bins_open_in_place_in_a_tab_or_in_a_window` |
 | Media ▸ Import numbered stills as image sequences | read by `file.import`, marked unwired | marked wired | (already worked) | existing image-sequence tests |
 | Audio Hardware ▸ Default Input | read by voice-over recording, marked unwired | marked wired | (already worked) | existing voice-over tests |
+| Narration ▸ * (FilmCraft's own page: default engine, AivisSpeech / VOICEVOX addresses, default voice, folder, pause, captions, caption split length, auto-level, duck, duck depth) | new | wired | read by `tts.*` (`narration.rs`); new keys under `narration`, no migration (missing keys take their defaults) | `narration_tests::*` |
 
 ## Settings that remain inactive
 

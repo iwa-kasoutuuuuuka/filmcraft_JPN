@@ -13,9 +13,12 @@ workspace = true
 [features]
 # Speech-to-text is part of the app; `--no-default-features` builds without it (no candle, no
 # TLS stack, no model downloads).
-default = ["whisper"]
+default = ["whisper", "tts"]
 # Speech-to-text (Text panel ▸ Transcribe) with Whisper on the CPU, and model downloads.
 whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download"]
+# Narration (Graphics and Titles ▸ Generate Narration…, `tts.*`) through a local AivisSpeech /
+# VOICEVOX app over plain HTTP on localhost.
+tts = ["filmcraft-engine/tts"]
 
 [dependencies]
 filmcraft-engine = { workspace = true }

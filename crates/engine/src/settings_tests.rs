@@ -35,6 +35,7 @@ fn import_png(s: &mut Session, dir: &Path, name: &str, w: u32, h: u32) -> ItemId
 }
 
 #[test]
+/// (Narration is FilmCraft's own page, in alphabetical place.)
 fn categories_follow_premiere_order() {
     let ids: Vec<&str> = settings::categories().iter().map(|c| c.id).collect();
     assert_eq!(
@@ -52,6 +53,7 @@ fn categories_follow_premiere_order() {
             "mediaAnalysis",
             "mediaCache",
             "memory",
+            "narration",
             "playback",
             "plugins",
             "timeline",

@@ -444,6 +444,7 @@ impl FilmcraftApp {
         i18n::set_language(i18n::Language::from_pref(&p.appearance.language, i18n::system_language().as_deref()));
         // new text, captions and charts default to the Japanese face in a Japanese interface
         self.session.japanese_text = i18n::is_japanese();
+        self.session.system_language = i18n::system_language();
         if prev.as_ref().is_none_or(|q| q.appearance != p.appearance || q.general.show_tool_tips != p.general.show_tool_tips) {
             self.set_theme(ctx, ThemeKind::from_pref(&p.appearance.color_theme));
         }

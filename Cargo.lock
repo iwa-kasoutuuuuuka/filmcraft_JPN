@@ -2377,6 +2377,7 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-scopes",
+ "filmcraft-speech",
  "filmcraft-testkit",
  "filmcraft-text",
  "filmcraft-time",

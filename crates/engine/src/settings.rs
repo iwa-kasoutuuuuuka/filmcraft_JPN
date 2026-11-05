@@ -725,6 +725,8 @@ const LANGUAGES: &[(&str, &str)] = &[
 ];
 const MODELS: &[(&str, &str)] =
     &[("whisper-tiny", "Whisper tiny (fastest)"), ("whisper-base", "Whisper base (balanced)"), ("whisper-small", "Whisper small (most accurate)")];
+/// Product names read the same in every language.
+const TTS_ENGINES: &[(&str, &str)] = &[("aivisspeech", "AivisSpeech"), ("voicevox", "VOICEVOX")];
 const CACHE_MGMT: &[(&str, &str)] = &[
     ("never", "Do not delete cache files automatically"),
     ("olderThan", "Automatically delete cache files older than"),
@@ -1020,6 +1022,28 @@ static CATEGORIES: &[Category] = &[
             Row::Custom("memoryInfo"),
             f("memory.ramReservedGb", "RAM reserved for other applications", int(1.0, 1024.0, "GB"), false),
             f("memory.frameCacheMb", "Frame cache for monitors and thumbnails", int(64.0, 65_536.0, "MB"), true),
+        ],
+    },
+    // FilmCraft's own: Graphics and Titles ▸ Generate Narration… (`tts.*`)
+    Category {
+        id: "narration",
+        title: "Narration",
+        rows: &[
+            f("narration.engine", "Default engine", Kind::Choice(TTS_ENGINES), true),
+            f("narration.aivisspeechUrl", "AivisSpeech address", Kind::Text, true),
+            f("narration.voicevoxUrl", "VOICEVOX address", Kind::Text, true),
+            f("narration.defaultVoice", "Default voice (Speaker/Style)", Kind::Text, true),
+            f("narration.folder", "Folder for narration audio", Kind::Path, true),
+            f("narration.pauseSeconds", "Pause after each line", float(0.0, 30.0, 2, "seconds"), true),
+            b("narration.captions", "Make captions from the lines", true),
+            f("narration.captionMaxChars", "Split captions longer than", int(0.0, 10_000.0, "characters"), true),
+            b("narration.autoLevel", "Auto-level narration (Dialogue type, loudness match)", true),
+            b("narration.duck", "Duck other audio under the narration", true),
+            f("narration.duckReduceDb", "Duck other audio by", float(-40.0, 0.0, 1, "dB"), true),
+            b("narration.creditRoll", "Add a credit roll of the voices at the end", true),
+            Row::Note(
+                "Narration uses the free AivisSpeech or VOICEVOX app, installed and started separately; FilmCraft talks to it on this computer. Every voice has its own terms: credit the voices you use (Generate Narration lists the credits).",
+            ),
         ],
     },
     Category {
