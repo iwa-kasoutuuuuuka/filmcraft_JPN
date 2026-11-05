@@ -27,6 +27,13 @@ use serde_json::{Value, json};
 
 /// Largest JSON answer read (speaker lists with many models, AudioQueries of long texts).
 pub const MAX_JSON_BYTES: u64 = 10 << 20;
+/// Largest `/speaker_info` answer read: it embeds the portrait and every style's icon and voice
+/// samples (8+ MB for one AivisSpeech voice).
+pub const MAX_INFO_BYTES: u64 = 256 << 20;
+/// Largest `/aivm_models` answer streamed: it embeds every installed model's icons and voice
+/// samples (70 MB for the 8 default models), so it is parsed as it arrives, keeping only the
+/// names, licences and speaker uuids.
+pub const MAX_MODELS_BYTES: u64 = 1 << 30;
 /// Largest WAV read from `/synthesis`.
 pub const MAX_WAV_BYTES: u64 = 200 << 20;
 /// Longest text sent in one request (characters).
@@ -433,19 +440,27 @@ impl Client {
     fn call(&self, req: http::Req) -> Result<Vec<u8>, TtsError> {
         match http::send(&req) {
             Ok((status, body)) if (200..300).contains(&status) => Ok(body),
-            Ok((status, body)) => {
-                let text = String::from_utf8_lossy(&body[..body.len().min(2000)]).into_owned();
-                // FastAPI: {"detail": "..."} or {"detail": [{"msg": ...}]}
-                let msg = serde_json::from_slice::<Value>(&body)
-                    .ok()
-                    .and_then(|v| v.get("detail").map(|d| d.as_str().map(str::to_string).unwrap_or_else(|| d.to_string())))
-                    .unwrap_or(text);
-                Err(TtsError::Status { engine: self.engine.name(), url: self.base.clone(), status, msg: msg.chars().take(500).collect() })
-            }
-            Err(http::Fail::Connect) => Err(self.not_running()),
-            Err(http::Fail::TooLarge) => Err(self.bad(format!("the answer is larger than {} MB", req.max >> 20))),
-            Err(http::Fail::Unavailable(why)) => Err(TtsError::Unavailable(why)),
-            Err(http::Fail::Other(e)) => Err(self.bad(e)),
+            Ok((status, body)) => Err(self.status_err(status, &body)),
+            Err(f) => Err(self.fail(f, &req)),
+        }
+    }
+
+    /// An error answer (FastAPI: `{"detail": "..."}` or `{"detail": [{"msg": ...}]}`).
+    fn status_err(&self, status: u16, body: &[u8]) -> TtsError {
+        let text = String::from_utf8_lossy(body.get(..body.len().min(2000)).unwrap_or_default()).into_owned();
+        let msg = serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|v| v.get("detail").map(|d| d.as_str().map(str::to_string).unwrap_or_else(|| d.to_string())))
+            .unwrap_or(text);
+        TtsError::Status { engine: self.engine.name(), url: self.base.clone(), status, msg: msg.chars().take(500).collect() }
+    }
+
+    fn fail(&self, f: http::Fail, req: &http::Req) -> TtsError {
+        match f {
+            http::Fail::Connect => self.not_running(),
+            http::Fail::TooLarge => self.bad(format!("the answer is larger than {} MB", req.max >> 20)),
+            http::Fail::Unavailable(why) => TtsError::Unavailable(why),
+            http::Fail::Other(e) => self.bad(e),
         }
     }
 
@@ -480,7 +495,9 @@ impl Client {
         if uuid.is_empty() || uuid.len() > 128 {
             return Err(TtsError::Invalid("need a speaker uuid".into()));
         }
-        let v = self.json(self.get("/speaker_info", vec![("speaker_uuid", uuid.to_string())], NORMAL))?;
+        let mut req = self.get("/speaker_info", vec![("speaker_uuid", uuid.to_string())], NORMAL);
+        req.max = MAX_INFO_BYTES;
+        let v = self.json(req)?;
         if !v.is_object() {
             return Err(self.bad("speaker_info is not an object"));
         }
@@ -496,10 +513,15 @@ impl Client {
         if self.engine != TtsEngine::AivisSpeech {
             return Ok(Vec::new());
         }
-        match self.json(self.get("/aivm_models", vec![], NORMAL)) {
-            Ok(v) => Ok(parse_aivm_models(&v)),
-            Err(TtsError::Status { status: 404 | 405 | 501, .. }) => Ok(Vec::new()),
-            Err(e) => Err(e),
+        let mut req = self.get("/aivm_models", vec![], NORMAL);
+        req.max = MAX_MODELS_BYTES;
+        match http::send_read(&req, |r| serde_json::from_reader::<_, RawModels>(r).map_err(|e| e.to_string())) {
+            Ok(Ok(raw)) => Ok(raw.into_models()),
+            Ok(Err((status, body))) => match self.status_err(status, &body) {
+                TtsError::Status { status: 404 | 405 | 501, .. } => Ok(Vec::new()),
+                e => Err(e),
+            },
+            Err(f) => Err(self.fail(f, &req)),
         }
     }
 
@@ -602,6 +624,75 @@ pub fn parse_aivm_models(v: &Value) -> Vec<AivmModel> {
         .collect()
 }
 
+/// `/aivm_models` read straight from the stream: only these fields are kept, everything else
+/// (base64 icons, voice samples) is skipped without being stored.
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct RawModels(std::collections::BTreeMap<String, RawModel>);
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawModel {
+    uuid: Option<String>,
+    name: Option<String>,
+    license: Option<String>,
+    manifest: Option<RawManifest>,
+    speakers: Vec<RawModelSpeaker>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawManifest {
+    uuid: Option<String>,
+    name: Option<String>,
+    license: Option<String>,
+    speakers: Vec<RawUuid>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawUuid {
+    uuid: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawModelSpeaker {
+    speaker: Option<RawSpeakerUuid>,
+    speaker_uuid: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawSpeakerUuid {
+    speaker_uuid: Option<String>,
+}
+
+impl RawModels {
+    fn into_models(self) -> Vec<AivmModel> {
+        let cut = |s: Option<String>| s.map(|x| x.chars().take(20_000).collect::<String>());
+        self.0
+            .into_iter()
+            .take(1024)
+            .filter_map(|(key, e)| {
+                let man = e.manifest.unwrap_or_default();
+                let uuid = cut(man.uuid.or(e.uuid)).unwrap_or(key);
+                let name = cut(man.name.or(e.name)).unwrap_or_default();
+                let license = cut(man.license.or(e.license)).filter(|l| !l.trim().is_empty());
+                let mut speakers: Vec<String> = man.speakers.into_iter().take(256).filter_map(|s| cut(s.uuid)).collect();
+                for sp in e.speakers.into_iter().take(256) {
+                    if let Some(u) = cut(sp.speaker.and_then(|x| x.speaker_uuid).or(sp.speaker_uuid))
+                        && !speakers.contains(&u)
+                    {
+                        speakers.push(u);
+                    }
+                }
+                (!uuid.is_empty()).then_some(AivmModel { uuid, name, license, speakers })
+            })
+            .collect()
+    }
+}
+
 // ------------------------------------------------------------------------------------- HTTP
 
 mod http {
@@ -626,8 +717,37 @@ mod http {
         Other(String),
     }
 
+    /// Like [`send`], but a success answer is handed to `parse` as a stream (at most `r.max`
+    /// bytes) instead of being read into memory. An error answer comes back as its status and
+    /// (at most 64 KB of) body.
+    #[cfg(all(feature = "tts", not(target_arch = "wasm32")))]
+    #[allow(clippy::type_complexity)]
+    pub fn send_read<T>(r: &Req, parse: impl FnOnce(&mut dyn std::io::Read) -> Result<T, String>) -> Result<Result<T, (u16, Vec<u8>)>, Fail> {
+        let mut resp = request(r)?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = resp.body_mut().with_config().limit(64 << 10).read_to_vec().unwrap_or_default();
+            return Ok(Err((status, body)));
+        }
+        let mut reader = resp.body_mut().with_config().limit(r.max).reader();
+        match parse(&mut reader) {
+            Ok(v) => Ok(Ok(v)),
+            // the body limit surfaces as a read error inside the parser
+            Err(e) if e.to_ascii_lowercase().contains("limit") => Err(Fail::TooLarge),
+            Err(e) => Err(Fail::Other(format!("not JSON ({e})"))),
+        }
+    }
+
     #[cfg(all(feature = "tts", not(target_arch = "wasm32")))]
     pub fn send(r: &Req) -> Result<(u16, Vec<u8>), Fail> {
+        let mut resp = request(r)?;
+        let status = resp.status().as_u16();
+        let body = resp.body_mut().with_config().limit(r.max).read_to_vec().map_err(map_err)?;
+        Ok((status, body))
+    }
+
+    #[cfg(all(feature = "tts", not(target_arch = "wasm32")))]
+    fn request(r: &Req) -> Result<ureq::http::Response<ureq::Body>, Fail> {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             // the engine is on this machine: never through a proxy from the environment
@@ -654,10 +774,7 @@ mod http {
                 if body.is_empty() { q.send_empty() } else { q.content_type("application/json").send(&body[..]) }
             }
         };
-        let mut resp = result.map_err(map_err)?;
-        let status = resp.status().as_u16();
-        let body = resp.body_mut().with_config().limit(r.max).read_to_vec().map_err(map_err)?;
-        Ok((status, body))
+        result.map_err(map_err)
     }
 
     #[cfg(all(feature = "tts", not(target_arch = "wasm32")))]
@@ -671,6 +788,12 @@ mod http {
             }
             other => Fail::Other(other.to_string()),
         }
+    }
+
+    #[cfg(not(all(feature = "tts", not(target_arch = "wasm32"))))]
+    #[allow(clippy::type_complexity)]
+    pub fn send_read<T>(r: &Req, _parse: impl FnOnce(&mut dyn std::io::Read) -> Result<T, String>) -> Result<Result<T, (u16, Vec<u8>)>, Fail> {
+        send(r).map(|_| Err((0, Vec::new())))
     }
 
     #[cfg(not(all(feature = "tts", not(target_arch = "wasm32"))))]
@@ -795,5 +918,27 @@ mod tests {
         assert_eq!(m[0].license.as_deref(), Some("ACML 1.0"));
         assert_eq!(m[0].speakers, ["s1"]);
         assert!(parse_aivm_models(&json!(3)).is_empty());
+    }
+
+    /// The real `/aivm_models` embeds tens of MB of icons and samples per model: the streamed
+    /// parse keeps only names, licences and speaker uuids, and skips the rest.
+    #[test]
+    fn streamed_models_skip_the_embedded_media() {
+        let big = "A".repeat(3 << 20);
+        let body = json!({
+            "m1": {"is_loaded": true, "file_size": 255326987, "manifest": {"uuid": "m1", "name": "まお", "license": "# ACML 1.0\n...", "icon": big, "speakers": [{"uuid": "s1", "icon": big, "styles": [{"voice_samples": [big]}]}]},
+                   "speakers": [{"speaker": {"speaker_uuid": "s1", "name": "まお"}, "speaker_info": {"portrait": big, "style_infos": [{"icon": big}]}}]},
+            "m2": {"manifest": {"uuid": "m2", "name": "x", "license": null, "speakers": []}, "speakers": [{"speaker": {"speaker_uuid": "s2"}}]}
+        })
+        .to_string();
+        let raw: RawModels = serde_json::from_reader(body.as_bytes()).unwrap();
+        let m = raw.into_models();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].license.as_deref(), Some("# ACML 1.0\n..."));
+        assert_eq!(m[0].speakers, ["s1"]);
+        assert_eq!(m[1].license, None);
+        assert_eq!(m[1].speakers, ["s2"]);
+        // the same answer through the Value parser agrees
+        assert_eq!(parse_aivm_models(&serde_json::from_str::<Value>(&body).unwrap()), m);
     }
 }

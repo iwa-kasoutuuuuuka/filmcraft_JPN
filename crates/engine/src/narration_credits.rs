@@ -328,6 +328,8 @@ fn credit_roll(s: &mut Session, p: &Value) -> Result<Value> {
     layer.params.insert("font".into(), Param::new(ParamValue::Text(font)));
     // Alignment: Center
     layer.params.insert("align".into(), Param::new(ParamValue::Choice(1)));
+    // credits read better with air between the lines (leading is extra pixels per line)
+    layer.params.insert("leading".into(), Param::new(ParamValue::Float(size * 0.5)));
     layer.params.insert("name".into(), Param::new(ParamValue::Text(ROLL_NAME.into())));
     let meta = GraphicMeta { roll: Roll { mode: RollMode::Roll, start_off_screen: true, end_off_screen: true, ..Default::default() }, ..Default::default() };
     let place = json!({"time": at.0});
