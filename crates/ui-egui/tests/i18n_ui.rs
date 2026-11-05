@@ -23,6 +23,12 @@ impl Driver {
     fn demo() -> Self {
         let mut session = Session::default();
         session.execute("file.openDemoProject", json!({})).expect("demo project");
+        // hermetic: a speech engine running on this machine (AivisSpeech / VOICEVOX) would show
+        // its own voice names (data, often Japanese) in the Narration dialog; point both at a
+        // closed port so the dialog shows only FilmCraft's text
+        session
+            .execute("prefs.set", json!({"values": {"narration.aivisspeechUrl": "http://127.0.0.1:9", "narration.voicevoxUrl": "http://127.0.0.1:9"}}))
+            .expect("narration urls");
         let (tx, rx) = channel();
         let app = FilmcraftApp::new(session).with_control(rx);
         let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
