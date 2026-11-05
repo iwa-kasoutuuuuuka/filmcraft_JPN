@@ -455,24 +455,26 @@ fn lines(p: &mut Painter, spec: &ChartSpec, st: &ChartState, col: &Colors, area:
     if spec.show_values {
         // the labels beside the line heads, nudged apart so close lines do not overprint
         let gap = fs * 0.95;
-        let mut order: Vec<usize> = (0..heads.len()).collect();
-        order.sort_by(|&a, &b| heads[a].1.total_cmp(&heads[b].1));
-        let mut ys: Vec<f32> = order.iter().map(|&i| heads[i].1).collect();
-        for k in 1..ys.len() {
-            ys[k] = ys[k].max(ys[k - 1] + gap);
+        let mut order = heads.clone();
+        order.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let mut ys: Vec<f32> = order.iter().map(|h| h.1).collect();
+        let mut prev = f32::NEG_INFINITY;
+        for y in &mut ys {
+            *y = y.max(prev + gap);
+            prev = *y;
         }
         // the stack may have run off the bottom: push it back up
         if let Some(&last) = ys.last()
             && last > plot[3]
         {
             let shift = last - plot[3];
-            ys.iter_mut().for_each(|y| *y -= shift);
-            for k in (0..ys.len().saturating_sub(1)).rev() {
-                ys[k] = ys[k].min(ys[k + 1] - gap);
+            let mut next = f32::INFINITY;
+            for y in ys.iter_mut().rev() {
+                *y = (*y - shift).min(next - gap);
+                next = *y;
             }
         }
-        for (&i, &y) in order.iter().zip(&ys) {
-            let (x, _, v) = heads[i];
+        for (&(x, _, v), &y) in order.iter().zip(&ys) {
             p.text(&format_value(v, spec.decimals), fs * 0.85, false, col.text, x + lw * 3.0, y, H::Left);
         }
     }
