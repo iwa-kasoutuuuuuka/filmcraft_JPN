@@ -9,15 +9,19 @@ in the binaries; without Python installed the command says so and everything els
 ## Install
 
 ```bash
-python -m venv .venv
+python -m venv .venv              # add --system-site-packages to reuse a torch you already have
 .venv/Scripts/activate            # Windows; `source .venv/bin/activate` elsewhere
 pip install torch --index-url https://download.pytorch.org/whl/cu128   # a CUDA build (optional)
 pip install -r requirements.txt
 python filmcraft_tts.py --probe   # {"ok": true, "cuda": true, "gpu": "...", ...}
 ```
 
-The model (≈3.4 GB for the 1.7B Base model) downloads from Hugging Face on first use into the
-Hugging Face cache. CPU inference works but is slow; a GPU with 8 GB or more is comfortable.
+Each model (≈3.4 GB for the 1.7B Base and CustomVoice models) downloads from Hugging Face on
+first use into the Hugging Face cache; a batch that mixes cloned and preset voices uses both.
+CPU inference works but is slow; a GPU with 8 GB or more is comfortable (on an RTX 5080 a model
+loads in 10–20 s and a line of a few seconds takes about a second). The `SoX could not be found`
+and `flash-attn is not installed` messages at start-up are harmless: neither is needed. Progress
+bars are off, so a host that reads the script's output sees only its JSON lines.
 
 ## Use
 
@@ -35,8 +39,11 @@ From FilmCraft (CLI, control channel, MCP):
 
 Every line becomes a WAV file in `out` (default `<data dir>/tts`) and a media item in the
 project. `refAudio` + `refText` (its transcript) clone that voice from a few seconds of clean
-speech; without `refText` only the speaker embedding is used (lower quality); without `refAudio`
-the model's default voice speaks. Voice prompts are computed once per reference file.
+speech; without `refText` only the speaker embedding is used (lower quality). Without `refAudio`,
+`speaker` picks a preset voice of the CustomVoice model (`Ono_Anna` is the Japanese one;
+`--list-speakers` prints them all) and `instruct` directs it ("怒った声で"); with neither, the
+preset for the line's language speaks. Voice prompts are computed once per reference file, and
+each model loads once, on first use.
 
 Where the script and Python are found, in order: the command's `python` / `script` params, the
 `FILMCRAFT_TTS_PYTHON` / `FILMCRAFT_TTS_SCRIPT` environment variables, `tools/qwen3-tts/` next to
@@ -47,7 +54,9 @@ Stand-alone:
 
 ```bash
 python filmcraft_tts.py --text "こんにちは" --out hello.wav --ref-audio ref.wav --ref-text "参照音声の書き起こし"
+python filmcraft_tts.py --text "こんにちは" --out hello.wav --speaker Ono_Anna --instruct "眠そうに"
 python filmcraft_tts.py --jobs jobs.jsonl --device cuda:0
+python filmcraft_tts.py --list-speakers
 ```
 
 ## Voices and rights
