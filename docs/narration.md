@@ -41,11 +41,65 @@ If you changed the engine's port, set it in **Settings ▸ Narration** (`narrati
   are matched to voice names (`ずんだもん`, `四国めたん/ノーマル`, …); lines without a speaker keep
   the previous line's voice.
 - **Make captions** and **Pause after each line**.
+- **Auto-level** and **Duck other audio under the narration** (both on by default; see
+  [Sitting in the mix](#sitting-in-the-mix)).
 - **Generate** synthesizes in the background (the window stays usable), then imports and places
   every line on an audio track at the playhead, back to back with the pauses, and adds a caption
   track whose captions are exactly the lines, timed to their audio. The whole thing is one
   **Undo** ("Synthesize Narration").
 - Afterwards the **credits** of the voices used are shown with **Copy Credits**.
+
+## Sitting in the mix
+
+Narration placed over a project that already has music would otherwise play at whatever level the
+engine produced, on top of the music. `tts.synthesize` therefore mixes it in with the Essential
+Sound tools, in the same undo step as the placement:
+
+1. **Auto-level** (Settings ▸ Narration ▸ Auto-level narration, `autoLevel`): the narration clips
+   get the **Dialogue** audio type and their integrated loudness (ITU-R BS.1770) is matched to
+   the dialogue target, the `audio.dialogueTargetLufs` preference (−23 LUFS by default;
+   `dialogueLufs` overrides it for one call). This is `essentialSound.autoMatch`; the match gain
+   shows in Essential Sound ▸ Loudness.
+2. **Ducking** (Settings ▸ Narration ▸ Duck other audio under the narration, `duck`): the enabled
+   clips on the *other* unlocked audio tracks that overlap the narration and are **Music** or
+   **Ambience**, or have no audio type yet (they become Music), get Volume keyframes that lower
+   them by **Duck other audio by** (−15 dB by default, −40…0; `duckReduceDb`) while the narration
+   speaks, with fades. This is `essentialSound.generateDucking` (its keyframes replace earlier
+   Volume keyframes of those clips; the level between the ducks is the clip's highest earlier
+   level). Dialogue and SFX clips are left alone. When nothing is under the narration, nothing is
+   ducked.
+
+The narration clips get the Dialogue type whenever either option is on (the ducking listens to
+Dialogue). The result's `mix` says what was done:
+
+```json
+"mix": {
+  "autoLevel": true, "duck": true,
+  "dialogue": [1201, 1202],
+  "loudness": {"targetLufs": -23.0, "clips": [{"clip": 1201, "measuredLufs": -31.2, "targetLufs": -23.0, "gainDb": 8.2}, …]},
+  "typedMusic": [12, 18],
+  "reduceDb": -15.0,
+  "ducked": [{"clip": 18, "keyframes": 4, "regions": [[4.0, 6.4]]}, …],
+  "errors": []
+}
+```
+
+A step that fails (for example a clip that is silent or shorter than the 0.4 s a loudness
+measurement needs) is listed in `errors`; the narration is still placed. To deliver at a
+platform's loudness, turn on **Export ▸ Effects ▸ Loudness Normalization** and pick a **Delivery Target** (or pass `loudness: "streaming"` to
+`file.exportMedia` / `export.queue.add`; `export.loudnessTargets` lists the targets):
+
+| target | integrated | true peak |
+|---|---|---|
+| `streaming` (YouTube, Spotify, most streaming services) | −14 LUFS | −1 dBTP |
+| `podcast` | −16 LUFS | −1 dBTP |
+| `ebuR128` (EBU R 128, European broadcast) | −23 LUFS | −1 dBTP |
+| `atscA85` (ATSC A/85, US broadcast) | −24 LKFS | −2 dBTP |
+| `aribTrB32` (ARIB TR-B32, Japanese broadcast) | −24 LKFS | −1 dBTP |
+
+The export measures the whole range, applies one gain to reach the target and a true-peak
+limiter at the ceiling, so the delivered file no longer peaks at 0 dBFS. `loudnessLufs` and
+`truePeakDbtp` set custom numbers.
 
 ## Where the audio goes
 
@@ -123,7 +177,7 @@ terms text the engine ships for a voice (`policy`). See also [voice-terms.md](vo
 | `tts.voices` | `engine?`, `url?`, `refresh?` | `voices: [{engine, speaker, style, id, uuid, voice: "Speaker/Style"}]`, `errors` (engines that did not answer). Without `engine`, every engine that answers. Cached for 30 s. |
 | `tts.voiceTerms` | `engine?`, `speaker_uuid` or `voice`, `url?` | `{speaker, uuid, policy, credit, license, model, modelUrl, termsUrl, note}` |
 | `tts.preview` | `engine?`, `text`, `voice?`, prosody, `url?` | `{path, seconds, voice, credit}`: a temporary WAV; the project is not changed |
-| `tts.synthesize` | see below | `{clips, items, files, dir, track, trackId, captionTrack, captions, start, end, lines, credits, creditText}` |
+| `tts.synthesize` | see below | `{clips, items, files, dir, track, trackId, captionTrack, captions, start, end, lines, credits, creditText, mix}` |
 
 `tts.synthesize` parameters:
 
@@ -144,6 +198,10 @@ terms text the engine ships for a voice (`policy`). See also [voice-terms.md](vo
 | `name` | file name prefix (default `Narration`) |
 | `dir` | folder for the WAVs |
 | `url` | engine address for this call |
+| `autoLevel` | Dialogue type + loudness match (default: Settings ▸ Narration ▸ Auto-level narration, on) |
+| `dialogueLufs` | loudness target for this call (default: the `audio.dialogueTargetLufs` preference, −23) |
+| `duck` | duck the Music / Ambience / untyped clips on other tracks under the narration (default: Settings ▸ Narration ▸ Duck other audio, on) |
+| `duckReduceDb` | how far to duck, −40…0 dB (default: Settings ▸ Narration ▸ Duck other audio by, −15) |
 
 Notes on the engines' parameters: AivisSpeech uses `intonation` as the strength of the style's
 emotion and ignores it for the Normal style; changing `pitch` can lower its quality.

@@ -67,7 +67,10 @@ sound robotic). `tts.engines` says which engine runs, `tts.voices {engine}` list
 `tts.synthesize {engine, lines: [{text, voice}]}` places every line (each with its own voice) on an
 audio track with matching captions, as one undo step. Give the user the returned `creditText`
 (VOICEVOX voices require a credit such as `VOICEVOX:ずんだもん`; AivisSpeech models have their own
-licences) and point them to `tts.voiceTerms`. See [narration.md](narration.md).
+licences) and point them to `tts.voiceTerms`. The narration is auto-leveled (Dialogue, loudness
+match) and the music under it ducked by default (`mix` in the result; `autoLevel` / `duck` turn
+that off); export with `loudness: "streaming"` (−14 LUFS / −1 dBTP) or another target from
+`export.loudnessTargets`. See [narration.md](narration.md).
 
 ## 2. Control channel
 

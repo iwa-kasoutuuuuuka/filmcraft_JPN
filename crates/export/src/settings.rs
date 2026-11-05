@@ -285,6 +285,63 @@ impl Default for LoudnessNormalization {
     }
 }
 
+impl LoudnessNormalization {
+    /// Normalization on at a delivery target.
+    pub fn at(t: &LoudnessTarget) -> Self {
+        LoudnessNormalization { enabled: true, target_lufs: t.lufs, true_peak_dbtp: t.true_peak_dbtp }
+    }
+    /// The delivery target these numbers are (None = custom).
+    pub fn target(&self) -> Option<&'static LoudnessTarget> {
+        LOUDNESS_TARGETS.iter().find(|t| (t.lufs - self.target_lufs).abs() < 0.05 && (t.true_peak_dbtp - self.true_peak_dbtp).abs() < 0.05)
+    }
+}
+
+/// A delivery loudness target: integrated loudness and true-peak ceiling from a published
+/// standard or a platform's published playback level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoudnessTarget {
+    /// Parameter value (`loudness: "streaming"`).
+    pub id: &'static str,
+    /// Menu label (English; the UI translates it).
+    pub label: &'static str,
+    pub lufs: f64,
+    pub true_peak_dbtp: f64,
+}
+
+/// Export ▸ Effects ▸ Loudness Normalization ▸ Target presets.
+///
+/// | id | target | true peak | source |
+/// |---|---|---|---|
+/// | `streaming` | −14 LUFS | −1 dBTP | the playback level of YouTube / Spotify and most streaming services |
+/// | `podcast` | −16 LUFS | −1 dBTP | the common podcast delivery level |
+/// | `ebuR128` | −23 LUFS | −1 dBTP | EBU R 128 (European broadcast) |
+/// | `atscA85` | −24 LKFS | −2 dBTP | ATSC A/85 (US broadcast) |
+/// | `aribTrB32` | −24 LKFS | −1 dBTP | ARIB TR-B32 (Japanese broadcast) |
+pub const LOUDNESS_TARGETS: &[LoudnessTarget] = &[
+    LoudnessTarget { id: "streaming", label: "Streaming (YouTube, Spotify): -14 LUFS, -1 dBTP", lufs: -14.0, true_peak_dbtp: -1.0 },
+    LoudnessTarget { id: "podcast", label: "Podcast: -16 LUFS, -1 dBTP", lufs: -16.0, true_peak_dbtp: -1.0 },
+    LoudnessTarget { id: "ebuR128", label: "Broadcast EBU R 128: -23 LUFS, -1 dBTP", lufs: -23.0, true_peak_dbtp: -1.0 },
+    LoudnessTarget { id: "atscA85", label: "Broadcast ATSC A/85: -24 LKFS, -2 dBTP", lufs: -24.0, true_peak_dbtp: -2.0 },
+    LoudnessTarget { id: "aribTrB32", label: "Broadcast ARIB TR-B32 (Japan): -24 LKFS, -1 dBTP", lufs: -24.0, true_peak_dbtp: -1.0 },
+];
+
+impl LoudnessTarget {
+    /// A target by id or a common name (`youtube`, `broadcast`, `ebu`, `atsc`, `arib`, …),
+    /// ignoring case and punctuation.
+    pub fn find(name: &str) -> Option<&'static LoudnessTarget> {
+        let k: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_lowercase()).collect();
+        let id = match k.as_str() {
+            "streaming" | "youtube" | "spotify" | "web" | "social" => "streaming",
+            "podcast" => "podcast",
+            "ebur128" | "ebu" | "r128" | "broadcast" | "eu" => "ebuR128",
+            "atsca85" | "atsc" | "a85" | "us" => "atscA85",
+            "aribtrb32" | "arib" | "trb32" | "japan" | "jp" => "aribTrB32",
+            _ => return None,
+        };
+        LOUDNESS_TARGETS.iter().find(|t| t.id == id)
+    }
+}
+
 /// Export ▸ Effects.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

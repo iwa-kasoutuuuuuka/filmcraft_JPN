@@ -962,6 +962,15 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
     if audio {
         check(ui, reg, "export.effects.loudness", &mut fx.loudness.enabled, "Loudness Normalization");
         if fx.loudness.enabled {
+            row(ui, t, "Delivery Target", |ui| {
+                let targets = filmcraft_engine::export::LOUDNESS_TARGETS;
+                let cur = fx.loudness.target().map_or("Custom", |x| x.label);
+                let mut labels: Vec<(String, bool)> = targets.iter().map(|x| (x.label.to_string(), true)).collect();
+                labels.push(("Custom".to_string(), true));
+                if let Some(x) = combo(ui, reg, "export.effects.loudness.preset", cur, &labels, 300.0).and_then(|i| targets.get(i)) {
+                    fx.loudness = filmcraft_engine::export::LoudnessNormalization::at(x);
+                }
+            });
             row(ui, t, "Target Loudness", |ui| {
                 drag(ui, reg, "export.effects.loudness.target", &mut fx.loudness.target_lufs, -40.0..=-5.0, 0.1, " LUFS", 1);
             });

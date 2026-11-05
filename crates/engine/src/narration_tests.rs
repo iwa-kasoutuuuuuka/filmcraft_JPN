@@ -461,6 +461,107 @@ fn voices_resolve_by_name_style_and_id_and_scripts_parse() {
     );
 }
 
+/// The demo's music clip on A2 (untyped, Volume −14 dB under the whole edit).
+fn demo_music(s: &Session) -> filmcraft_project::TrackItem {
+    s.active_sequence().unwrap().audio_tracks[1].items[0].clone()
+}
+
+#[test]
+fn narration_is_auto_leveled_and_ducks_the_music_in_one_undo_step() {
+    use filmcraft_project::AudioType;
+    let url = fake(Mode::Good, false);
+    let mut s = demo();
+    s.prefs.narration.voicevox_url = url;
+    let music0 = demo_music(&s);
+    assert!(music0.essential.is_none());
+    let undo0 = s.history.undo.len();
+    let r = s
+        .execute(
+            "tts.synthesize",
+            json!({"engine": "voicevox", "text": "こんにちは、今日はいい天気ですね。散歩に行きましょう", "seconds": 4.0, "dir": out_dir("mix"), "captions": false}),
+        )
+        .unwrap();
+    let mix = &r["mix"];
+    assert_eq!(mix["errors"], json!([]), "{mix}");
+    let clip = r["clips"][0].as_u64().unwrap();
+    assert_eq!(mix["dialogue"], json!([clip]));
+    // the narration: Dialogue, loudness matched to the dialogue target (the fake tone is quiet, so up)
+    let q = s.active_sequence().unwrap();
+    let (_, it) = q.find_item(filmcraft_project::ClipId(clip)).unwrap();
+    let es = it.essential.as_ref().unwrap();
+    assert_eq!(es.kind, AudioType::Dialogue);
+    assert!(es.loudness.enabled);
+    assert_eq!(es.loudness.target_lufs, Some(-23.0));
+    assert!(es.loudness.gain_db > 3.0, "match gain {}", es.loudness.gain_db);
+    assert_eq!(mix["loudness"]["targetLufs"], -23.0);
+    assert!(mix["loudness"]["clips"][0]["gainDb"].as_f64().unwrap() > 3.0, "{mix}");
+    // the music under it: typed Music and ducked by 15 dB below its −14 dB while the narration speaks
+    let m = demo_music(&s);
+    assert_eq!(m.essential.as_ref().map(|e| e.kind), Some(AudioType::Music));
+    assert!(mix["typedMusic"].as_array().unwrap().contains(&json!(m.id.0)), "{mix}");
+    let ducked = mix["ducked"].as_array().unwrap();
+    assert!(ducked.iter().any(|d| d["clip"] == m.id.0 && d["keyframes"].as_u64().unwrap() >= 4), "{mix}");
+    let lvl = m.effect("volume").unwrap().param("level").unwrap();
+    assert!(lvl.is_animated());
+    let at = |sec: f64| lvl.f64_at(m.source_time_at(Tick::from_seconds_f64(sec)));
+    assert!((at(4.8) - -29.0).abs() < 1e-6, "ducked under the narration: {}", at(4.8));
+    assert!((at(0.5) - -14.0).abs() < 1e-6, "open before it: {}", at(0.5));
+    assert_eq!(mix["reduceDb"], -15.0);
+    // the narration's own track is not ducked; one undo step takes it all back
+    assert_eq!(s.history.undo.len(), undo0 + 1);
+    assert_eq!(s.history.undo.last().unwrap().0, "Synthesize Narration");
+    s.execute("edit.undo", json!({})).unwrap();
+    let m = demo_music(&s);
+    assert_eq!(m, music0, "undo restores the music");
+}
+
+#[test]
+fn auto_level_and_ducking_follow_params_and_settings() {
+    use filmcraft_project::AudioType;
+    let url = fake(Mode::Good, false);
+    let mut s = demo();
+    s.prefs.narration.voicevox_url = url;
+    let music0 = demo_music(&s);
+    // both off by parameter: the clips are placed as they are
+    let r = s
+        .execute(
+            "tts.synthesize",
+            json!({"engine": "voicevox", "text": "こんにちは", "dir": out_dir("mixoff"), "autoLevel": false, "duck": false, "seconds": 1.0}),
+        )
+        .unwrap();
+    assert_eq!(r["mix"]["dialogue"], json!([]));
+    let clip = filmcraft_project::ClipId(r["clips"][0].as_u64().unwrap());
+    assert!(s.active_sequence().unwrap().find_item(clip).unwrap().1.essential.is_none());
+    assert_eq!(demo_music(&s), music0);
+    s.execute("edit.undo", json!({})).unwrap();
+    // Settings ▸ Narration ▸ Duck off: auto-level only
+    s.prefs.narration.duck = false;
+    let r = s.execute("tts.synthesize", json!({"engine": "voicevox", "text": "こんにちは", "dir": out_dir("mixlvl"), "seconds": 1.0})).unwrap();
+    let clip = filmcraft_project::ClipId(r["clips"][0].as_u64().unwrap());
+    assert_eq!(s.active_sequence().unwrap().find_item(clip).unwrap().1.essential.as_ref().map(|e| e.kind), Some(AudioType::Dialogue));
+    assert_eq!(r["mix"]["ducked"], json!([]));
+    assert_eq!(demo_music(&s), music0);
+    s.execute("edit.undo", json!({})).unwrap();
+    // ducking by parameter with its own depth (hostile values are clamped) and a dialogue target
+    let r = s
+        .execute(
+            "tts.synthesize",
+            json!({"engine": "voicevox", "text": "こんにちは、さようなら", "dir": out_dir("mixdeep"), "seconds": 1.0, "duck": true, "duckReduceDb": -1e9, "dialogueLufs": -16.0}),
+        )
+        .unwrap();
+    assert_eq!(r["mix"]["reduceDb"], -40.0);
+    assert_eq!(r["mix"]["loudness"]["targetLufs"], -16.0);
+    let m = demo_music(&s);
+    let lvl = m.effect("volume").unwrap().param("level").unwrap();
+    let min = lvl.keyframes.iter().filter_map(|k| k.value.as_f64()).fold(f64::INFINITY, f64::min);
+    assert!((min - -54.0).abs() < 1e-6, "{min}");
+    // nothing under the narration: nothing to duck, no error
+    s.execute("edit.undo", json!({})).unwrap();
+    let r = s.execute("tts.synthesize", json!({"engine": "voicevox", "text": "これでおわりです", "dir": out_dir("mixend"), "seconds": 600.0})).unwrap();
+    assert_eq!((r["mix"]["ducked"].clone(), r["mix"]["errors"].clone()), (json!([]), json!([])), "{}", r["mix"]);
+    assert_eq!(demo_music(&s), music0);
+}
+
 /// Against a real engine, when one runs on this machine (`cargo test -- --ignored`).
 #[test]
 #[ignore]

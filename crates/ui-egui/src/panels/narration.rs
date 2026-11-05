@@ -11,7 +11,7 @@
 //! `ui.get` / `ui.set`. Automation ids (`narration.*`): `engine.<aivisspeech|voicevox>`,
 //! `refresh`, `getEngine`, `voice.<i>` (and `voice.<i>.<k>` in its list), `text.<i>`,
 //! `speed.<i>`, `up.<i>`, `down.<i>`, `remove.<i>`, `preview.<i>`, `terms.<i>`, `add`, `script`,
-//! `addScript`, `captions`, `pause`, `generate`, `cancel`, `copyCredits`, `openTerms`,
+//! `addScript`, `captions`, `pause`, `autoLevel`, `duck`, `generate`, `cancel`, `copyCredits`, `openTerms`,
 //! `closeTerms`.
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -91,6 +91,10 @@ pub struct NarrationDraft {
     pub captions: bool,
     /// Silence after each line (seconds).
     pub pause: f64,
+    /// Dialogue type + loudness match for the narration clips (`autoLevel`).
+    pub auto_level: bool,
+    /// Duck the other audio under the narration (`duck`).
+    pub duck: bool,
     /// Rendering in the background.
     pub busy: bool,
     pub token: u64,
@@ -144,6 +148,8 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
         engine: prefs.default_engine().id().to_string(),
         captions: prefs.captions,
         pause: prefs.pause_seconds,
+        auto_level: prefs.auto_level,
+        duck: prefs.duck,
         lines: vec![DraftLine { voice: prefs.default_voice.clone(), ..Default::default() }],
         ..Default::default()
     };
@@ -200,7 +206,7 @@ fn params_of(d: &NarrationDraft) -> Value {
             v
         })
         .collect();
-    json!({"engine": d.engine, "lines": lines, "captions": d.captions, "pause": d.pause})
+    json!({"engine": d.engine, "lines": lines, "captions": d.captions, "pause": d.pause, "autoLevel": d.auto_level, "duck": d.duck})
 }
 
 /// Add the lines of a pasted script, mapping speaker names to voices of the engine.
@@ -291,6 +297,11 @@ fn poll(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mut NarrationDraft) {
             let n = v["clips"].as_array().map_or(0, Vec::len);
             let track = v["track"].as_str().unwrap_or_default().to_string();
             d.status = crate::tf!("Placed {} narration clips on {}.", "{} 個のナレーションクリップを {} に配置しました。", n, track);
+            let ducked = v["mix"]["ducked"].as_array().map_or(0, Vec::len);
+            if ducked > 0 {
+                d.status.push(' ');
+                d.status.push_str(&crate::tf!("Ducked {} clips under it.", "その下の {} 個のクリップを下げました。", ducked));
+            }
             app.ui.status = d.status.clone();
         }
         Err(e) => d.error = error_text(&e.to_string()),
@@ -489,6 +500,12 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                 ui.label(crate::i18n::t("Pause after each line:", "各行のあとの間:"));
                 let r = ui.add(egui::DragValue::new(&mut d.pause).speed(0.05).range(0.0..=30.0).suffix(crate::i18n::t(" s", " 秒")));
                 push(&mut elems, "pause", &r, "Pause");
+            });
+            ui.horizontal(|ui| {
+                let r = ui.checkbox(&mut d.auto_level, crate::i18n::t("Auto-level (Dialogue, loudness match)", "音量を自動調整(会話、ラウドネスを一致)"));
+                push(&mut elems, "autoLevel", &r, "Auto-level");
+                let r = ui.checkbox(&mut d.duck, crate::i18n::t("Duck other audio under the narration", "ナレーション中はほかの音声を下げる"));
+                push(&mut elems, "duck", &r, "Duck other audio");
             });
             if !d.error.is_empty() {
                 ui.colored_label(Color32::from_rgb(235, 90, 80), &d.error);

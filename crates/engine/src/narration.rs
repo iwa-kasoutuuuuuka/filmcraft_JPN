@@ -19,6 +19,11 @@
 //! models carry their own licence. `tts.synthesize` returns the distinct `credits` of the voices
 //! it used and `creditText` to paste into the video description; `tts.voiceTerms` returns the full
 //! terms. See `docs/narration.md` and `docs/voice-terms.md`.
+//!
+//! The placed narration is mixed in (Settings ▸ Narration, or `autoLevel` / `duck`): its clips
+//! get the Dialogue audio type and a loudness match to the dialogue target, and the Music /
+//! Ambience / untyped clips on other audio tracks under it are ducked ([`auto_mix`]), all in the
+//! same undo step. The result's `mix` says what was done.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use filmcraft_project::{CaptionFormat, CaptionTrack, ItemId, TrackId, TrackKind};
+use filmcraft_project::{AudioType, CaptionFormat, CaptionTrack, ClipId, ItemId, TrackId, TrackKind};
 use filmcraft_speech::tts::{self, AivmModel, Client, Prosody, Speaker, TtsEngine, TtsError, WavInfo};
 use filmcraft_time::{Tick, TimeRange};
 
@@ -39,6 +44,8 @@ pub const MAX_LINES: usize = 500;
 const VOICE_CACHE_SECONDS: u64 = 30;
 /// Undo label of `tts.synthesize`.
 pub const UNDO_LABEL: &str = "Synthesize Narration";
+/// Settings ▸ Narration ▸ Duck other audio by (the Essential Sound ducking default).
+pub const DEFAULT_DUCK_DB: f64 = -15.0;
 
 // ------------------------------------------------------------------------------------- prefs
 
@@ -62,6 +69,14 @@ pub struct NarrationPrefs {
     pub captions: bool,
     /// Longer lines are split into several captions at punctuation (0 = never).
     pub caption_max_chars: u32,
+    /// Give the narration clips the Dialogue audio type and match their loudness to the
+    /// dialogue target (Settings ▸ Audio; `essentialSound.autoMatch`).
+    pub auto_level: bool,
+    /// Duck the Music / Ambience (and untyped) clips on other audio tracks under the narration
+    /// (`essentialSound.generateDucking`).
+    pub duck: bool,
+    /// How far ducked clips go down under the narration (dB, −40…0).
+    pub duck_reduce_db: f64,
 }
 
 impl Default for NarrationPrefs {
@@ -75,6 +90,9 @@ impl Default for NarrationPrefs {
             pause_seconds: 0.3,
             captions: true,
             caption_max_chars: 40,
+            auto_level: true,
+            duck: true,
+            duck_reduce_db: DEFAULT_DUCK_DB,
         }
     }
 }
@@ -659,6 +677,9 @@ pub fn place(s: &mut Session, p: &Value, r: Rendered) -> Result<Value> {
         st.selection = clips.clone();
         Ok((clips, ctrack, caption_ids))
     })?;
+    // sit the narration in the mix (nested commands, folded into the same undo step below)
+    let span = TimeRange::from_bounds(starts.first().copied().unwrap_or(at), end);
+    let mix = auto_mix(s, p, &clips, track, span);
     crate::clip_ops::collapse_history(s, n0, UNDO_LABEL);
     // cache what the engine said
     s.narration.voices.insert(r.engine, (web_time::Instant::now(), r.url.clone(), r.speakers.clone()));
@@ -698,7 +719,106 @@ pub fn place(s: &mut Session, p: &Value, r: Rendered) -> Result<Value> {
         "lines": lines,
         "credits": credits,
         "creditText": credit_text,
+        "mix": mix,
     }))
+}
+
+/// A dB parameter or preference clamped to `lo..=hi` (non-finite = `def`).
+fn db_clamped(v: f64, lo: f64, hi: f64, def: f64) -> f64 {
+    if v.is_finite() { v.clamp(lo, hi) } else { def }
+}
+
+/// Auto-level the placed narration and duck the other audio under it, with the Essential Sound
+/// commands (`autoLevel` / `duck` / `duckReduceDb` / `dialogueLufs`, else Settings ▸ Narration):
+///
+/// 1. the narration clips get the Dialogue type (`essentialSound.setType`; the ducking listens
+///    to it) and, with auto-level, their loudness is matched to the dialogue target
+///    (`essentialSound.autoMatch`);
+/// 2. with ducking, the enabled clips on other unlocked audio tracks that overlap the narration
+///    and are Music or Ambience, or have no audio type (they become Music), get
+///    `ducking.reduceDb` and Volume keyframes (`essentialSound.generateDucking`).
+///
+/// Never fails the placement: what could not be done is listed in `errors`.
+fn auto_mix(s: &mut Session, p: &Value, clips: &[ClipId], track: TrackId, span: TimeRange) -> Value {
+    let prefs = &s.prefs.narration;
+    let level = bool_p(p, "autoLevel").unwrap_or(prefs.auto_level);
+    let duck = bool_p(p, "duck").unwrap_or(prefs.duck);
+    let reduce = db_clamped(f64_p(p, "duckReduceDb").unwrap_or(prefs.duck_reduce_db), -40.0, 0.0, DEFAULT_DUCK_DB);
+    let dialogue_target = s.prefs.audio.loudness_target(AudioType::Dialogue);
+    let target = f64_p(p, "dialogueLufs").map(|t| db_clamped(t, -60.0, 0.0, dialogue_target));
+    let mut errors: Vec<Value> = Vec::new();
+    let mut out = json!({"autoLevel": level, "duck": duck, "dialogue": [], "loudness": null, "ducked": [], "typedMusic": [], "reduceDb": null});
+    if (!level && !duck) || clips.is_empty() {
+        out["errors"] = json!(errors);
+        return out;
+    }
+    let ids: Vec<u64> = clips.iter().map(|c| c.0).collect();
+    // 1. Dialogue (also what the ducking listens to)
+    match s.execute("essentialSound.setType", json!({"clips": ids, "type": "dialogue"})) {
+        Ok(_) => out["dialogue"] = json!(ids),
+        Err(e) => {
+            errors.push(json!({"step": "dialogue", "error": e.to_string()}));
+            out["errors"] = json!(errors);
+            return out;
+        }
+    }
+    if level {
+        let mut mp = json!({"clips": ids});
+        if let Some(t) = target {
+            mp["target"] = json!(t);
+        }
+        match s.execute("essentialSound.autoMatch", mp) {
+            Ok(r) => out["loudness"] = json!({"targetLufs": target.unwrap_or(dialogue_target), "clips": r["clips"]}),
+            Err(e) => errors.push(json!({"step": "loudness", "error": e.to_string()})),
+        }
+    }
+    // 2. ducking
+    if duck {
+        let mut music: Vec<u64> = Vec::new();
+        let mut untyped: Vec<u64> = Vec::new();
+        if let Some(seq) = s.active_sequence() {
+            for t in seq.audio_tracks.iter().filter(|t| t.id != track && !t.locked) {
+                for it in t.items.iter().filter(|i| i.enabled && !clips.contains(&i.id) && i.range().overlaps(&span)) {
+                    match it.essential.as_ref().map(|e| e.kind) {
+                        Some(AudioType::Music | AudioType::Ambience) => music.push(it.id.0),
+                        None => untyped.push(it.id.0),
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+        if !untyped.is_empty() {
+            match s.execute("essentialSound.setType", json!({"clips": untyped, "type": "music"})) {
+                Ok(_) => {
+                    out["typedMusic"] = json!(untyped);
+                    music.extend(&untyped);
+                }
+                Err(e) => errors.push(json!({"step": "typeMusic", "error": e.to_string()})),
+            }
+        }
+        if !music.is_empty() {
+            out["reduceDb"] = json!(reduce);
+            if let Err(e) = s.execute("essentialSound.set", json!({"clips": music, "key": "ducking.reduceDb", "value": reduce, "begin": true})) {
+                errors.push(json!({"step": "reduceDb", "error": e.to_string()}));
+            }
+            match s.execute("essentialSound.generateDucking", json!({"clips": music})) {
+                Ok(r) => {
+                    let ducked: Vec<Value> = r["clips"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .map(|c| json!({"clip": c["clip"], "keyframes": c["keyframes"].as_array().map_or(0, Vec::len), "regions": c["regions"]}))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    out["ducked"] = json!(ducked);
+                }
+                Err(e) => errors.push(json!({"step": "ducking", "error": e.to_string()})),
+            }
+        }
+    }
+    out["errors"] = json!(errors);
+    out
 }
 
 // ------------------------------------------------------------------------------------- commands
@@ -867,7 +987,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "tts.synthesize",
             "Generate Narration…",
             &["Graphics and Titles"],
-            r#"{"engine":"aivisspeech|voicevox"?,"lines":[{"text":str,"voice":"Speaker/Style"|id|{speaker,style}?,"speed":f64?,"pitch":f64?,"intonation":f64?,"volume":f64?,"tempoDynamics":f64?,"pauseAfter":seconds?}]?,"script":"Speaker: line\n…"?,"cast":{"Speaker":"Voice/Style"|id}?,"text":str?,"voice":str|id?,"speed":f64?,"pause":seconds?,"track":"A2"|id?,"time":ticks?,"seconds":f64?,"captions":bool=true,"captionTrack":"C1"|id?,"captionMaxChars":n=40,"name":str="Narration","dir":str?,"url":str?}"#,
+            r#"{"engine":"aivisspeech|voicevox"?,"lines":[{"text":str,"voice":"Speaker/Style"|id|{speaker,style}?,"speed":f64?,"pitch":f64?,"intonation":f64?,"volume":f64?,"tempoDynamics":f64?,"pauseAfter":seconds?}]?,"script":"Speaker: line\n…"?,"cast":{"Speaker":"Voice/Style"|id}?,"text":str?,"voice":str|id?,"speed":f64?,"pause":seconds?,"track":"A2"|id?,"time":ticks?,"seconds":f64?,"captions":bool=true,"captionTrack":"C1"|id?,"captionMaxChars":n=40,"name":str="Narration","dir":str?,"url":str?,"autoLevel":bool=true,"dialogueLufs":f64?,"duck":bool=true,"duckReduceDb":f64=-15}"#,
             has_seq,
             synthesize,
             true,
