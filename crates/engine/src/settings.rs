@@ -1040,6 +1040,7 @@ static CATEGORIES: &[Category] = &[
             b("narration.autoLevel", "Auto-level narration (Dialogue type, loudness match)", true),
             b("narration.duck", "Duck other audio under the narration", true),
             f("narration.duckReduceDb", "Duck other audio by", float(-40.0, 0.0, 1, "dB"), true),
+            b("narration.creditRoll", "Add a credit roll of the voices at the end", true),
             Row::Note(
                 "Narration uses the free AivisSpeech or VOICEVOX app, installed and started separately; FilmCraft talks to it on this computer. Every voice has its own terms: credit the voices you use (Generate Narration lists the credits).",
             ),

@@ -19,6 +19,9 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 - `project` is the serialized `filmcraft_project::Project` (bins, media clips, sequences, tracks,
   clips, effects, keyframes, markers). Media is referenced by path, never embedded.
 - Files are written compact (no indentation). A 2,000-clip project is about 1.4 MB.
+- Item metadata (`ProjectItem::metadata`) is a free-form string map. Features may keep their own
+  fields there without a schema change: Generate Narration records each WAV item's voice in
+  `Narration Credit` and `Narration Voice` (see [narration.md](narration.md#credits-in-the-video-and-the-description)).
 
 ### Schema history
 

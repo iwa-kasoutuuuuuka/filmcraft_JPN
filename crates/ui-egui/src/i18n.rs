@@ -246,6 +246,8 @@ fn tr_ja(s: &str) -> &str {
         "Color Matte…" => "カラーマット…",
         "Animated Chart…" => "アニメーションチャート…",
         "Generate Narration…" => "ナレーションを生成…",
+        "Add Narration Credit Roll" => "ナレーションのエンドロールを追加",
+        "Export Narration Credits" => "ナレーションのクレジットを書き出し",
         "Edit Chart…" => "チャートを編集…",
         "Chart" => "チャート",
         "Universal Counting Leader…" => "万国規格カウントダウンリーダー…",
@@ -1562,6 +1564,7 @@ fn tr_settings_ja(s: &str) -> &str {
         "Auto-level narration (Dialogue type, loudness match)" => "ナレーションの音量を自動調整(会話タイプ、ラウドネスを一致)",
         "Duck other audio under the narration" => "ナレーション中はほかの音声を下げる(ダッキング)",
         "Duck other audio by" => "ほかの音声を下げる量",
+        "Add a credit roll of the voices at the end" => "最後に声のクレジット(エンドロール)を追加",
         "characters" => "文字",
         "Narration uses the free AivisSpeech or VOICEVOX app, installed and started separately; FilmCraft talks to it on this computer. Every voice has its own terms: credit the voices you use (Generate Narration lists the credits)." => {
             "ナレーションには、別途インストールして起動した無料の AivisSpeech または VOICEVOX アプリを使います(FilmCraft はこのコンピューター上のアプリと通信します)。声ごとに利用規約があります。使った声のクレジットを表記してください(「ナレーションを生成」がクレジットを一覧表示します)。"

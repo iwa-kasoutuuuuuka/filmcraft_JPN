@@ -13,7 +13,7 @@ use filmcraft_time::{TICKS_PER_SECOND, Tick};
 use serde_json::{Value, json};
 
 #[derive(Clone, Copy, PartialEq)]
-enum Mode {
+pub(crate) enum Mode {
     Good,
     GarbageJson,
     NotWav,
@@ -166,7 +166,7 @@ fn respond(mut c: TcpStream, mode: Mode, aivis: bool) {
 }
 
 /// A fake engine; returns its base URL.
-fn fake(mode: Mode, aivis: bool) -> String {
+pub(crate) fn fake(mode: Mode, aivis: bool) -> String {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", l.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -185,11 +185,11 @@ fn closed_url() -> String {
     format!("http://{a}")
 }
 
-fn out_dir(name: &str) -> String {
+pub(crate) fn out_dir(name: &str) -> String {
     std::env::temp_dir().join(format!("filmcraft-narration-{}-{name}", std::process::id())).to_string_lossy().into_owned()
 }
 
-fn demo() -> Session {
+pub(crate) fn demo() -> Session {
     let mut s = Session::default();
     s.execute("file.openDemoProject", json!({})).unwrap();
     s

@@ -18,7 +18,9 @@
 //! Every voice has terms: VOICEVOX characters require the credit `VOICEVOX:<name>`, AivisSpeech
 //! models carry their own licence. `tts.synthesize` returns the distinct `credits` of the voices
 //! it used and `creditText` to paste into the video description; `tts.voiceTerms` returns the full
-//! terms. See `docs/narration.md` and `docs/voice-terms.md`.
+//! terms. Each imported item remembers its voice, so `tts.credits`, `tts.addCreditRoll` and
+//! `tts.exportCredits` ([`crate::narration_credits`]) can credit everything the project uses.
+//! See `docs/narration.md` and `docs/voice-terms.md`.
 //!
 //! The placed narration is mixed in (Settings ▸ Narration, or `autoLevel` / `duck`): its clips
 //! get the Dialogue audio type and a loudness match to the dialogue target, and the Music /
@@ -77,6 +79,9 @@ pub struct NarrationPrefs {
     pub duck: bool,
     /// How far ducked clips go down under the narration (dB, −40…0).
     pub duck_reduce_db: f64,
+    /// Add (or update) a rolling credit of the voices at the sequence end after generating
+    /// (`crate::narration_credits`).
+    pub credit_roll: bool,
 }
 
 impl Default for NarrationPrefs {
@@ -93,6 +98,7 @@ impl Default for NarrationPrefs {
             auto_level: true,
             duck: true,
             duck_reduce_db: DEFAULT_DUCK_DB,
+            credit_roll: false,
         }
     }
 }
@@ -946,7 +952,10 @@ fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
             render(&job).map_err(tts_err)?
         }
     };
-    place(s, p, r)
+    let n0 = s.history.undo.len();
+    let mut out = place(s, p, r)?;
+    crate::narration_credits::after_synthesize(s, p, n0, &mut out)?;
+    Ok(out)
 }
 
 fn spec(
@@ -987,7 +996,7 @@ pub fn commands() -> Vec<CommandSpec> {
             "tts.synthesize",
             "Generate Narration…",
             &["Graphics and Titles"],
-            r#"{"engine":"aivisspeech|voicevox"?,"lines":[{"text":str,"voice":"Speaker/Style"|id|{speaker,style}?,"speed":f64?,"pitch":f64?,"intonation":f64?,"volume":f64?,"tempoDynamics":f64?,"pauseAfter":seconds?}]?,"script":"Speaker: line\n…"?,"cast":{"Speaker":"Voice/Style"|id}?,"text":str?,"voice":str|id?,"speed":f64?,"pause":seconds?,"track":"A2"|id?,"time":ticks?,"seconds":f64?,"captions":bool=true,"captionTrack":"C1"|id?,"captionMaxChars":n=40,"name":str="Narration","dir":str?,"url":str?,"autoLevel":bool=true,"dialogueLufs":f64?,"duck":bool=true,"duckReduceDb":f64=-15}"#,
+            r#"{"engine":"aivisspeech|voicevox"?,"lines":[{"text":str,"voice":"Speaker/Style"|id|{speaker,style}?,"speed":f64?,"pitch":f64?,"intonation":f64?,"volume":f64?,"tempoDynamics":f64?,"pauseAfter":seconds?}]?,"script":"Speaker: line\n…"?,"cast":{"Speaker":"Voice/Style"|id}?,"text":str?,"voice":str|id?,"speed":f64?,"pause":seconds?,"track":"A2"|id?,"time":ticks?,"seconds":f64?,"captions":bool=true,"captionTrack":"C1"|id?,"captionMaxChars":n=40,"name":str="Narration","dir":str?,"url":str?,"autoLevel":bool=true,"dialogueLufs":f64?,"duck":bool=true,"duckReduceDb":f64=-15,"creditRoll":bool?}"#,
             has_seq,
             synthesize,
             true,

@@ -34,6 +34,7 @@ pub mod media_pool;
 pub mod mixer;
 pub mod multicam;
 pub mod narration;
+pub mod narration_credits;
 pub mod panels;
 pub mod perf;
 pub mod presets;
@@ -1039,6 +1040,8 @@ mod media_test_util;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod narration_credits_tests;
 #[cfg(test)]
 mod narration_tests;
 #[cfg(test)]
