@@ -98,10 +98,31 @@ shape follows the loudness of the voice measured against the speaker's own loud 
 hysteresis (a shape ends only 3 dB below the level that started it) and a minimum time per shape
 (50 ms), under an absolute floor (−50 dBFS) so a quiet room never opens the mouth. It is
 deterministic and uses no model, which is what a hand-timed two- or three-picture mouth does.
-Shapes per vowel need the text's reading aligned to the audio and are a later step.
+A picture for each vowel is described under "Mouths for each vowel" below.
 
 The open picture of a character is `expressions.<name>.openImage` (made once per character, by
 any image tool; FilmCraft generates no pictures).
+
+### Mouths for each vowel
+
+A sprite can give an open-mouth picture for each of the five Japanese vowels:
+
+```json
+"normal": {"image": "m.png", "openImage": "mo.png",
+           "vowelImages": {"a": "m_a.png", "i": "m_i.png", "u": "m_u.png", "e": "m_e.png", "o": "m_o.png"}}
+```
+
+The reading of the line (`reading` if given, else the text with its ruby read out) is turned
+into beats: one for each kana, none for punctuation, a closed beat for ん and っ, the vowel
+again for ー, the vowel of ゃゅょ for きゃ, two unknown beats for each kanji left without a
+reading. The beats are spread evenly over the stretches where the voice is open (see
+`script.lipsync`), so the pictures follow the voice's own pauses. A vowel without a picture, and
+an unknown beat, use `openImage`; a closed beat shows the closed mouth. A sprite with no
+`vowelImages` is unchanged.
+
+It is a fit, not an alignment: every beat gets the same time, so a drawn-out syllable is cut
+short, and a line full of kanji without ruby or `reading` falls back to the plain open mouth for
+most of its length. Give such lines a `reading` for a better result.
 
 ## Building the sequence
 
@@ -113,7 +134,7 @@ audio plus a pause, every boundary is on the frame grid, and neighbouring clips 
 |---|---|
 | V1 Background | One picture per scene, scaled to fill the frame (`fitBackground: false` keeps its size), pushing in slowly (`push`, 5 % by default; `kenBurns: false` turns it off) |
 | V2 Character | The speaker's picture for the expression of the line. Consecutive lines in the same picture (and the same scene) are one clip. Directions, and narration without a `speaker`, show no character |
-| V3 Mouth | The open-mouth picture (`openImage`) over V2 while the voice is loud (the shapes of `script.lipsync`) |
+| V3 Mouth | The open-mouth picture (`openImage`) over V2 while the voice is loud (the shapes of `script.lipsync`); the picture for the vowel being spoken where the sprite has `vowelImages` |
 | V4 Blink | The `blink` picture (or `<expression>_blink`) over V2 for about 0.12 s (at least three frames), first 1.2 to 2.2 s into a clip and then every 2.7 to 4.6 s, at times fixed by the clip's position, so a rebuild blinks the same way |
 | A1 Voice | Recordings and synthesized lines, brought to one loudness (`levelVoices`, on by default: each clip's gain is set so it matches the median voice, or `voiceLufs`, within 12 dB; a cloned and a preset voice differ by 10 LU or more), as long as their audio (cut at the line's end if a `pauseAfter` of 0 rounds the end down by up to half a frame) |
 | A2 Music | A scene's `bgm`, repeated to fill the scene (each repeat is a whole number of frames, so repeats abut and never overlap); scenes that share it share the clips; `bgmGainDb` (-18); at most 20 000 repeats per stretch, with a warning |
@@ -166,8 +187,8 @@ speaks what changed, and builds a fresh sequence beside the first.
   come from you; FilmCraft only places them.
 - **One character at a time.** The sprite track shows the speaker; a scene with two people on
   screen needs a second sprite track by hand.
-- **Mouth shapes are open or closed.** Per-vowel shapes need the text's reading aligned to the
-  audio.
+- **Mouth shapes follow the reading, not the sound.** The vowels are spread evenly over the
+  open mouth (see above); nothing listens to which vowel is actually spoken.
 - **Sprites are static.** A sprite is placed as it is imported (`spriteScale` sets one scale for
   all). Only the background moves, so the mouth and blink pictures always line up with the
   character.

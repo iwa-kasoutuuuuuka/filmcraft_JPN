@@ -68,6 +68,10 @@ pub struct Sprite {
     pub image: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_image: Option<String>,
+    /// Open-mouth pictures per vowel (`"a"`, `"i"`, `"u"`, `"e"`, `"o"`), used instead of
+    /// `openImage` while that vowel is spoken. A vowel without one falls back to `openImage`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vowel_images: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,7 +436,7 @@ mod tests {
             "marina".into(),
             Character {
                 name: "まりな".into(),
-                expressions: [("normal".to_string(), Sprite { image: "m.png".into(), open_image: Some("mo.png".into()) })].into(),
+                expressions: [("normal".to_string(), Sprite { image: "m.png".into(), open_image: Some("mo.png".into()), ..Default::default() })].into(),
                 ..Default::default()
             },
         );
@@ -554,7 +558,7 @@ mod tests {
         assert_eq!(s.expression_of(&l).map(|(n, _)| n), Some("normal"));
         assert!(s.validate().iter().any(|p| p.severity == Severity::Warning && p.message.contains("no expression `angry`")));
         // no default set: `normal`, even though `angry` sorts first
-        s.characters.get_mut("marina").unwrap().expressions.insert("angry".into(), Sprite { image: "a.png".into(), open_image: None });
+        s.characters.get_mut("marina").unwrap().expressions.insert("angry".into(), Sprite { image: "a.png".into(), open_image: None, ..Default::default() });
         let l = s.scenes[0].lines[1].clone();
         assert_eq!(s.expression_of(&l).map(|(n, _)| n), Some("normal"));
         let narr = ScriptLine { id: "n".into(), kind: LineKind::Narration, text: "x".into(), ..Default::default() };

@@ -15,12 +15,13 @@
 //! Tracks: V1 background, V2 the speaking character's sprite, V3 its open-mouth picture while the
 //! voice is loud, V4 its blink picture; A1 voices, A2 music, A3 sound effects; one subtitle track.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
 use filmcraft_audio_dsp::lipsync as lip;
+use filmcraft_audio_dsp::vowels;
 use filmcraft_edit as edit;
 use filmcraft_project::keyframe::{Keyframe, ParamValue};
 use filmcraft_project::script::{LineKind, Script, ScriptLine, Severity};
@@ -28,7 +29,7 @@ use filmcraft_project::{ItemId, ItemKind, Project, TrackItem, TrackKind};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, str_p, u64_p};
-use crate::script_tools::{Loaded, has_recording, lip_options, load, mouth_of, out_dir, read_manifest};
+use crate::script_tools::{Loaded, has_recording, line_speech, lip_options, load, mouth_of, out_dir, read_manifest};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -161,6 +162,8 @@ pub struct Audio {
 pub struct SpriteRef {
     pub closed: PathBuf,
     pub open: Option<PathBuf>,
+    /// Open-mouth pictures per vowel (`a`, `i`, `u`, `e`, `o`).
+    pub vowels: BTreeMap<char, PathBuf>,
     pub blink: Option<PathBuf>,
 }
 
@@ -179,6 +182,9 @@ pub struct Cue {
     pub sprite: Option<SpriteRef>,
     /// Stretches with the mouth open (absolute), on the frame grid, apart.
     pub mouth: Vec<(Tick, Tick)>,
+    /// The same stretches cut by vowel (absolute, on the frame grid, apart); empty when the
+    /// sprite has no vowel pictures. A `None` shape is the generic open mouth.
+    pub shapes: Vec<(Tick, Tick, Option<char>)>,
     /// The line has no audio yet; its length is an estimate.
     pub estimated: bool,
 }
@@ -438,21 +444,51 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
                             }
                             ok
                         });
-                    Some(SpriteRef { closed, open, blink })
+                    let mut vowels = BTreeMap::new();
+                    for (k, f) in &sp.vowel_images {
+                        let mut it = k.trim().chars();
+                        let (Some(v), None) = (it.next().map(|c| c.to_ascii_lowercase()), it.next()) else {
+                            pl.warnings.push(format!("line {}: vowel \"{k}\" is not one of a, i, u, e, o", line.id));
+                            continue;
+                        };
+                        let path = env.resolve(f);
+                        if !"aiueo".contains(v) {
+                            pl.warnings.push(format!("line {}: vowel \"{k}\" is not one of a, i, u, e, o", line.id));
+                        } else if env.image(&path) {
+                            vowels.insert(v, path);
+                        } else {
+                            pl.warnings.push(format!("line {}: mouth picture {} is missing", line.id, path.display()));
+                        }
+                    }
+                    Some(SpriteRef { closed, open, vowels, blink })
                 })
             };
             // the mouth
             let mut mouth = Vec::new();
+            let mut shapes = Vec::new();
             if let (Some(v), Some(sp)) = (&voice, &sprite)
-                && sp.open.is_some()
+                && (sp.open.is_some() || !sp.vowels.is_empty())
             {
                 let limit = snap(cue_start + v.duration).min(end);
+                let open_spans = env.mouth(v);
                 let mut prev = cue_start;
-                for (a, b) in env.mouth(v) {
-                    let (a, b) = (snap(cue_start + secs(a)).max(prev), snap(cue_start + secs(b)).min(limit));
+                for (a, b) in &open_spans {
+                    let (a, b) = (snap(cue_start + secs(*a)).max(prev), snap(cue_start + secs(*b)).min(limit));
                     if b - a >= one {
                         mouth.push((a, b));
                         prev = b;
+                    }
+                }
+                if !sp.vowels.is_empty() {
+                    // the reading says which vowel, the open stretches say when
+                    let beats = vowels::moras(&line_speech(line));
+                    prev = cue_start;
+                    for seg in vowels::fit(&open_spans, &beats) {
+                        let (a, b) = (snap(cue_start + secs(seg.start)).max(prev), snap(cue_start + secs(seg.end)).min(limit));
+                        if b - a >= one {
+                            shapes.push((a, b, seg.vowel));
+                            prev = b;
+                        }
                     }
                 }
             }
@@ -475,6 +511,7 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
                 speaker: line.speaker.clone(),
                 sprite,
                 mouth,
+                shapes,
                 estimated,
             });
             t = end;
@@ -640,6 +677,9 @@ fn plan_files(pl: &Plan) -> Vec<PathBuf> {
         if let Some(o) = &r.sprite.open {
             add_file(o);
         }
+        for v in r.sprite.vowels.values() {
+            add_file(v);
+        }
         if let Some(b) = &r.sprite.blink {
             add_file(b);
         }
@@ -789,12 +829,18 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
             }
         }
         for c in &pl.cues {
-            if let (Some(sp), true) = (&c.sprite, !c.mouth.is_empty())
-                && let Some(open) = &sp.open
-                && let Some(item) = find(&items, open)
-            {
-                for (a, b) in &c.mouth {
-                    if let Some(mut ti) = make_clip(pr, item, TrackKind::Video, *a, *b - *a, rate, frame, &scaling) {
+            if let Some(sp) = &c.sprite {
+                // per-vowel pictures where the sprite has them, else the one open-mouth picture
+                let pieces: Vec<(Tick, Tick, Option<&PathBuf>)> = if c.shapes.is_empty() {
+                    c.mouth.iter().map(|(a, b)| (*a, *b, sp.open.as_ref())).collect()
+                } else {
+                    c.shapes.iter().map(|(a, b, v)| (*a, *b, v.and_then(|v| sp.vowels.get(&v)).or(sp.open.as_ref()))).collect()
+                };
+                for (a, b, path) in pieces {
+                    if let Some(path) = path
+                        && let Some(item) = find(&items, path)
+                        && let Some(mut ti) = make_clip(pr, item, TrackKind::Video, a, b - a, rate, frame, &scaling)
+                    {
                         if let Some(sc) = o.sprite_scale {
                             set_scale(&mut ti, sc);
                         }

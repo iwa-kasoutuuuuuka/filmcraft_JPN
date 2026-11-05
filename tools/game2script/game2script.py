@@ -37,7 +37,7 @@ DEFAULT_ASSETS = {
     "voice": "voice",
     "image_ext": [".png", ".webp", ".jpg", ".jpeg", ".bmp"],
     "audio_ext": [".wav", ".ogg", ".mp3", ".flac", ".m4a"],
-    "sprite_pattern": r"^(?P<char>[^_.]+)_(?P<expr>[^_.]+?)(?P<kind>_open|_blink)?\.(png|webp|jpg|jpeg|bmp)$",
+    "sprite_pattern": r"^(?P<char>[^_.]+)_(?P<expr>[^_.]+?)(?P<kind>_open|_blink|_[aiueo])?\.(png|webp|jpg|jpeg|bmp)$",
 }
 
 
@@ -372,6 +372,8 @@ class Converter:
             path = self.rel(os.path.join(folder, f))
             if kind == "_blink":
                 exps[f"{expr}_blink"] = {"image": path}
+            elif kind and len(kind) == 2 and kind[1] in "aiueo":
+                exps.setdefault(expr, {}).setdefault("vowelImages", {})[kind[1]] = path
             elif kind == "_open":
                 exps.setdefault(expr, {})["openImage"] = path
             else:

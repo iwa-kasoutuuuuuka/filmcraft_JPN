@@ -84,7 +84,7 @@ In priority order. Agents should prefer this work over adding more checklist ite
    the script model with voice picking, incremental synthesis and lip-sync analysis
    (`script.*`, [docs/script.md](docs/script.md)) and the automatic assembly of a script into a
    sequence with checks and a one-call run (`anime.*`) are in; a profile-driven converter for a game's scenario text (`tools/game2script/`,
-   [docs/game-import.md](docs/game-import.md)) is in; profiles for particular games and per-vowel mouths are next ([docs/novel-to-anime.md](docs/novel-to-anime.md)).
+   [docs/game-import.md](docs/game-import.md)) is in; per-vowel mouths (`vowelImages`, spread over the open mouth) are in; profiles for particular games are next ([docs/novel-to-anime.md](docs/novel-to-anime.md)).
 9. **The web app shell**: file access, WebCodecs, audio.
 
 ### Where we're going

@@ -7,6 +7,7 @@
 //!   engine and UI can build controls generically.
 //! * [`biquad`] — RBJ-cookbook biquads (TDF-II) with analytic magnitude response.
 //! * [`lipsync`] — mouth shapes (closed / half / open) from the loudness of a voice.
+//! * [`vowels`] — a mouth shape for each vowel, from the reading of a line.
 //! * [`sync`] — offset between two recordings of one event (GCC-PHAT, sample-accurate).
 //! * [`channels`] — channel layouts, ITU-R BS.775 up/downmix, 5.1 mixdown types, the 5.1 panner.
 //! * [`plugin`] — the audio plug-in hosting interface (VST3): the catalogue of installed plug-ins
@@ -35,6 +36,7 @@ pub mod plugin;
 pub mod remix;
 mod smooth;
 pub mod sync;
+pub mod vowels;
 
 pub use effects::{Category, EffectInfo, create_effect, effect_info, effects};
 pub use loudness::{LoudnessMeter, normalize_gain_db};

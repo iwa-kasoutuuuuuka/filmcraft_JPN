@@ -57,7 +57,8 @@ scenario by hand or with another tool:
 A change of background or music in the middle of a scene starts the next *part* of that scene (the
 script has one of each per scene): `s01`, `s01-p2`, and so on. Sprites are found by name in
 `chara/`: `marina_smile.png` is the character `marina`'s `smile`, `marina_smile_open.png` its
-open-mouth picture and `marina_smile_blink.png` its blink picture.
+open-mouth picture, `marina_smile_a.png` (also `_i`, `_u`, `_e`, `_o`) its mouth for that vowel and
+`marina_smile_blink.png` its blink picture.
 
 ## Writing a profile for a new game
 

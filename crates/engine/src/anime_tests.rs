@@ -807,3 +807,85 @@ fn encoding_rs_cp932(text: &str) -> (Vec<u8>, (), ()) {
         .unwrap();
     (o.stdout, (), ())
 }
+
+// ---------------------------------------------------------------------------------------------
+// a mouth picture for each vowel
+
+fn vowel_story() -> Script {
+    Script::from_json(
+        r#"{
+        "characters": {"m": {"name": "m", "expressions": {
+            "normal": {"image": "m.png", "openImage": "mo.png", "vowelImages": {"a": "va.png", "i": "vi.png", "u": "vu.png"}}}}},
+        "scenes": [{"id": "s1", "lines": [
+            {"id": "a1", "speaker": "m", "text": "あいうえ"},
+            {"id": "a2", "speaker": "m", "text": "漢字《かんじ》"}]}]}"#,
+    )
+    .unwrap()
+}
+
+#[test]
+fn each_vowel_gets_its_own_mouth_and_unpictured_vowels_use_the_open_mouth() {
+    let rate = FrameRate::from_f64(24.0);
+    let mut f = Fake::default();
+    f.audio.insert("a1".into(), 2.0);
+    f.audio.insert("a2".into(), 2.0);
+    f.mouth = vec![(0.0, 2.0)];
+    let pl = plan(&vowel_story(), rate, &Opts::default(), &mut f);
+    let a1 = pl.cues.iter().find(|c| c.line == "a1").unwrap();
+    let vowels: Vec<Option<char>> = a1.shapes.iter().map(|s| s.2).collect();
+    assert_eq!(vowels, vec![Some('a'), Some('i'), Some('u'), Some('e')], "{:?}", a1.shapes);
+    assert!(a1.shapes.windows(2).all(|w| w[0].1 <= w[1].0), "apart");
+    assert!(a1.shapes.iter().all(|(a, b, _)| *a >= a1.start && *b <= a1.end && rate.snap_nearest(*a) == *a));
+    // e has no picture of its own: the build falls back to `open`; the plan keeps the vowel
+    // the reading is かんじ: a, closed, i
+    let a2 = pl.cues.iter().find(|c| c.line == "a2").unwrap();
+    assert_eq!(a2.shapes.iter().map(|s| s.2).collect::<Vec<_>>(), vec![Some('a'), Some('i')], "{:?}", a2.shapes);
+    assert!(a2.shapes[0].1 < a2.shapes[1].0, "ん leaves the mouth shut between");
+    // the sprite lists the pictures it has
+    let sp = a1.sprite.as_ref().unwrap();
+    assert_eq!(sp.vowels.keys().copied().collect::<Vec<_>>(), vec!['a', 'i', 'u']);
+}
+
+#[test]
+fn a_missing_or_misnamed_vowel_picture_is_a_warning_not_a_failure() {
+    let rate = FrameRate::from_f64(24.0);
+    let mut s = vowel_story();
+    if let Some(c) = s.characters.get_mut("m")
+        && let Some(sp) = c.expressions.get_mut("normal")
+    {
+        sp.vowel_images.insert("x".into(), "vx.png".into());
+        sp.vowel_images.insert("".into(), "none.png".into());
+    }
+    let mut f = Fake::default();
+    f.audio.insert("a1".into(), 1.0);
+    f.mouth = vec![(0.0, 1.0)];
+    f.missing = vec!["va.png".into()];
+    let pl = plan(&s, rate, &Opts::default(), &mut f);
+    assert!(pl.warnings.iter().any(|w| w.contains("va.png")), "{:?}", pl.warnings);
+    assert!(pl.warnings.iter().filter(|w| w.contains("not one of")).count() >= 2, "{:?}", pl.warnings);
+    let a1 = pl.cues.iter().find(|c| c.line == "a1").unwrap();
+    assert!(!a1.shapes.is_empty());
+}
+
+#[test]
+fn the_build_places_the_vowel_pictures_on_the_mouth_track() {
+    let dir = temp("vowels");
+    for (f, c) in [("bg.bmp", [10, 20, 80]), ("m.bmp", [200, 200, 200]), ("mo.bmp", [220, 180, 180]), ("va.bmp", [255, 0, 0]), ("vi.bmp", [0, 255, 0])] {
+        bmp(&dir.join(f), 32, 18, c);
+    }
+    write_wav16(&dir.join("v.wav"), &tone(&[(2.0, 0.5)]), RATE).unwrap();
+    let script = r#"{"characters": {"m": {"name": "m", "expressions": {"normal": {"image": "m.bmp", "openImage": "mo.bmp", "vowelImages": {"a": "va.bmp", "i": "vi.bmp"}}}}},
+        "scenes": [{"id": "s1", "background": "bg.bmp", "lines": [{"id": "a1", "speaker": "m", "text": "あいうえ", "voiceFile": "v.wav"}]}]}"#;
+    let path = dir.join("story.fcscript.json");
+    std::fs::write(&path, script).unwrap();
+    let mut s = session();
+    let r = run(&mut s, "anime.build", json!({"path": path, "out": dir.join("tts")}));
+    assert_eq!(r["clips"]["mouths"], json!(4), "{r}");
+    let q = s.active_sequence().unwrap().clone();
+    let v3 = &q.video_tracks[2].items;
+    assert_eq!(v3.len(), 4);
+    assert!(v3.windows(2).all(|w| w[0].end() <= w[1].start));
+    let sources: std::collections::BTreeSet<_> = v3.iter().map(|i| i.item).collect();
+    assert_eq!(sources.len(), 3, "a, i and (for う and え) the plain open mouth");
+    let _ = std::fs::remove_dir_all(&dir);
+}

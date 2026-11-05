@@ -47,7 +47,7 @@ class Game(unittest.TestCase):
         os.makedirs(os.path.join(self.dir, "scenario"))
         with open(os.path.join(self.dir, "scenario", "ch1.txt"), "wb") as f:
             f.write(SCENARIO.encode("cp932"))
-        for f in ["bg/roof.png", "bg/room.png", "bgm/calm.ogg", "se/door.wav", "voice/v001.wav", "voice/v003.wav", "chara/marina_smile.png", "chara/marina_smile_open.png", "chara/marina_smile_blink.png", "chara/marina_normal.png", "chara/kojiro_normal.png"]:
+        for f in ["bg/roof.png", "bg/room.png", "bgm/calm.ogg", "se/door.wav", "voice/v001.wav", "voice/v003.wav", "chara/marina_smile.png", "chara/marina_smile_open.png", "chara/marina_smile_blink.png", "chara/marina_smile_a.png", "chara/marina_smile_i.png", "chara/marina_normal.png", "chara/kojiro_normal.png"]:
             touch(os.path.join(self.dir, f))
         self.out = os.path.join(self.dir, "out", "story.fcscript.json")
 
@@ -98,7 +98,7 @@ class Game(unittest.TestCase):
         s = self.convert(prof)
         marina = s["characters"]["marina"]
         self.assertEqual(marina["voice"], {"speaker": "Ono_Anna"})
-        self.assertEqual(marina["expressions"]["smile"], {"image": "../chara/marina_smile.png", "openImage": "../chara/marina_smile_open.png"})
+        self.assertEqual(marina["expressions"]["smile"], {"image": "../chara/marina_smile.png", "openImage": "../chara/marina_smile_open.png", "vowelImages": {"a": "../chara/marina_smile_a.png", "i": "../chara/marina_smile_i.png"}})
         self.assertEqual(marina["expressions"]["smile_blink"], {"image": "../chara/marina_smile_blink.png"})
         self.assertEqual(marina["defaultExpression"], "normal")
         self.assertIn("kojiro", s["characters"])
