@@ -48,8 +48,10 @@ If you changed the engine's port, set it in **Settings ▸ Narration** (`narrati
   track whose captions are exactly the lines, timed to their audio. The whole thing is one
   **Undo** ("Synthesize Narration").
 - **Credit roll at the end** (Settings ▸ Narration ▸ "Add a credit roll of the voices at the
-  end", off by default): after generating, add or update a rolling credit of the voices at the
-  end of the sequence.
+  end", off by default): after generating, add a rolling credit of the voices at the end of the
+  sequence. When the sequence already has one, the checkbox reads **Update the credit roll**
+  (エンドロールを更新, on by default; automation id `narration.updateCreditRoll`): untick it to
+  leave the roll alone (`creditRoll: false`).
 - Afterwards the **credits** of every voice the sequence uses are shown with **Copy Credits**,
   **Add to Credit Roll** (エンドロールに追加) and **Export Description Text** (説明欄用テキストを書き出す).
   See [Credits in the video and the description](#credits-in-the-video-and-the-description).
@@ -203,20 +205,38 @@ FilmCraft remembers which voice made every narration item, so the credits can't 
   - `Narration Credit`: the credit line, for example `VOICEVOX:ずんだもん`. Edit it in the
     Metadata panel when a voice's terms want a longer form (for example
     `VOICEVOX:もち子(cv 明日葉よもぎ)`); the roll and the description text use your text.
+    Clear it to leave that item out of the credits.
   - `Narration Voice`: the whole credit as JSON (engine, speaker, uuid, model, licence, URLs).
 - **What is credited.** The narration items **still used in the sequence** (clips on its tracks,
-  nested sequences included), one line per voice in timeline order. Narration you deleted from
-  the timeline is not credited. `scope: "project"` credits every narration item in the project.
+  nested sequences included, each nested sequence walked once however often it is used), one
+  line per voice in timeline order (at most 500). Narration you deleted from the timeline is not
+  credited. `scope: "project"` credits every narration item in the project.
   Credits accumulate over any number of Generate Narration runs.
 - **In the video: Graphics and Titles ▸ Add Narration Credit Roll** (`tts.addCreditRoll`) adds a
-  graphic clip named **Narration Credits** at the end of the sequence: a heading ("Voices", or
-  「音声」 in the Japanese interface), then one credit per line, centred, rolling up from below the
-  frame until it has left the top (Roll, start and end off screen). It uses the default text font,
-  or the bundled Japanese face when the font is Automatic and the text has Japanese in it. It is
-  an ordinary graphic: change its font, size or speed in Essential Graphics. Running the command
-  again (or generating more narration) **updates that clip** instead of adding another one: the
-  text follows the voices, and it moves to the new end when narration was added after it. Rename
-  the clip to stop that. Each add / update is one Undo.
+  graphic clip named **Narration Credits** at the end of the sequence: a heading, then one credit
+  per line, centred, rolling up from below the frame until it has left the top (Roll, start and
+  end off screen). The heading is "Voices" or 「音声」 by Settings ▸ Appearance ▸ Language (Auto
+  follows the system language, and is Japanese when the system does not say), also from the CLI
+  and MCP; it is stored with the roll, so later updates keep it. It uses the default text font,
+  or the bundled Japanese face when the text has Japanese in it and the default font is Automatic
+  or has no glyphs for it. It is an ordinary graphic: change its font, size or speed in Essential
+  Graphics.
+- **Updating, not duplicating.** The roll's text layer carries a hidden marker
+  (`narrationCredits`, with what was generated: title, extra lines, text, font, automatic
+  length), so it is found after renaming or copy and paste (a roll named **Narration Credits**
+  from an earlier version is adopted). Running the command again (or generating more narration)
+  **updates that clip** instead of adding another one; with several marked rolls the first is
+  updated and the result says how many (`rolls`). An update that changes nothing adds no Undo;
+  otherwise each add / update is one Undo.
+  - **What an update keeps.** The `title` and `extra` lines given earlier stay unless new ones are
+    passed. A font you chose stays (only the font the command picked follows the text). The
+    automatic length grows with the lines; a `seconds` you gave stays. The roll moves only on
+    `at`, or (after Generate) when it sat right at the end and the new narration runs past it;
+    a roll you placed elsewhere (after an end card or a music bed) stays.
+  - **What an update skips.** After Generate, a roll whose text you edited by hand is left as it
+    is (`creditRoll: {skipped: "edited"}`); Add to Credit Roll / `tts.addCreditRoll` rewrites it
+    (keeping the stored title and extra lines). A roll on a locked track is never touched
+    (`skipped: "locked"`); Generate still succeeds.
 - **Generating with the roll.** `tts.synthesize {creditRoll: true}` (or the dialog's checkbox, or
   the preference) adds or updates the roll after placing the lines, in the same undo step. When a
   roll already exists it is kept up to date after every generation unless `creditRoll: false`.
@@ -232,7 +252,10 @@ FilmCraft remembers which voice made every narration item, so the credits can't 
   ```
 
   The default file is `<project name>_credits.txt` next to the saved project, else `credits.txt`
-  in the narration folder; an existing file of that name is replaced. `path` picks another file.
+  in the narration folder. `path` picks another file: a relative path is under the project's
+  folder (the narration folder while the project is unsaved), and `.txt` is added when it has no
+  extension. An existing `.txt` file is replaced; the open project and any other existing file
+  are refused. `scope: "project"` works with no sequence open.
 
 ## Commands
 
@@ -244,7 +267,7 @@ FilmCraft remembers which voice made every narration item, so the credits can't 
 | `tts.preview` | `engine?`, `text`, `voice?`, prosody, `url?` | `{path, seconds, voice, credit}`: a temporary WAV; the project is not changed |
 | `tts.synthesize` | see below | `{clips, items, files, dir, track, trackId, captionTrack, captions, start, end, lines, credits, creditText, mix}`, plus `creditRoll` (the `tts.addCreditRoll` result) or `creditRollError` when the roll was added / updated |
 | `tts.credits` | `sequence?`, `scope?` (`sequence` \| `project`) | `{credits, creditText}`: the credits of the narration used (same objects as `tts.synthesize`'s `credits`) |
-| `tts.addCreditRoll` | `seconds?` (default 4 + 0.5 per line, 5–30), `title?` (default "Voices" / 「音声」; `""` = none), `extra?` (lines added after the credits), `at?` (`"end"` (default), ticks, or `{seconds\|frame\|timecode}`) | `{clip, updated, moved, start, duration, text, credits}`; adds or updates the **Narration Credits** roll; one undo step |
+| `tts.addCreditRoll` | `seconds?` (default 4 + 0.5 per line, 5–30), `title?` (default: the stored one, else "Voices" / 「音声」; `""` = none), `extra?` (lines added after the credits; default: the stored ones), `at?` (`"end"`, ticks, seconds as a string, or `{seconds\|frame\|timecode}`; at most an hour past the media end; without it a new roll goes to the end and an existing one stays) | `{clip, updated, changed, moved, start, duration, text, credits}`, plus `skipped` (`"locked"`; `"edited"` after Generate only) and `rolls` (when several are marked); adds or updates the **Narration Credits** roll; one undo step, none when nothing changes |
 | `tts.exportCredits` | `path?`, `sequence?`, `scope?` | `{path, text, creditText, credits}`: writes the description text |
 
 `tts.synthesize` parameters:

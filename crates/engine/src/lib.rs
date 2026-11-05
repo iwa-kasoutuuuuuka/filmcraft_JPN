@@ -399,6 +399,10 @@ pub struct Session {
     /// Settings ▸ Graphics ▸ default font on Automatic (empty), new text, captions and charts
     /// then use the bundled Japanese face, so Latin and Japanese characters match.
     pub japanese_text: bool,
+    /// The operating system's language as a BCP 47 tag (`ja-JP`), when the host knows it (the
+    /// desktop app and the CLI set it). Settings ▸ Appearance ▸ Language "Auto" follows it where
+    /// the engine itself writes text in the interface language (the narration credit heading).
+    pub system_language: Option<String>,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -490,6 +494,7 @@ impl Session {
             last_unknown_params: Vec::new(),
             playback_active: false,
             japanese_text: false,
+            system_language: None,
         }
     }
 
