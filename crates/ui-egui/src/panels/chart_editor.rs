@@ -12,17 +12,74 @@
 //! `maxBars`, `decimals`, `intro`, `hold`, `step.<c>`, `category.<r>`, `cell.<r>.<c>`, `addRow`,
 //! `addColumn`, `removeRow`, `removeColumn`, `paste`, `importTable`, `copyTable`, `ok`,
 //! `cancel`.
+//!
+//! Category pictures (flags, logos), per row of the Data tab: `image.<r>` (the thumbnail and
+//! Choose…: picks a still with the host file dialog and imports it into the project),
+//! `imageItem.<r>` (a project item instead), `clearImage.<r>`; and `rowUp.<r>`, `rowDown.<r>`,
+//! `deleteRow.<r>`, which keep values and pictures with their row. `imageShape.circle` /
+//! `imageShape.rounded` crop them.
 
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use egui::{Color32, RichText, Sense, Stroke, vec2};
-use filmcraft_project::chart::{ChartKind, ChartSpec, ChartTheme, MAX_CATEGORIES, MAX_STEPS, PALETTES};
+use filmcraft_project::ItemId;
+use filmcraft_project::chart::{ChartImage, ChartKind, ChartSpec, ChartTheme, ImageShape, MAX_CATEGORIES, MAX_STEPS, PALETTES};
 use serde_json::{Value, json};
 
 use crate::FilmcraftApp;
 use crate::state::{ChartEditorDraft, ChartTab};
 
 type Elems = Vec<(String, egui::Rect, String)>;
+
+/// Thumbnails of the pictures in the chart being edited, by project item.
+type Thumbs = HashMap<ItemId, egui::TextureHandle>;
+
+/// Most project items listed in a row's picture menu.
+const MAX_LISTED_ITEMS: usize = 300;
+
+/// A row control clicked in the Data tab (applied after the table is drawn).
+enum RowAction {
+    Pick(usize),
+    Clear(usize),
+    SetItem(usize, ItemId),
+    Up(usize),
+    Down(usize),
+    Delete(usize),
+}
+
+/// The texture of project item `item`'s first frame, cached by item.
+fn thumb_texture(ctx: &egui::Context, sources: &dyn filmcraft_render::SourceProvider, item: ItemId) -> Option<egui::TextureHandle> {
+    let img = filmcraft_render::chart::item_thumbnail(item, sources)?;
+    let key = (Arc::as_ptr(&img) as usize, item.0);
+    let id = egui::Id::new(("chart-editor-thumb", item.0));
+    if let Some((k, t)) = ctx.data(|m| m.get_temp::<((usize, u64), egui::TextureHandle)>(id))
+        && k == key
+    {
+        return Some(t);
+    }
+    let px = img.to_rgba8();
+    if px.len() != img.w.saturating_mul(img.h).saturating_mul(4) {
+        return None;
+    }
+    let t =
+        ctx.load_texture(format!("chart-editor-thumb-{}", item.0), egui::ColorImage::from_rgba_unmultiplied([img.w, img.h], &px), egui::TextureOptions::LINEAR);
+    ctx.data_mut(|m| m.insert_temp(id, (key, t.clone())));
+    Some(t)
+}
+
+/// Project items with a picture (stills, movies), for a row's picture menu.
+fn picture_items(app: &FilmcraftApp) -> Vec<(ItemId, String)> {
+    app.session
+        .project
+        .items
+        .values()
+        .filter(|pi| pi.as_media().is_some_and(|m| m.info.video.is_some()))
+        .take(MAX_LISTED_ITEMS)
+        .map(|pi| (pi.id, pi.name.clone()))
+        .collect()
+}
 
 fn push(elems: &mut Elems, id: impl Into<String>, r: &egui::Response, label: impl Into<String>) {
     elems.push((format!("chartEditor.{}", id.into()), r.rect, label.into()));
@@ -90,7 +147,13 @@ fn hash_of(v: &impl Hash) -> u64 {
 }
 
 /// The preview picture of `d` at its time, `w` pixels wide, through a one-entry texture cache.
-fn preview_texture(ctx: &egui::Context, d: &ChartEditorDraft, canvas: (u32, u32), w: u32) -> egui::TextureHandle {
+fn preview_texture(
+    ctx: &egui::Context,
+    d: &ChartEditorDraft,
+    canvas: (u32, u32),
+    w: u32,
+    sources: &dyn filmcraft_render::SourceProvider,
+) -> egui::TextureHandle {
     let h = ((f64::from(w) * f64::from(canvas.1) / f64::from(canvas.0.max(1))).round() as u32).clamp(1, 2048);
     let json = serde_json::to_string(&d.chart).unwrap_or_default();
     let key = hash_of(&(json, (d.time * 1000.0).round() as i64, (d.seconds * 1000.0).round() as i64, canvas, w));
@@ -100,7 +163,8 @@ fn preview_texture(ctx: &egui::Context, d: &ChartEditorDraft, canvas: (u32, u32)
     {
         return t;
     }
-    let px = filmcraft_render::chart::chart_rgba(&d.chart, d.time, d.seconds, canvas, w, h);
+    let images = filmcraft_render::chart::chart_images(&d.chart, sources);
+    let px = filmcraft_render::chart::chart_rgba_with(&d.chart, d.time, d.seconds, canvas, w, h, &images);
     let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
     let t = ctx.load_texture("chart-editor-preview", img, egui::TextureOptions::LINEAR);
     ctx.data_mut(|m| m.insert_temp(id, (key, t.clone())));
@@ -135,12 +199,12 @@ fn kinds_column(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) 
     });
 }
 
-fn preview_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, canvas: (u32, u32), elems: &mut Elems) {
+fn preview_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, canvas: (u32, u32), sources: &dyn filmcraft_render::SourceProvider, elems: &mut Elems) {
     let w = 560.0f32;
     let h = w * canvas.1 as f32 / canvas.0.max(1) as f32;
     let (r, _) = ui.allocate_exact_size(vec2(w, h.min(420.0)), Sense::hover());
     checker(ui, r);
-    let tex = preview_texture(ui.ctx(), d, canvas, w.round() as u32);
+    let tex = preview_texture(ui.ctx(), d, canvas, w.round() as u32, sources);
     ui.painter().image(tex.id(), r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
@@ -177,7 +241,107 @@ fn preview_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, canvas: (u32, u32), 
     }
 }
 
-fn data_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) {
+/// The picture cell of row `i`: thumbnail (or the row's colour), Choose…, a project item menu and
+/// a clear button.
+fn image_cell(ui: &mut egui::Ui, c: &ChartSpec, i: usize, thumbs: &Thumbs, items: &[(ItemId, String)], elems: &mut Elems, actions: &mut Vec<RowAction>) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let current = c.image(i).and_then(|im| im.item);
+        let size = vec2(20.0, 20.0);
+        let (r, resp) = ui.allocate_exact_size(size, Sense::click());
+        match current.and_then(|it| thumbs.get(&it)) {
+            Some(t) => {
+                egui::Image::new(t).corner_radius(10.0).paint_at(ui, r);
+            }
+            None => {
+                let col = c.color(i);
+                ui.painter().circle_stroke(r.center(), 8.5, Stroke::new(1.5, Color32::from_rgb(col[0], col[1], col[2])));
+            }
+        }
+        let name = current.and_then(|it| items.iter().find(|(id, _)| *id == it)).map_or_else(String::new, |(_, n)| n.clone());
+        let label = if current.is_some() { format!("Picture {}: {name}", i + 1) } else { format!("Picture {}", i + 1) };
+        let resp = resp.on_hover_text(if current.is_some() {
+            name.clone()
+        } else {
+            crate::i18n::t("Choose a picture file…", "画像ファイルを選ぶ…").to_string()
+        });
+        push(elems, format!("image.{i}"), &resp, label);
+        if resp.clicked() {
+            actions.push(RowAction::Pick(i));
+        }
+        let r = ui.small_button("…").on_hover_text(crate::i18n::t("Choose a picture file…", "画像ファイルを選ぶ…"));
+        push(elems, format!("chooseImage.{i}"), &r, "Choose Picture");
+        if r.clicked() {
+            actions.push(RowAction::Pick(i));
+        }
+        let r = egui::ComboBox::from_id_salt(("chart-image-item", i)).width(18.0).selected_text("").show_ui(ui, |ui| {
+            if items.is_empty() {
+                ui.label(crate::i18n::t("No pictures in the project", "プロジェクトに画像がありません"));
+            }
+            for (id, n) in items {
+                if ui.selectable_label(current == Some(*id), n).clicked() {
+                    actions.push(RowAction::SetItem(i, *id));
+                }
+            }
+        });
+        let resp = r.response.on_hover_text(crate::i18n::t("Use a project item", "プロジェクトのアイテムを使う"));
+        push(elems, format!("imageItem.{i}"), &resp, "Project Item");
+        let r = ui
+            .add_enabled(current.is_some() || c.image(i).is_some(), egui::Button::new("×").small())
+            .on_hover_text(crate::i18n::t("Remove the picture", "画像を外す"));
+        push(elems, format!("clearImage.{i}"), &r, "Remove Picture");
+        if r.clicked() {
+            actions.push(RowAction::Clear(i));
+        }
+    });
+}
+
+/// Move / delete buttons of row `i`.
+fn row_tools(ui: &mut egui::Ui, i: usize, rows: usize, elems: &mut Elems, actions: &mut Vec<RowAction>) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 1.0;
+        let r = ui.add_enabled(i > 0, egui::Button::new("↑").small()).on_hover_text(crate::i18n::t("Move up", "上へ移動"));
+        push(elems, format!("rowUp.{i}"), &r, "Move Up");
+        if r.clicked() {
+            actions.push(RowAction::Up(i));
+        }
+        let r = ui.add_enabled(i + 1 < rows, egui::Button::new("↓").small()).on_hover_text(crate::i18n::t("Move down", "下へ移動"));
+        push(elems, format!("rowDown.{i}"), &r, "Move Down");
+        if r.clicked() {
+            actions.push(RowAction::Down(i));
+        }
+        let r = ui.add_enabled(rows > 1, egui::Button::new("🗑").small()).on_hover_text(crate::i18n::t("Delete row", "行を削除"));
+        push(elems, format!("deleteRow.{i}"), &r, "Delete Row");
+        if r.clicked() {
+            actions.push(RowAction::Delete(i));
+        }
+    });
+}
+
+/// Apply the row actions other than Pick (which needs the file dialog); returns the row to pick
+/// a picture for.
+fn apply_row_actions(c: &mut ChartSpec, actions: Vec<RowAction>) -> Option<usize> {
+    let mut pick = None;
+    for a in actions {
+        match a {
+            RowAction::Pick(i) => pick = Some(i),
+            RowAction::Clear(i) => c.set_image(i, None),
+            RowAction::SetItem(i, item) => c.set_image(i, Some(ChartImage::of_item(item))),
+            RowAction::Up(i) => c.move_category(i, i.saturating_sub(1)),
+            RowAction::Down(i) => c.move_category(i, i.saturating_add(1)),
+            RowAction::Delete(i) if c.categories.len() > 1 => c.remove_category(i),
+            RowAction::Delete(_) => {}
+        }
+    }
+    if !c.has_images() {
+        c.images.clear();
+    }
+    pick
+}
+
+/// The Data tab; returns the row whose Choose… was clicked.
+fn data_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, thumbs: &Thumbs, items: &[(ItemId, String)], elems: &mut Elems) -> Option<usize> {
+    let mut actions = Vec::new();
     let c = &mut d.chart;
     let (rows, cols) = (c.categories.len(), c.steps.len());
     ui.label(
@@ -190,6 +354,8 @@ fn data_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) {
     egui::ScrollArea::both().id_salt("chart-table").max_height(260.0).max_width(560.0).show(ui, |ui| {
         egui::Grid::new("chart-table-grid").striped(true).spacing(vec2(4.0, 3.0)).show(ui, |ui| {
             ui.label("");
+            ui.label("");
+            ui.label(RichText::new(crate::i18n::t("Picture", "画像")).weak());
             for j in 0..cols {
                 if let Some(s) = c.steps.get_mut(j) {
                     let r = ui.add_sized([70.0, 20.0], egui::TextEdit::singleline(s));
@@ -198,10 +364,12 @@ fn data_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) {
             }
             ui.end_row();
             for i in 0..rows {
+                row_tools(ui, i, rows, elems, &mut actions);
                 if let Some(s) = c.categories.get_mut(i) {
                     let r = ui.add_sized([110.0, 20.0], egui::TextEdit::singleline(s));
                     push(elems, format!("category.{i}"), &r, format!("Category {}", i + 1));
                 }
+                image_cell(ui, c, i, thumbs, items, elems, &mut actions);
                 if let Some(row) = c.values.get_mut(i) {
                     row.resize(cols, 0.0);
                     for (j, v) in row.iter_mut().enumerate() {
@@ -214,6 +382,8 @@ fn data_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) {
             }
         });
     });
+    let pick = apply_row_actions(c, actions);
+    let (rows, cols) = (c.categories.len(), c.steps.len());
     ui.horizontal(|ui| {
         let r = ui.add_enabled(rows < MAX_CATEGORIES, egui::Button::new(crate::i18n::t("Add Row", "行を追加")));
         push(elems, "addRow", &r, "Add Row");
@@ -234,8 +404,7 @@ fn data_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) {
         let r = ui.add_enabled(rows > 1, egui::Button::new(crate::i18n::t("Remove Last Row", "最後の行を削除")));
         push(elems, "removeRow", &r, "Remove Last Row");
         if r.clicked() {
-            c.categories.pop();
-            c.values.truncate(c.categories.len());
+            c.remove_category(rows.saturating_sub(1));
         }
         let r = ui.add_enabled(cols > 1, egui::Button::new(crate::i18n::t("Remove Last Column", "最後の列を削除")));
         push(elems, "removeColumn", &r, "Remove Last Column");
@@ -259,9 +428,7 @@ fn data_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) {
         if r.clicked() {
             match ChartSpec::parse_table(&d.paste) {
                 Ok((categories, steps, values)) => {
-                    d.chart.categories = categories;
-                    d.chart.steps = steps;
-                    d.chart.values = values;
+                    d.chart.set_table(categories, steps, values);
                     d.error.clear();
                 }
                 Err(e) => d.error = e,
@@ -273,6 +440,7 @@ fn data_tab(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) {
             ui.ctx().copy_text(d.chart.table_text());
         }
     });
+    pick
 }
 
 fn settings_column(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elems) {
@@ -314,6 +482,20 @@ fn settings_column(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elem
                 c.palette = colors.to_vec();
             }
         }
+        ui.add_space(6.0);
+        ui.label(RichText::new(crate::i18n::t("Pictures", "画像の形")).strong());
+        ui.horizontal(|ui| {
+            for (sh, id, label) in [
+                (ImageShape::Circle, "circle", crate::i18n::t("Circle", "円")),
+                (ImageShape::Rounded, "rounded", crate::i18n::t("Rounded Square", "角丸の四角")),
+            ] {
+                let r = ui.add_sized([120.0, 24.0], egui::Button::selectable(c.image_shape == sh, label));
+                push(elems, format!("imageShape.{id}"), &r, label);
+                if r.clicked() {
+                    c.image_shape = sh;
+                }
+            }
+        });
         ui.add_space(6.0);
         ui.label(RichText::new(crate::i18n::t("Font", "フォント")).strong());
         let shown = if c.font.is_empty() { filmcraft_text::fonts::DEFAULT_FAMILY.to_string() } else { c.font.clone() };
@@ -363,11 +545,38 @@ fn settings_column(ui: &mut egui::Ui, d: &mut ChartEditorDraft, elems: &mut Elem
     });
 }
 
+/// Choose… on row `row`: a still from the host file dialog, imported into the project (an already
+/// imported file is reused).
+fn pick_image(app: &mut FilmcraftApp, d: &mut ChartEditorDraft, row: usize) {
+    let Some(path) = app.hooks.pick_files.as_mut().and_then(|f| f(filmcraft_media::STILL_EXTENSIONS).into_iter().next()) else { return };
+    match filmcraft_engine::charts::image_item(&mut app.session, &path) {
+        Ok(item) => {
+            d.chart.set_image(row, Some(ChartImage { item: Some(item), path }));
+            d.error.clear();
+        }
+        Err(e) => d.error = e,
+    }
+}
+
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.chart_editor.clone() else { return };
     let canvas = app.session.active_sequence().map_or((1920, 1080), |q| (q.settings.width.max(1), q.settings.height.max(1)));
     let mut elems: Elems = Vec::new();
     let mut action: Option<&'static str> = None;
+    let sources = app.session.media.provider(app.session.project.clone(), app.session.services.clone());
+    let mut thumbs = Thumbs::new();
+    let mut items = Vec::new();
+    if d.tab == ChartTab::Data {
+        for it in d.chart.images.iter().flatten().filter_map(|im| im.item) {
+            if !thumbs.contains_key(&it)
+                && let Some(t) = thumb_texture(ctx, &sources, it)
+            {
+                thumbs.insert(it, t);
+            }
+        }
+        items = picture_items(app);
+    }
+    let mut pick: Option<usize> = None;
     let title = crate::i18n::t("Animated Chart", "アニメーションチャート");
     egui::Window::new(title).id(egui::Id::new("chart-editor")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
         ctx,
@@ -391,8 +600,8 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
                     });
                     ui.add_space(4.0);
                     match d.tab {
-                        ChartTab::Preview => preview_tab(ui, &mut d, canvas, &mut elems),
-                        ChartTab::Data => data_tab(ui, &mut d, &mut elems),
+                        ChartTab::Preview => preview_tab(ui, &mut d, canvas, &sources, &mut elems),
+                        ChartTab::Data => pick = data_tab(ui, &mut d, &thumbs, &items, &mut elems),
                     }
                 });
                 ui.add_space(12.0);
@@ -423,13 +632,23 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         action = Some("cancel");
     }
+    if let Some(row) = pick {
+        pick_image(app, &mut d, row);
+    }
     match action {
         Some("cancel") => {
             app.ui.chart_editor = None;
             return;
         }
         Some("ok") => {
-            let chart = serde_json::to_value(d.chart.sanitized()).unwrap_or(Value::Null);
+            // a picture whose item has left the project (and has no file to bring it back) is dropped
+            let mut spec = d.chart.sanitized();
+            for im in spec.images.iter_mut() {
+                if im.as_ref().is_some_and(|i| i.path.trim().is_empty() && i.item.is_none_or(|it| app.session.project.item(it).is_none())) {
+                    *im = None;
+                }
+            }
+            let chart = serde_json::to_value(spec.sanitized()).unwrap_or(Value::Null);
             let r = match d.clip {
                 Some(clip) => app.session.execute("graphics.setChart", json!({"clip": clip, "chart": chart})),
                 None => app.session.execute("graphics.newChart", json!({"chart": chart, "seconds": d.seconds})),

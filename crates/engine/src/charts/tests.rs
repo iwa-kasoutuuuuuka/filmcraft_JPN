@@ -105,3 +105,94 @@ fn chart_shows_in_the_program_and_survives_save_and_open() {
     assert_eq!(chart_of(&s2, clip), chart_of(&s, clip));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A solid magenta 120×80 PNG in a fresh temp folder.
+fn magenta_png(name: &str) -> String {
+    let dir = crate::media_test_util::tmp_dir(name);
+    let path = dir.join("flag.png");
+    image::RgbaImage::from_pixel(120, 80, image::Rgba([255, 0, 255, 255])).save(&path).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn magenta_pixels(img: &filmcraft_render::Image) -> usize {
+    img.px.chunks(4).filter(|p| p[3] > 0.99 && (p[0] - 1.0).abs() < 0.02 && p[1].abs() < 0.02 && (p[2] - 1.0).abs() < 0.02).count()
+}
+
+#[test]
+fn category_images_import_render_and_read_back() {
+    let mut s = demo();
+    let png = magenta_png("chart-images");
+    let items_before = s.project.items.len();
+    let r = s.execute("graphics.newChart", json!({"kind": "bar", "images": [png], "seconds": 6})).unwrap();
+    let clip = r["clip"].as_u64().unwrap();
+    let c = chart_of(&s, clip);
+    let img = c.image(0).cloned().expect("the first category has the picture");
+    let item = img.item.expect("the file was imported");
+    assert_eq!(img.path, png);
+    assert!(s.project.items.len() > items_before);
+    let items_before = s.project.items.len();
+    assert!(c.image(1).is_none() && c.images.len() == c.categories.len());
+
+    // the picture is in the program, past the intro
+    let start = s.active_sequence().unwrap().find_item(ClipId(clip)).unwrap().1.start;
+    s.execute("playhead.set", json!({"time": (start + Tick::from_seconds_f64(3.0)).0})).unwrap();
+    let frame = s.render_program(0.25).unwrap();
+    assert!(magenta_pixels(&frame) > 20, "the flag shows ({})", magenta_pixels(&frame));
+
+    // by category name, by item id; the same file is not imported twice
+    let second = c.categories[1].clone();
+    s.execute("graphics.setChart", json!({"clip": clip, "images": name_map(&second, json!(item.0)), "imageShape": "rounded"})).unwrap();
+    s.execute("graphics.setChart", json!({"clip": clip, "images": name_map(&c.categories[2], json!({"path": png}))})).unwrap();
+    assert_eq!(s.project.items.len(), items_before, "the imported file is reused");
+    let c = chart_of(&s, clip);
+    assert_eq!(c.image_shape, ImageShape::Rounded);
+    assert_eq!([0, 1, 2].map(|i| c.image(i).and_then(|im| im.item)), [Some(item); 3]);
+    let back = s.execute("graphics.chart", json!({"clip": clip})).unwrap();
+    assert_eq!(back["chart"]["images"][1]["item"], item.0);
+    assert_eq!(back["chart"]["imageShape"], "rounded");
+
+    // a new table keeps the pictures by name; an array replaces them all
+    let table = format!("\t1\n{second}\t5\nNew\t6");
+    s.execute("graphics.setChart", json!({"clip": clip, "table": table})).unwrap();
+    let c = chart_of(&s, clip);
+    assert_eq!((c.image(0).and_then(|i| i.item), c.image(1)), (Some(item), None));
+    s.execute("graphics.setChart", json!({"clip": clip, "images": [null, item.0]})).unwrap();
+    let c = chart_of(&s, clip);
+    assert_eq!((c.image(0), c.image(1).and_then(|i| i.item)), (None, Some(item)));
+    s.execute("graphics.setChart", json!({"clip": clip, "images": []})).unwrap();
+    assert!(chart_of(&s, clip).images.is_empty());
+    s.execute("edit.undo", json!({})).unwrap();
+    assert!(chart_of(&s, clip).has_images());
+}
+
+#[test]
+fn bad_images_are_refused_and_change_nothing() {
+    let mut s = demo();
+    let clip = s.execute("graphics.newChart", json!({})).unwrap()["clip"].as_u64().unwrap();
+    let before = chart_of(&s, clip);
+    let seq = s.state.active_sequence.unwrap().0;
+    let missing = crate::media_test_util::tmp_dir("chart-missing").join("nope.png").to_string_lossy().into_owned();
+    for p in [
+        json!({"clip": clip, "images": [999_999]}),
+        json!({"clip": clip, "images": [seq]}),
+        json!({"clip": clip, "images": [-1]}),
+        json!({"clip": clip, "images": [true]}),
+        json!({"clip": clip, "images": "flag.png"}),
+        json!({"clip": clip, "images": {"No such city": 1}}),
+        json!({"clip": clip, "images": [missing]}),
+        json!({"clip": clip, "imageShape": "star"}),
+    ] {
+        assert!(s.execute("graphics.setChart", p.clone()).is_err(), "{p}");
+    }
+    assert_eq!(chart_of(&s, clip), before);
+    // more entries than categories are ignored
+    let png = magenta_png("chart-images-extra");
+    let many: Vec<Value> = (0..500).map(|_| Value::String(png.clone())).collect();
+    s.execute("graphics.setChart", json!({"clip": clip, "images": many})).unwrap();
+    assert_eq!(chart_of(&s, clip).images.len(), before.categories.len());
+}
+
+/// `{name: v}` as a JSON object.
+fn name_map(name: &str, v: Value) -> Value {
+    Value::Object([(name.to_string(), v)].into_iter().collect())
+}

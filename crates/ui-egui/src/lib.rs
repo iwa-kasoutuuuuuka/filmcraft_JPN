@@ -152,8 +152,9 @@ pub struct FilmcraftApp {
     /// Named textures (monitors, thumbnails) with the key they show.
     textures: HashMap<String, (FrameKey, TextureHandle)>,
     control_rx: Option<Receiver<ControlRequest>>,
-    /// Requests waiting for the UI to show an element: (request, give-up time).
-    deferred: Vec<(ControlRequest, f64)>,
+    /// Requests waiting for the UI to show an element: (request, give-up time, the
+    /// [`automation::Registry::frames`] count when it arrived).
+    deferred: Vec<(ControlRequest, f64, u64)>,
     last_ui_time: f64,
     pub(crate) synthetic: Vec<egui::Event>,
     /// When control-channel input was last delivered: the window counts as focused shortly after
@@ -978,27 +979,39 @@ impl FilmcraftApp {
     fn drain_control(&mut self, ctx: &egui::Context) {
         let Some(rx) = self.control_rx.take() else { return };
         let now = ctx.input(|i| i.time);
-        let mut reqs: Vec<(ControlRequest, f64)> = std::mem::take(&mut self.deferred);
+        let mut reqs: Vec<(ControlRequest, f64, u64)> = std::mem::take(&mut self.deferred);
         while let Ok(req) = rx.try_recv() {
             // UI requests need rendered frames: raise the window if `ui` hasn't run recently
             // (occluded macOS windows stop running `ui`).
             if req.method.starts_with("ui.") && now - self.last_ui_time > 0.25 {
                 self.raise_for_control(ctx);
             }
-            reqs.push((req, now + 3.0));
+            reqs.push((req, now + 3.0, self.auto.frames()));
         }
-        for (req, deadline) in reqs {
+        for (req, deadline, since) in reqs {
             let reply = req.reply.clone();
-            match control::handle(self, ctx, &req) {
+            // frames laid out while the request waited
+            let waited = self.auto.frames().saturating_sub(since);
+            match control::handle(self, ctx, &req, waited) {
                 control::Outcome::Done(v) => {
                     let _ = reply.send(v);
                 }
                 control::Outcome::Retry(msg) => {
                     if now < deadline {
-                        self.deferred.push((req, deadline));
+                        self.deferred.push((req, deadline, since));
                         ctx.request_repaint();
                     } else {
                         let _ = reply.send(json!({"ok": false, "error": msg}));
+                    }
+                }
+                control::Outcome::RetryFrames { error, frames } => {
+                    // a bounded number of laid-out frames (and never past the deadline, should
+                    // `ui` stop running)
+                    if now < deadline && waited < frames {
+                        self.deferred.push((req, deadline, since));
+                        ctx.request_repaint();
+                    } else {
+                        let _ = reply.send(json!({"ok": false, "error": error}));
                     }
                 }
                 control::Outcome::AfterInput => self.input_waiters.push(reply),
@@ -1115,6 +1128,8 @@ impl FilmcraftApp {
         self.handle_shortcuts(&ctx);
         self.advance_playback(&ctx);
         self.advance_source_playback(&ctx);
+        // (Settings ▸ Playback ▸ Pause Media Encoder queue during playback)
+        self.session.playback_active = self.playback.playing || self.source_playing();
         let t = self.tokens;
         let full = ui.max_rect();
         ui.painter().rect_filled(full, 0.0, t.app_bg);
@@ -1373,6 +1388,9 @@ impl eframe::App for FilmcraftApp {
             self.playback.playing = false;
         }
         self.error_window(ui.ctx());
+        // what was laid out (all of it, or up to a caught panic, and the error window) is what
+        // control input aims at
+        self.auto.end_frame();
         let ctx = ui.ctx().clone();
         self.last_ui_time = ctx.input(|i| i.time);
         if !self.synthetic.is_empty() {

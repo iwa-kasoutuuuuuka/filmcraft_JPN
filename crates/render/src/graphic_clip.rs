@@ -507,16 +507,28 @@ pub fn apply_roll(meta: &GraphicMeta, specs: &mut [LayerSpec], u: Tick, d: Tick,
 /// Draw all layers of a graphic clip at media time `mt` onto `out`; `m` maps graphic canvas
 /// pixels to `out` pixels.
 pub fn render_graphic(item: &TrackItem, mt: Tick, canvas: (u32, u32), m: &Affine, out: &mut Image) {
-    draw_item_chart(item, mt, canvas, m, out);
+    render_graphic_src(item, mt, canvas, m, &no_sources, out);
+}
+
+/// No media (graphics drawn without the project's pictures).
+fn no_sources(_: filmcraft_project::ItemId) -> Option<filmcraft_media::SharedSource> {
+    None
+}
+
+/// [`render_graphic`] with the project's media for pictures in the graphic (a chart's category
+/// images).
+pub fn render_graphic_src(item: &TrackItem, mt: Tick, canvas: (u32, u32), m: &Affine, sources: &dyn crate::SourceProvider, out: &mut Image) {
+    draw_item_chart(item, mt, canvas, m, sources, out);
     let specs: Vec<LayerSpec> = item_layer_specs(item, mt, canvas).into_iter().map(|(_, s)| s).collect();
     draw_specs(&specs, m, out);
 }
 
 /// A graphic clip's chart (if it has one) at media time `mt`, behind its layers.
-pub fn draw_item_chart(item: &TrackItem, mt: Tick, canvas: (u32, u32), m: &Affine, out: &mut Image) {
+pub fn draw_item_chart(item: &TrackItem, mt: Tick, canvas: (u32, u32), m: &Affine, sources: &dyn crate::SourceProvider, out: &mut Image) {
     if let Some(chart) = item.graphic.as_deref().and_then(|g| g.chart.as_deref()) {
         let (_, u, d) = graphic_time(item, mt);
-        crate::chart::draw_chart(chart, u.seconds(), d.seconds(), canvas, m, out);
+        let images = crate::chart::chart_images(chart, sources);
+        crate::chart::draw_chart_with(chart, u.seconds(), d.seconds(), canvas, m, &images, out);
     }
 }
 
@@ -536,12 +548,25 @@ fn draw_specs(specs: &[LayerSpec], m: &Affine, out: &mut Image) {
 
 /// All layers composed into one tight image (for the GPU plan): `(image, x, y)` in output pixels.
 pub fn render_graphic_tight(item: &TrackItem, mt: Tick, canvas: (u32, u32), m: &Affine, w: usize, h: usize) -> Option<(Image, i32, i32)> {
+    render_graphic_tight_src(item, mt, canvas, m, w, h, &no_sources)
+}
+
+/// [`render_graphic_tight`] with the project's media for pictures in the graphic.
+pub fn render_graphic_tight_src(
+    item: &TrackItem,
+    mt: Tick,
+    canvas: (u32, u32),
+    m: &Affine,
+    w: usize,
+    h: usize,
+    sources: &dyn crate::SourceProvider,
+) -> Option<(Image, i32, i32)> {
     let rasters: Vec<Arc<LayerRaster>> =
         item_layer_specs(item, mt, canvas).iter().filter_map(|(_, spec)| raster_layer_cached(spec, &xform(&m.then_apply(&layer_matrix(spec))), w, h)).collect();
     if item.graphic.as_deref().is_some_and(|g| g.chart.is_some()) {
         // a chart covers its card: draw it and the layers at full size
         let mut img = Image::new(w, h);
-        draw_item_chart(item, mt, canvas, m, &mut img);
+        draw_item_chart(item, mt, canvas, m, sources, &mut img);
         for r in &rasters {
             composite_raster(&mut img, r, 0, 0);
         }

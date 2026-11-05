@@ -626,3 +626,21 @@ fn pan51_automation_is_block_invariant() {
     assert!(energy(0, 0, 2000) > 5.0 * energy(1, 0, 2000));
     assert!(energy(1, 10_000, 12_000) > 5.0 * energy(0, 10_000, 12_000));
 }
+
+/// A 6-channel (5.1) source on a stereo track with no channels picked plays the BS.775 fold-down
+/// (L + k·C + k·Ls, R + k·C + k·Rs), not just its first two channels: before, a 5.1 file whose
+/// dialogue sits in the centre (the usual layout) was silent on a stereo track. Picking channels
+/// (Modify ▸ Audio Channels) still plays exactly those.
+#[test]
+fn a_51_source_on_a_stereo_track_folds_down() {
+    let mut r = Rig::with_channels(&[chan_dc], 6);
+    let k = std::f32::consts::FRAC_1_SQRT_2;
+    let st = mix_all(&r, 0, 256);
+    assert_eq!(st.len(), 2);
+    assert!(close(st[0][9], 0.1 + k * 0.3 + k * 0.5, 1e-6), "L = {}", st[0][9]);
+    assert!(close(st[1][9], 0.2 + k * 0.3 + k * 0.6, 1e-6), "R = {}", st[1][9]);
+    // picked channels win: C on both sides
+    r.p.sequence_mut(r.seq).unwrap().audio_tracks[0].items[0].source_channels = vec![2];
+    let st = mix_all(&r, 0, 256);
+    assert!(close(st[0][9], 0.3, 1e-6) && close(st[1][9], 0.3, 1e-6), "{} {}", st[0][9], st[1][9]);
+}

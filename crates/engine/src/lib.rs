@@ -388,6 +388,10 @@ pub struct Session {
     /// get them back as `warnings` (a misspelt key, e.g. `volume` for `volumeDb`, used to be
     /// ignored without a word).
     pub last_unknown_params: Vec<String>,
+    /// The frontend is playing a monitor (set every frame by the UI). With Settings ▸ Playback ▸
+    /// "Pause Media Encoder queue during playback" the export queue starts no new export while it
+    /// is set (an export already encoding finishes).
+    pub playback_active: bool,
     /// Save the project after a successful export (headless CLI / MCP sessions: agents get a
     /// `.fcproj` beside their video; see [`agent_project`]). Off in the desktop app; commands
     /// override it with `saveProject`.
@@ -480,6 +484,7 @@ impl Session {
             browser: Default::default(),
             exec_depth: 0,
             last_unknown_params: Vec::new(),
+            playback_active: false,
             save_project_on_export: false,
         }
     }

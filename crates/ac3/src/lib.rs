@@ -1,5 +1,6 @@
-//! Clean-room AC-3 (Dolby Digital) audio decoder, written from ATSC A/52:2012 ("Digital Audio
-//! Compression Standard", §5 bit stream syntax, §6-7 decoding).
+//! Clean-room AC-3 (Dolby Digital) and E-AC-3 (Dolby Digital Plus) audio decoder, written from
+//! ATSC A/52:2012 ("Digital Audio Compression Standard", §5 bit stream syntax, §6-7 decoding,
+//! Annex E).
 //!
 //! - All audio coding modes (1+1, 1/0 … 3/2) with or without LFE, 32 / 44.1 / 48 kHz, every
 //!   frame size (Table 5.18).
@@ -10,11 +11,13 @@
 //!   (512- and 256-sample IMDCTs, §7.9.4) with the Kaiser-Bessel derived window.
 //! - Output: planar f32 at full scale ±1, channels in WAV / SMPTE order (L R C LFE Ls Rs); no
 //!   downmix.
-//!
-//! E-AC-3 (bsid 11-16) is recognised and refused.
+//! - E-AC-3 (Enhanced AC-3, A/52 Annex E, bsid 11-16): the `eac3` module documents what is
+//!   decoded (independent substream 0 with spectral extension and coupling; AHT and enhanced
+//!   coupling are refused).
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+mod eac3;
 mod tables;
 
 use std::sync::OnceLock;
@@ -47,12 +50,28 @@ pub struct Header {
     pub bsid: u8,
     pub acmod: u8,
     pub lfeon: bool,
+    /// PCM samples per channel the syncframe codes: 1536 for AC-3, 256 × 1/2/3/6 blocks for
+    /// E-AC-3.
+    pub samples: usize,
+    /// E-AC-3 dependent substream (strmtyp 1: extra channels for an independent substream).
+    pub dependent: bool,
+    /// E-AC-3 substream id (0 for AC-3).
+    pub substreamid: u8,
 }
 
 impl Header {
     /// Output channels (full bandwidth + LFE).
     pub fn channels(&self) -> usize {
-        NFCHANS[self.acmod as usize] + self.lfeon as usize
+        NFCHANS[self.acmod as usize & 7] + self.lfeon as usize
+    }
+    /// Whether this is an E-AC-3 syncframe (bsid 11-16).
+    pub fn is_eac3(&self) -> bool {
+        self.bsid > 10
+    }
+    /// Whether [`Decoder::decode`] produces audio for this syncframe: AC-3, or the first
+    /// independent E-AC-3 substream (dependent substreams and further programs are skipped).
+    pub fn decodes_audio(&self) -> bool {
+        !self.dependent && self.substreamid == 0
     }
 }
 
@@ -64,8 +83,11 @@ pub fn parse_header(b: &[u8]) -> Result<Header> {
     let fscod = b[4] >> 6;
     let frmsizecod = b[4] & 0x3F;
     let bsid = b[5] >> 3;
+    if bsid > 16 {
+        return Err(Error::Unsupported(format!("bsid {bsid}")));
+    }
     if bsid > 10 {
-        return Err(Error::Unsupported(format!("bsid {bsid} (E-AC-3)")));
+        return eac3::parse_header(b);
     }
     if fscod == 3 || frmsizecod >= 38 {
         return Err(Error::Invalid("reserved fscod / frmsizecod"));
@@ -91,7 +113,17 @@ pub fn parse_header(b: &[u8]) -> Result<Header> {
         r.skip(2);
     }
     let lfeon = r.read(1) == 1;
-    Ok(Header { sample_rate, bitrate_kbps: kbps >> shift, frame_bytes: words as usize * 2, bsid, acmod, lfeon })
+    Ok(Header {
+        sample_rate,
+        bitrate_kbps: kbps >> shift,
+        frame_bytes: words as usize * 2,
+        bsid,
+        acmod,
+        lfeon,
+        samples: 1536,
+        dependent: false,
+        substreamid: 0,
+    })
 }
 
 /// MSB-first bit reader; reads past the end give zeros.
@@ -469,7 +501,8 @@ struct Frame {
     chincpl: [bool; 5],
     phsflginu: bool,
     cplbegf: usize,
-    cplendf: usize,
+    /// End coupling sub-band (exclusive): cplendf + 3.
+    cplend: usize,
     /// Coupling band of each coupling sub-band (relative to cplbegf).
     sub_to_band: [usize; 18],
     ncplbnd: usize,
@@ -500,7 +533,7 @@ impl Frame {
             chincpl: [false; 5],
             phsflginu: false,
             cplbegf: 0,
-            cplendf: 0,
+            cplend: 0,
             sub_to_band: [0; 18],
             ncplbnd: 0,
             cplco: [[0.0; 18]; 5],
@@ -523,7 +556,11 @@ impl Frame {
         37 + 12 * self.cplbegf
     }
     fn cplendmant(&self) -> usize {
-        37 + 12 * (self.cplendf + 3)
+        37 + 12 * self.cplend
+    }
+    /// Coupling sub-bands in use.
+    fn ncplsubnd(&self) -> usize {
+        self.cplend.saturating_sub(self.cplbegf).min(18)
     }
 }
 
@@ -669,6 +706,9 @@ impl Decoder {
         // frame decodes to the same samples however it was reached (seeking, render caches).
         let crcs = u32::from_be_bytes([frame[2], frame[3], frame[h.frame_bytes - 2], frame[h.frame_bytes - 1]]);
         self.dither = self.seed ^ crcs.wrapping_mul(0x9E37_79B9);
+        if h.is_eac3() {
+            return self.decode_eac3(&frame[..h.frame_bytes], h);
+        }
         let mut r = Bits::new(&frame[..h.frame_bytes]);
         r.skip(40); // syncinfo
         // bsi
@@ -718,20 +758,25 @@ impl Decoder {
             if r.overrun() {
                 return Err(Error::Invalid("audio block runs past the frame"));
             }
-            // inverse transform, overlap-add
-            let mut buf = [0f32; 512];
-            for ch in 0..nout {
-                let src = if ch < nfchans { ch } else { LFE };
-                let short = ch < nfchans && f.blksw[ch];
-                imdct(&coefs[src], short, &mut buf);
-                let d = &mut self.delay[src];
-                for n in 0..256 {
-                    pcm[ch].push(2.0 * (buf[n] + d[n]));
-                    d[n] = buf[256 + n];
-                }
-            }
+            self.output_block(&f, &coefs, &mut pcm);
         }
         Ok(Decoded { header: h, channels: wav_order(pcm, acmod, lfeon) })
+    }
+
+    /// Inverse transform and overlap-add of one block into `pcm` (full-bandwidth channels in
+    /// coded order, then LFE).
+    fn output_block(&mut self, f: &Frame, coefs: &[[f32; 256]; 6], pcm: &mut [Vec<f32>]) {
+        let mut buf = [0f32; 512];
+        for (ch, out) in pcm.iter_mut().enumerate() {
+            let src = if ch < f.nfchans { ch } else { LFE };
+            let short = ch < f.nfchans && f.blksw[ch];
+            let (Some(c), Some(d)) = (coefs.get(src), self.delay.get_mut(src)) else { continue };
+            imdct(c, short, &mut buf);
+            for n in 0..256 {
+                out.push(2.0 * (buf[n] + d[n]));
+                d[n] = buf[256 + n];
+            }
+        }
     }
 
     fn audio_block(&mut self, r: &mut Bits, f: &mut Frame, acmod: usize, lfeon: bool, blk: usize, coefs: &mut [[f32; 256]; 6]) -> Result<()> {
@@ -760,11 +805,11 @@ impl Decoder {
                     f.phsflginu = r.bit();
                 }
                 f.cplbegf = r.read(4) as usize;
-                f.cplendf = r.read(4) as usize;
-                if f.cplendf + 3 <= f.cplbegf {
+                f.cplend = r.read(4) as usize + 3;
+                if f.cplend <= f.cplbegf {
                     return Err(Error::Invalid("coupling end below start"));
                 }
-                let nsub = 3 + f.cplendf - f.cplbegf;
+                let nsub = f.ncplsubnd();
                 let mut band = 0;
                 f.sub_to_band[0] = 0;
                 for s in 1..nsub {
@@ -792,7 +837,7 @@ impl Decoder {
                         let m = r.read(4) as f32;
                         let v = if e == 15 { m / 16.0 } else { (m + 16.0) / 32.0 };
                         let co = v * 2f32.powi(-(e + 3 * mstr));
-                        for s in 0..(3 + f.cplendf - f.cplbegf) {
+                        for s in 0..f.ncplsubnd() {
                             if f.sub_to_band[s] == bnd {
                                 f.cplco[ch][s] = co;
                             }
@@ -803,7 +848,7 @@ impl Decoder {
             if acmod == 2 && f.phsflginu && any {
                 for bnd in 0..f.ncplbnd {
                     let flag = r.bit();
-                    for s in 0..(3 + f.cplendf - f.cplbegf) {
+                    for s in 0..f.ncplsubnd() {
                         if f.sub_to_band[s] == bnd {
                             f.phsflg[s] = flag;
                         }
@@ -925,6 +970,14 @@ impl Decoder {
             let l = r.read(9) as usize;
             r.skip(l * 8);
         }
+        self.reconstruct(r, f, acmod, lfeon, coefs);
+        Ok(())
+    }
+
+    /// Bit allocation, mantissas, decoupling, rematrixing and dynamic range of one block, common
+    /// to AC-3 and E-AC-3 (once the block's side information is in `f`).
+    fn reconstruct(&mut self, r: &mut Bits, f: &mut Frame, acmod: usize, lfeon: bool, coefs: &mut [[f32; 256]; 6]) {
+        let nf = f.nfchans;
         // bit allocation for every exponent set
         let all_zero = f.csnroffst == 0 && (0..7).all(|c| f.fsnroffst[c] == 0);
         let snr = |fine: i32| (((f.csnroffst - 15) << 4) + fine) << 2;
@@ -1024,7 +1077,6 @@ impl Decoder {
         if lfeon && f.dynrng[0] != 1.0 {
             coefs[LFE].iter_mut().for_each(|c| *c *= f.dynrng[0]);
         }
-        Ok(())
     }
 }
 

@@ -13,6 +13,78 @@ the before/after comparison relies on. Each milestone below alternated base / af
 each); the most load-independent figure is the decoder's own cycle count (`proc_pid_rusage`
 instructions and cycles of a process, all threads summed).
 
+## Results (Windows: AV1 decoder kernels and post-filter threading, before → after)
+
+`AV1_THREADS=n cargo run --release -p filmcraft-av1 --example av1dec -- clip.ivf` on the
+`cargo xtask bench` decode clips re-encoded to IVF (SVT-AV1 preset 10, CRF 35, keyint 48,
+testsrc2 + grain; 1080p 120 frames, 2160p 72 frames; 8-bit `yuv420p` and 10-bit
+`yuv420p10le`), 2026-11-05, AMD Ryzen 9 9950X3D (16 cores / 32 threads), Windows 11 Pro 26300.
+Six other agents were building in parallel: CPU load 15–60 % during the runs (column `load`).
+Before = `212f060`, after = this change; base / after runs alternated, two rounds. CPU ms per
+frame is the process's user + kernel time over all threads (Windows `TotalProcessorTime`);
+wall fps includes process start and file reading. Every output is bit-identical to the
+baseline's (MD5 of all planes, 1 and 8 / 32 threads) and the conformance / oracle tests,
+including `conformance_vectors_extended` and `inter_1080p`, pass unchanged.
+
+| clip | 1 thread, CPU ms / frame (2 runs) | 32 threads, wall fps (2 runs) | load |
+|---|---|---|---|
+| 1080p 8-bit | 17.8, 18.5 → **14.3, 15.4** (−18 %) | 137, 124 → **158, 149** | 15–51 % |
+| 2160p 8-bit | 69.7, 72.7 → **62.3, 62.3** (−12 %) | 33.4, 26.7 → **42.3, 39.2** (+35 %) | 12–49 % |
+| 1080p 10-bit | 18.8, 16.5 → **13.9, 15.6** (−16 %) | 118, 123 → **131, 153** | 32–63 % |
+| 2160p 10-bit | 71.2, 74.2 → **60.1, 61.8** (−16 %) | 33.3, 36.2 → **42.2, 42.4** (+22 %) | 36–59 % |
+
+At 32 threads the CPU per frame is unchanged (74–77 ms at 2160p: same work, spread wider).
+With 8 threads (an intermediate build with the same kernels and post-filter bands) 2160p 8-bit
+went from 26.6, 25.6, 26.0 to 33.6–36.9 fps. **4K AV1 now decodes
+faster than real time (23.976 fps) with headroom on this loaded machine** (≈ 40 fps against
+≈ 30 before); a single core still manages only ≈ 16 fps.
+
+Single-threaded 2160p stage times (s for the 72 frames, `AV1_STATS=1`), before → after:
+tiles 3.61 → 2.92–3.04, CDEF 0.59 → 0.45, deblocking 0.21 → 0.22, output 0.21 → 0.19,
+setup 0.17 → 0.17.
+
+What changed (`crates/av1`):
+
+1. **Inverse transforms** (4 K: 0.57 → 0.29 s): the DCT is instantiated per length (constant
+   loop bounds, angles and permutations fold); DCT_DCT blocks with only a DC coefficient (all
+   64x64 and a quarter of the 32x32 blocks here) use the constant-row / constant-column
+   shortcut; columns whose input has at most 8 non-zero leading rows skip the zero inputs;
+   rotations use 3 multiplies instead of 4 (`t = (a + b) cos`, exact modulo 2^32). Dequantisation
+   walks the coded scan positions only and clears them afterwards, instead of clearing a 4 KB
+   `Quant[]` per transform block and scanning the whole block.
+2. **Sub-pixel filters**: 8-bit horizontal passes run in 16-bit lanes with halved taps (every AV1
+   tap is even, so the sum fits in i16 and the rounding is unchanged); intermediate rows are
+   16-bit at every bit depth (twice the SIMD width on the vertical pass's loads).
+3. **Bypass bits** (`read_literal`: signs, Golomb codes) decode without the generic CDF search.
+4. **CDEF and the loop filter run in parallel** inside a frame (they were serial on the frame
+   worker, ≈ 11 ms per 4K frame on the critical path): CDEF over 64-row bands, each copying its
+   rows of the unfiltered frame and filtering them; deblocking pass 0 over row bands, pass 1
+   over even then odd bands with 8 rows of reach. No two edges of a pass touch the same sample
+   (a filter reaches at most half the smaller adjacent transform size), so the result does not
+   depend on the order. Each pass uses at most 8 rayon tasks: one task per band woke all 32
+   workers, whose idle spinning added ≈ 30 % CPU per frame.
+5. CDEF skips the direction search for blocks whose luma and chroma primary strengths are 0;
+   plane clones copy once instead of zeroing first.
+
+Tried and dropped: copying the output picture in parallel bands (no wall gain, +40 % CPU from
+waking the pool for 2 ms of memcpy); 16 frame threads and 4 more frames in flight (≈ +5 %
+wall at 32 threads, within noise, for ≈ 0.5 GB more memory at 4K).
+
+Remaining hot spots (single-threaded 2160p, 4.7 s for 72 frames): inter prediction 1.2 s
+(sub-pixel filters 0.9 s, ≈ 1 ns per predicted sample; the vertical pass and 10-bit horizontal
+pass are 32-bit, and x86-64 builds target SSE2 only, which has no 32-bit lane multiply),
+coefficient parsing 0.9 s (entropy-bound: one adaptive symbol per coefficient), reconstruction
+0.5 s (inverse transforms 0.29 s, mostly 16x16 / 32x32 with many coefficients), CDEF 0.45 s
+(scalar direction search), deblocking 0.22 s (one edge at a time), output copy and motion
+vector storage 0.19 s, setup 0.17 s. On the threading side a single-tile 4K frame still decodes
+its tile on one core (≈ 40 ms), and frames wait for whole reference frames (and their motion
+vectors, used by motion-field projection), so a hierarchical GOP's critical path is about five
+frames per 16. The next big steps are a parse / reconstruct split (parsing never reads samples,
+so a second thread could predict and reconstruct superblock rows behind the parser) and
+row-level frame threading (publish reference rows once post-filtered); building with
+`-C target-cpu=x86-64-v3` (AVX2) would also speed up every codec's kernels, but is a
+distribution decision.
+
 ## Results (Lumetri wheels, curves, split tone and Looks on the GPU, before → after)
 
 `cargo xtask bench --sections playback --only lumetri-grade` (release, GPU path, 8 s plays): one

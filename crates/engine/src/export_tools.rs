@@ -564,6 +564,11 @@ pub fn pump_queue(s: &mut Session, wait: bool) {
         if s.export_queue.items.iter().any(|i| i.status == QueueStatus::Encoding) || !s.export_queue.running {
             return;
         }
+        // Settings ▸ Playback ▸ Pause Media Encoder queue during playback: the next export waits
+        // until playback stops (an explicit `wait` still encodes now)
+        if !wait && s.playback_active && s.prefs.playback.pause_encoder_queue {
+            return;
+        }
         let Some(i) = s.export_queue.items.iter().position(|i| i.status == QueueStatus::Ready) else {
             s.export_queue.running = false;
             if finished_any || !wait {

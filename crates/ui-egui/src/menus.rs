@@ -383,6 +383,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
     if let Err(e) = &r {
         app.ui.status = e.clone();
     }
+    // Settings ▸ Timeline ▸ Set focus on the Timeline when performing Insert/Overwrite edits
+    if r.is_ok() && matches!(id, "source.insert" | "source.overwrite") && app.session.prefs.timeline.focus_timeline_on_edit {
+        app.show_panel(PanelKind::Timeline);
+    }
     // Markers ▸ Copy YouTube Chapters: the list goes to the clipboard, problems to the status bar
     if id == "markers.exportChapters"
         && let Ok(v) = &r

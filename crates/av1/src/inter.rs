@@ -10,6 +10,24 @@ use crate::tile::TileDecoder;
 
 const PRED_STRIDE: usize = 128;
 
+/// Scratch rows of the sub-pixel filters.
+#[derive(Default)]
+pub(crate) struct McTmp {
+    /// Horizontally filtered rows of the scaled-reference path (up to 2 x 128 + 8 rows of 128
+    /// with 2:1 scaled references).
+    wide: Vec<i32>,
+    /// Horizontally filtered rows of the unscaled path (128 + 7 rows of up to 128). Every
+    /// intermediate value of a conforming stream fits in 16 bits (InterRound0 keeps the
+    /// horizontal sums of 8- to 12-bit samples within it).
+    narrow: Vec<i16>,
+}
+
+impl McTmp {
+    pub fn new() -> McTmp {
+        McTmp { wide: vec![0; (2 * 128 + 8) * 128], narrow: vec![0; (128 + 8) * 128] }
+    }
+}
+
 #[inline(always)]
 fn round2(x: i32, n: u32) -> i32 {
     if n == 0 { x } else { (x + (1 << (n - 1))) >> n }
@@ -203,7 +221,7 @@ impl TileDecoder<'_, '_> {
         filters: [u8; 2],
         rnd: (u32, u32, u32),
         pred: &mut [i32],
-        tmp: &mut [i32],
+        tmp: &mut McTmp,
     ) {
         let refp = self.ref_plane(ref_idx, plane);
         let (last_x, last_y) = self.ref_plane_dims(ref_idx, plane);
@@ -236,11 +254,13 @@ impl TileDecoder<'_, '_> {
                 &SUBPEL_FILTERS[fh][((x >> 6) & SUBPEL_MASK as i32) as usize],
                 &SUBPEL_FILTERS[fv][((y >> 6) & SUBPEL_MASK as i32) as usize],
                 rnd,
+                self.fs.bit_depth,
                 pred,
-                tmp,
+                &mut tmp.narrow,
             );
             return;
         }
+        let tmp = &mut tmp.wide;
         let inter_h = ((((h as i32 - 1) * y_step + (1 << SCALE_SUBPEL_BITS) - 1) >> SCALE_SUBPEL_BITS) + 8) as usize;
         for r in 0..inter_h {
             let ry = ((y >> 10) + r as i32 - 3).clamp(0, last_y) as usize;
@@ -669,10 +689,34 @@ impl TileDecoder<'_, '_> {
 
 const IDENTITY_TAPS: [i16; 8] = [0, 0, 0, 128, 0, 0, 0, 0];
 
-/// Horizontal pass of one row for a block `W` wide: taps outer, columns inner, fixed width so
-/// the row stays in registers.
+/// Horizontal pass of one 8-bit row for a block `W` wide in 16-bit lanes. Every AV1 filter tap
+/// is even, so the sum is twice the sum with halved taps, which for 8-bit samples stays within
+/// [-255 * 28, 255 * 92] (the largest negative / positive halved tap sums), and
+/// Round2( sum, 3 ) == Round2( sum / 2, 2 ).
 #[inline(always)]
-fn hpass<const W: usize>(src: &[u16], hf: &[i16; 8], out: &mut [i32], half: i32, sh: u32) {
+fn hpass8<const W: usize>(src: &[u16], hf: &[i16; 8], out: &mut [i16]) {
+    let mut acc = [2i16; W];
+    for t in 0..8 {
+        let f = hf[t] >> 1;
+        let Some(p) = src.get(t..).and_then(|s| s.first_chunk::<W>()) else {
+            return;
+        };
+        for j in 0..W {
+            acc[j] = acc[j].wrapping_add(f.wrapping_mul(p[j] as i16));
+        }
+    }
+    let Some(o) = out.first_chunk_mut::<W>() else {
+        return;
+    };
+    for j in 0..W {
+        o[j] = acc[j] >> 2;
+    }
+}
+
+/// Horizontal pass of one row (10 / 12 bits) for a block `W` wide: taps outer, columns inner,
+/// fixed width so the row stays in registers; 16-bit operands, 32-bit sums.
+#[inline(always)]
+fn hpass<const W: usize>(src: &[u16], hf: &[i16; 8], out: &mut [i16], half: i32, sh: u32) {
     let mut acc = [half; W];
     for t in 0..8 {
         let f = hf[t] as i32;
@@ -680,7 +724,28 @@ fn hpass<const W: usize>(src: &[u16], hf: &[i16; 8], out: &mut [i32], half: i32,
             return;
         };
         for j in 0..W {
-            acc[j] += f * p[j] as i32;
+            acc[j] = acc[j].wrapping_add(f.wrapping_mul(p[j] as i16 as i32));
+        }
+    }
+    let Some(o) = out.first_chunk_mut::<W>() else {
+        return;
+    };
+    for j in 0..W {
+        o[j] = (acc[j] >> sh) as i16;
+    }
+}
+
+/// Vertical pass of one output row from 8 intermediate rows (`rows`, stride `W`).
+#[inline(always)]
+fn vpass<const W: usize>(rows: &[i16], vf: &[i16; 8], out: &mut [i32], half: i32, sh: u32) {
+    let mut acc = [half; W];
+    for t in 0..8 {
+        let f = vf[t] as i32;
+        let Some(p) = rows.get(t * W..).and_then(|s| s.first_chunk::<W>()) else {
+            return;
+        };
+        for j in 0..W {
+            acc[j] = acc[j].wrapping_add(f.wrapping_mul(p[j] as i32));
         }
     }
     let Some(o) = out.first_chunk_mut::<W>() else {
@@ -691,24 +756,29 @@ fn hpass<const W: usize>(src: &[u16], hf: &[i16; 8], out: &mut [i32], half: i32,
     }
 }
 
-/// Vertical pass of one output row from 8 intermediate rows (`rows`, stride `W`).
-#[inline(always)]
-fn vpass<const W: usize>(rows: &[i32], vf: &[i16; 8], out: &mut [i32], half: i32, sh: u32) {
-    let mut acc = [half; W];
-    for t in 0..8 {
-        let f = vf[t] as i32;
-        let Some(p) = rows.get(t * W..).and_then(|s| s.first_chunk::<W>()) else {
+/// Horizontal pass of one row of any width (`out.len()` samples).
+fn hpass_any(src: &[u16], hf: &[i16; 8], out: &mut [i16], half: i32, sh: u32) {
+    for (j, o) in out.iter_mut().enumerate() {
+        let Some(p) = src.get(j..j + 8) else {
             return;
         };
-        for j in 0..W {
-            acc[j] += f * p[j];
+        let mut a = half;
+        for t in 0..8 {
+            a = a.wrapping_add((hf[t] as i32).wrapping_mul(p[t] as i32));
         }
+        *o = (a >> sh) as i16;
     }
-    let Some(o) = out.first_chunk_mut::<W>() else {
-        return;
-    };
-    for j in 0..W {
-        o[j] = acc[j] >> sh;
+}
+
+/// Vertical pass of one output row of any width from 8 rows of stride `out.len()`.
+fn vpass_any(rows: &[i16], vf: &[i16; 8], out: &mut [i32], half: i32, sh: u32) {
+    let w = out.len();
+    for (j, o) in out.iter_mut().enumerate() {
+        let mut a = half;
+        for t in 0..8 {
+            a = a.wrapping_add((vf[t] as i32).wrapping_mul(rows.get(t * w + j).copied().unwrap_or(0) as i32));
+        }
+        *o = a >> sh;
     }
 }
 
@@ -726,8 +796,9 @@ fn mc_unscaled(
     hf: &[i16; 8],
     vf: &[i16; 8],
     rnd: (u32, u32, u32),
+    bit_depth: u32,
     pred: &mut [i32],
-    tmp: &mut [i32],
+    tmp: &mut [i16],
 ) {
     let x0 = (x >> 10) - 3;
     let y0 = (y >> 10) - 3;
@@ -735,27 +806,43 @@ fn mc_unscaled(
     let v_copy = *vf == IDENTITY_TAPS;
     // With the identity vertical phase only intermediate rows 3 .. 3 + h have a non-zero tap.
     let (r_lo, r_hi) = if v_copy { (3, 3 + h) } else { (0, h + 7) };
+    if w == 0 || w > 128 || h == 0 || h > 128 || tmp.len() < r_hi * w || pred.len() < (h - 1) * PRED_STRIDE + w {
+        return;
+    }
     let inside = x0 >= 0 && x0 + w as i32 + 7 <= last_x + 1;
     let mut edge = [0u16; 128 + 8];
-    let mut acc = [0i32; 128];
     let (r0, r1) = (rnd.0, rnd.1);
     let (half0, half1) = (1i32 << (r0 - 1), 1i32 << (r1 - 1));
+    // The halved-tap 16-bit sums need samples below 256 and InterRound0 = 3.
+    let narrow = bit_depth == 8 && r0 == 3;
     for r in r_lo..r_hi {
         let ry = (y0 + r as i32).clamp(0, last_y) as usize;
         let row = refp.row(ry);
-        let src: &[u16] = if inside {
-            &row[x0 as usize..x0 as usize + w + 7]
-        } else {
-            for (k, e) in edge[..w + 7].iter_mut().enumerate() {
-                *e = row[(x0 + k as i32).clamp(0, last_x) as usize];
+        let src: &[u16] = match row.get(x0.max(0) as usize..(x0 + w as i32 + 7).max(0) as usize) {
+            Some(s) if inside => s,
+            _ => {
+                for (k, e) in edge[..w + 7].iter_mut().enumerate() {
+                    *e = row.get((x0 + k as i32).clamp(0, last_x) as usize).copied().unwrap_or(0);
+                }
+                &edge[..w + 7]
             }
-            &edge[..w + 7]
         };
         let out = &mut tmp[r * w..r * w + w];
         if h_copy {
             // Round2(128 * v, InterRound0) is exact.
             for (o, &v) in out.iter_mut().zip(&src[3..3 + w]) {
-                *o = (v as i32) << (7 - r0);
+                *o = ((v as i32) << (7 - r0)) as i16;
+            }
+        } else if narrow {
+            match w {
+                2 => hpass8::<2>(src, hf, out),
+                4 => hpass8::<4>(src, hf, out),
+                8 => hpass8::<8>(src, hf, out),
+                16 => hpass8::<16>(src, hf, out),
+                32 => hpass8::<32>(src, hf, out),
+                64 => hpass8::<64>(src, hf, out),
+                128 => hpass8::<128>(src, hf, out),
+                _ => hpass_any(src, hf, out, half0, r0),
             }
         } else {
             match w {
@@ -765,19 +852,8 @@ fn mc_unscaled(
                 16 => hpass::<16>(src, hf, out, half0, r0),
                 32 => hpass::<32>(src, hf, out, half0, r0),
                 64 => hpass::<64>(src, hf, out, half0, r0),
-                _ => {
-                    let acc = &mut acc[..w];
-                    acc.fill(0);
-                    for t in 0..8 {
-                        let f = hf[t] as i32;
-                        for (a, &v) in acc.iter_mut().zip(&src[t..t + w]) {
-                            *a += f * v as i32;
-                        }
-                    }
-                    for (o, &a) in out.iter_mut().zip(acc.iter()) {
-                        *o = (a + half0) >> r0;
-                    }
-                }
+                128 => hpass::<128>(src, hf, out, half0, r0),
+                _ => hpass_any(src, hf, out, half0, r0),
             }
         }
     }
@@ -785,7 +861,7 @@ fn mc_unscaled(
         let out = &mut pred[r * PRED_STRIDE..r * PRED_STRIDE + w];
         if v_copy {
             for (o, &v) in out.iter_mut().zip(&tmp[(r + 3) * w..(r + 4) * w]) {
-                *o = (128 * v + half1) >> r1;
+                *o = (128 * v as i32 + half1) >> r1;
             }
         } else {
             let rows = &tmp[r * w..(r + 8) * w];
@@ -796,19 +872,8 @@ fn mc_unscaled(
                 16 => vpass::<16>(rows, vf, out, half1, r1),
                 32 => vpass::<32>(rows, vf, out, half1, r1),
                 64 => vpass::<64>(rows, vf, out, half1, r1),
-                _ => {
-                    let acc = &mut acc[..w];
-                    acc.fill(0);
-                    for t in 0..8 {
-                        let f = vf[t] as i32;
-                        for (a, &v) in acc.iter_mut().zip(&tmp[(r + t) * w..(r + t + 1) * w]) {
-                            *a += f * v;
-                        }
-                    }
-                    for (o, &a) in out.iter_mut().zip(acc.iter()) {
-                        *o = (a + half1) >> r1;
-                    }
-                }
+                128 => vpass::<128>(rows, vf, out, half1, r1),
+                _ => vpass_any(rows, vf, out, half1, r1),
             }
         }
     }

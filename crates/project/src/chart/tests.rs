@@ -140,3 +140,72 @@ fn colours_repeat_the_palette() {
     assert_eq!((s.color(0), s.color(1), s.color(2)), ([1, 2, 3], [4, 5, 6], [1, 2, 3]));
     assert_eq!(ChartSpec::default().color(0), PALETTES[0].1[0]);
 }
+
+#[test]
+fn images_round_trip_and_old_charts_have_none() {
+    // a chart saved before pictures existed reads with none, and writes no `images` key
+    let old: ChartSpec = serde_json::from_str(r#"{"kind":"bar","categories":["A"],"steps":["x"],"values":[[1]]}"#).unwrap();
+    assert!(old.images.is_empty() && old.image_shape == ImageShape::Circle);
+    let v = serde_json::to_value(&old).unwrap();
+    assert!(v.get("images").is_none() && v.get("imageShape").is_none(), "{v}");
+    let mut s = race();
+    s.set_image(1, Some(ChartImage { item: Some(ItemId(7)), path: "C:/flags/b.png".into() }));
+    s.image_shape = ImageShape::Rounded;
+    let json = serde_json::to_string(&s).unwrap();
+    assert!(json.contains(r#""images":[null,{"item":7,"path":"C:/flags/b.png"}]"#), "{json}");
+    assert!(json.contains(r#""imageShape":"rounded""#), "{json}");
+    let back: ChartSpec = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, s);
+    assert_eq!(back.image(1).and_then(|i| i.item), Some(ItemId(7)));
+    assert_eq!(back.image(0), None);
+    assert_eq!(back.image(99), None);
+}
+
+#[test]
+fn sanitize_aligns_images_with_categories() {
+    let mut s = race();
+    // too many, an empty one, and a hostile path
+    s.images = vec![Some(ChartImage::default()), Some(ChartImage::of_item(ItemId(3))), Some(ChartImage::of_item(ItemId(4)))];
+    s.images.push(Some(ChartImage { item: None, path: "x".repeat(MAX_PATH_CHARS * 2) }));
+    let c = s.sanitized();
+    assert_eq!(c.images, vec![None, Some(ChartImage::of_item(ItemId(3)))]);
+    // too few: padded
+    s.images = vec![Some(ChartImage { item: None, path: "y".repeat(MAX_PATH_CHARS + 5) })];
+    let c = s.sanitized();
+    assert_eq!(c.images.len(), 2);
+    assert_eq!(c.image(0).map(|i| i.path.chars().count()), Some(MAX_PATH_CHARS));
+    // only empty entries: dropped so the JSON stays as before
+    s.images = vec![None, Some(ChartImage::default())];
+    assert!(s.sanitized().images.is_empty());
+    // set_image past the end does nothing
+    let mut t = race();
+    t.set_image(5, Some(ChartImage::of_item(ItemId(1))));
+    assert!(t.images.is_empty());
+}
+
+#[test]
+fn moving_removing_and_reloading_categories_keeps_pictures_aligned() {
+    let mut s = ChartSpec {
+        categories: vec!["A".into(), "B".into(), "C".into()],
+        steps: vec!["1".into()],
+        values: vec![vec![1.0], vec![2.0], vec![3.0]],
+        ..ChartSpec::default()
+    };
+    s.set_image(0, Some(ChartImage::of_item(ItemId(10))));
+    s.set_image(2, Some(ChartImage::of_item(ItemId(30))));
+    s.move_category(2, 0);
+    assert_eq!(s.categories, ["C", "A", "B"]);
+    assert_eq!(s.values, vec![vec![3.0], vec![1.0], vec![2.0]]);
+    assert_eq!(s.images, vec![Some(ChartImage::of_item(ItemId(30))), Some(ChartImage::of_item(ItemId(10))), None]);
+    s.move_category(0, 9);
+    s.remove_category(9);
+    assert_eq!(s.categories.len(), 3);
+    s.remove_category(1);
+    assert_eq!(s.categories, ["C", "B"]);
+    assert_eq!(s.images, vec![Some(ChartImage::of_item(ItemId(30))), None]);
+    // a pasted table keeps pictures by category name
+    s.set_table(vec!["B".into(), "C".into(), "D".into()], vec!["1".into()], vec![vec![0.0]; 3]);
+    assert_eq!(s.images, vec![None, Some(ChartImage::of_item(ItemId(30))), None]);
+    s.set_table(vec!["Z".into()], vec!["1".into()], vec![vec![0.0]]);
+    assert!(s.images.is_empty());
+}

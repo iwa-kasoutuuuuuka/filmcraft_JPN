@@ -3,17 +3,99 @@
 //! anti-aliased and composited straight into the output (no resampling). The chart is designed on
 //! the graphic canvas (the sequence frame); `m` maps canvas pixels to output pixels, so Motion
 //! scales it crisply.
+//!
+//! Category pictures ([`ChartSpec::images`]) come from the project's media through the render's
+//! [`SourceProvider`] ([`chart_images`]): the first frame of each item, reduced to a thumbnail and
+//! cached. They are drawn cropped to a circle or a rounded square: at the end of each bar, above
+//! each column, and in the legend of line, area and pie charts. A picture that is missing or
+//! cannot be decoded is simply left out.
 
+use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, TAU};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use filmcraft_geom::Affine;
-use filmcraft_project::chart::{ChartKind, ChartSpec, ChartState, ChartTheme, format_value, nice_step, state_at};
+use filmcraft_geom::{Affine, Vec2};
+use filmcraft_media::FrameRequest;
+use filmcraft_project::ItemId;
+use filmcraft_project::chart::{ChartKind, ChartSpec, ChartState, ChartTheme, ImageShape, format_value, nice_step, state_at};
 use filmcraft_text::raster::fill_into;
 use filmcraft_text::{Mask, ParagraphStyle, Path, TextStyle, layout, measure, render};
 
+use crate::SourceProvider;
 use crate::graphic_clip::xform;
 use crate::graphics::{paint_mask, premul_linear};
 use crate::image::Image;
+
+/// Decoded category pictures, aligned with [`ChartSpec::categories`] (premultiplied linear).
+pub type ChartImages = Vec<Option<Arc<Image>>>;
+
+/// Longest side a cached category thumbnail keeps (in pixels).
+pub const MAX_THUMB_SIDE: usize = 256;
+/// Thumbnails kept in the cache.
+const MAX_CACHED_THUMBS: usize = 96;
+
+type ThumbCache = Mutex<HashMap<ItemId, (u64, usize, Arc<Image>)>>;
+
+fn thumb_cache() -> &'static ThumbCache {
+    static C: OnceLock<ThumbCache> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// The first frame of `item` as a thumbnail at most [`MAX_THUMB_SIDE`] on a side, cached by item
+/// and decoded frame.
+pub fn item_thumbnail(item: ItemId, sources: &dyn SourceProvider) -> Option<Arc<Image>> {
+    let src = sources.source(item)?;
+    let full = src.info().video.as_ref().map(|v| (v.width.max(1) as f32).max(v.height.max(1) as f32));
+    let scale = full.map_or(1.0, |side| (MAX_THUMB_SIDE as f32 / side).clamp(1.0 / 64.0, 1.0));
+    let frame = src.video_frame(FrameRequest { time: filmcraft_time::Tick::ZERO, scale }).ok()?;
+    if frame.width == 0 || frame.height == 0 {
+        return None;
+    }
+    let ptr = Arc::as_ptr(&frame) as usize;
+    static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some(e) = thumb_cache().lock().unwrap_or_else(PoisonError::into_inner).get_mut(&item)
+        && e.1 == ptr
+    {
+        e.0 = now;
+        return Some(e.2.clone());
+    }
+    // box-decimate by a power of two to about the thumbnail size
+    let side = frame.width.max(frame.height) as usize;
+    let mut n = 1usize;
+    while side / n.saturating_mul(2) >= MAX_THUMB_SIDE && n < 1 << 12 {
+        n *= 2;
+    }
+    let (w, h, px) = frame.to_linear_f32_decimated(n);
+    if w == 0 || h == 0 || px.len() != w.saturating_mul(h).saturating_mul(4) {
+        return None;
+    }
+    let mut img = Image { w, h, px };
+    while img.w.max(img.h) > MAX_THUMB_SIDE {
+        img = img.downsample2();
+    }
+    let img = Arc::new(img);
+    let mut c = thumb_cache().lock().unwrap_or_else(PoisonError::into_inner);
+    if c.len() >= MAX_CACHED_THUMBS
+        && !c.contains_key(&item)
+        && let Some(k) = c.iter().min_by_key(|(_, v)| v.0).map(|(k, _)| *k)
+    {
+        c.remove(&k);
+    }
+    c.insert(item, (now, ptr, img.clone()));
+    Some(img)
+}
+
+/// The pictures of `spec`'s categories through `sources` (`None` where a category has none or
+/// it cannot be decoded).
+pub fn chart_images(spec: &ChartSpec, sources: &dyn SourceProvider) -> ChartImages {
+    if !spec.has_images() {
+        return Vec::new();
+    }
+    (0..spec.categories.len().min(filmcraft_project::chart::MAX_CATEGORIES))
+        .map(|i| spec.image(i).and_then(|im| im.item).and_then(|item| item_thumbnail(item, sources)))
+        .collect()
+}
 
 /// Largest area one shape or label may cover in output pixels (a hostile Motion scale must not
 /// allocate without bound).
@@ -74,9 +156,30 @@ struct Painter<'a> {
     out: &'a mut Image,
     m: Affine,
     family: String,
+    images: &'a [Option<Arc<Image>>],
+    shape: ImageShape,
 }
 
 impl Painter<'_> {
+    /// The picture of category `c`, if it has one that decoded.
+    fn pic(&self, c: usize) -> Option<Arc<Image>> {
+        self.images.get(c).and_then(Clone::clone)
+    }
+
+    /// Whether any category shows a picture.
+    fn any_pic(&self) -> bool {
+        self.images.iter().any(Option::is_some)
+    }
+
+    /// Draw category `c`'s picture as a `size` square centred on (`x`, `y`); false when it has none.
+    fn pic_at(&mut self, c: usize, x: f32, y: f32, size: f32, alpha: f32) -> bool {
+        let Some(img) = self.pic(c) else { return false };
+        let h = size / 2.0;
+        let shape = self.shape;
+        self.image(&img, [x - h, y - h, x + h, y + h], shape, alpha);
+        true
+    }
+
     fn fill(&mut self, path: &Path, c: Rgba) {
         if path.is_empty() || c[3] <= 0.0 {
             return;
@@ -108,6 +211,76 @@ impl Painter<'_> {
         }
         extra(&mut mk);
         paint_mask(self.out, &mk.0, mk.1, mk.2, premul_linear(c), 1.0);
+    }
+
+    /// Draw `img` covering the canvas rectangle `r` (centre-cropped to its aspect), clipped to a
+    /// circle or a rounded square, at `alpha`.
+    fn image(&mut self, img: &Image, r: [f32; 4], shape: ImageShape, alpha: f32) {
+        let (rw, rh) = (r[2] - r[0], r[3] - r[1]);
+        if img.w == 0 || img.h == 0 || alpha <= 0.0 || !(rw > 0.5 && rh > 0.5) || img.px.len() < img.w.saturating_mul(img.h).saturating_mul(4) {
+            return;
+        }
+        let clip = match shape {
+            ImageShape::Circle => Path::ellipse((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0, rw / 2.0, rh / 2.0),
+            ImageShape::Rounded => Path::round_rect(r[0], r[1], r[2], r[3], rw.min(rh) * 0.22),
+        };
+        let p = clip.transformed(&xform(&self.m));
+        let Some(b) = p.bounds() else { return };
+        if ![b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite()) {
+            return;
+        }
+        let Some(inv) = self.m.inverse() else { return };
+        let x0 = (b.0.floor() as i64).max(0);
+        let y0 = (b.1.floor() as i64).max(0);
+        let x1 = (b.2.ceil() as i64 + 1).min(self.out.w as i64);
+        let y1 = (b.3.ceil() as i64 + 1).min(self.out.h as i64);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        if w.saturating_mul(h) > MAX_MASK_PIXELS {
+            return;
+        }
+        let mut mask = Mask::new(w, h);
+        fill_into(&p, &mut mask, -(x0 as f32), -(y0 as f32));
+        // a source much larger than it shows is box-reduced first (bilinear alone would alias)
+        let shown = (b.2 - b.0).max(1.0);
+        let mut small: Option<Image> = None;
+        loop {
+            let cur = small.as_ref().unwrap_or(img);
+            let covered = rw * (cur.w as f32 / rw).min(cur.h as f32 / rh);
+            if covered < shown * 2.0 || cur.w < 4 || cur.h < 4 {
+                break;
+            }
+            small = Some(cur.downsample2());
+        }
+        let src = small.as_ref().unwrap_or(img);
+        let (iw, ih) = (src.w as f32, src.h as f32);
+        // cover: the largest centred source rectangle with the target's aspect
+        let k = (iw / rw).min(ih / rh);
+        let (sw, sh) = (rw * k, rh * k);
+        let (sx0, sy0) = ((iw - sw) / 2.0, (ih - sh) / 2.0);
+        let ow = self.out.w;
+        for my in 0..h {
+            let oy = y0 as usize + my;
+            for mx in 0..w {
+                let cov = mask.a.get(my * w + mx).copied().unwrap_or(0.0) * alpha;
+                if cov <= 0.0 {
+                    continue;
+                }
+                let ox = x0 as usize + mx;
+                let q = inv.apply(Vec2::new(ox as f64 + 0.5, oy as f64 + 0.5));
+                let u = ((q.x as f32 - r[0]) / rw).clamp(0.0, 1.0);
+                let v = ((q.y as f32 - r[1]) / rh).clamp(0.0, 1.0);
+                let c = src.sample_bilinear_clamped(sx0 + u * sw, sy0 + v * sh);
+                let i = (oy * ow + ox) * 4;
+                let Some(px) = self.out.px.get_mut(i..i + 4) else { continue };
+                let keep = 1.0 - c[3] * cov;
+                for (d, s) in px.iter_mut().zip(c) {
+                    *d = s * cov + *d * keep;
+                }
+            }
+        }
     }
 
     fn style(&self, size: f32, bold: bool) -> TextStyle {
@@ -200,12 +373,17 @@ fn wedge(cx: f32, cy: f32, outer: f32, inner: f32, a0: f32, a1: f32) -> Path {
 /// Draw `spec` as it looks `u` seconds into a clip `d` seconds long, designed on a `canvas`-sized
 /// frame, through `m` (canvas → output pixels).
 pub fn draw_chart(spec: &ChartSpec, u: f64, d: f64, canvas: (u32, u32), m: &Affine, out: &mut Image) {
+    draw_chart_with(spec, u, d, canvas, m, &[], out);
+}
+
+/// [`draw_chart`] with the category pictures (from [`chart_images`]).
+pub fn draw_chart_with(spec: &ChartSpec, u: f64, d: f64, canvas: (u32, u32), m: &Affine, images: &[Option<Arc<Image>>], out: &mut Image) {
     let spec = spec.sanitized();
     let st = state_at(&spec, u, d);
     let (cw, ch) = (canvas.0.max(1) as f32, canvas.1.max(1) as f32);
     let s = cw.min(ch);
     let family = if spec.font.trim().is_empty() { filmcraft_text::fonts::DEFAULT_FAMILY.to_string() } else { spec.font.clone() };
-    let mut p = Painter { out, m: *m, family };
+    let mut p = Painter { out, m: *m, family, images, shape: spec.image_shape };
     let col = colors(spec.theme);
     let margin = 0.035 * s;
     let card = [margin, margin, cw - margin, ch - margin];
@@ -256,13 +434,16 @@ fn bars(p: &mut Painter, spec: &ChartSpec, st: &ChartState, col: &Colors, area: 
     let unscaled_max = if st.grow > 1e-3 { cur_max / st.grow } else { shown.iter().map(|&c| spec.value(c, st.step)).fold(0.0f64, f64::max) };
     let amax = if race { unscaled_max } else { all_max }.max(1e-9);
     let label_w = shown.iter().filter_map(|&c| spec.categories.get(c)).map(|t| p.measure(t, fs, false)).fold(0.0f32, f32::max).min((area[2] - area[0]) * 0.3);
+    let axis_h = if spec.show_grid { fs * 1.9 } else { 0.0 };
+    // pictures sit just past each bar's end, as tall as the bar
+    let pic = if p.any_pic() { ((area[3] - axis_h - area[1]) / visible as f32 * 0.78).max(0.0) } else { 0.0 };
+    let pic_gap = fs * 0.3;
     let value_w = if spec.show_values {
         let top = if race { unscaled_max } else { all_max };
         p.measure(&format_value(top, spec.decimals), fs, false) + fs * 0.8
     } else {
         fs * 0.5
-    };
-    let axis_h = if spec.show_grid { fs * 1.9 } else { 0.0 };
+    } + if pic > 0.0 { pic + pic_gap } else { 0.0 };
     let plot = [area[0] + label_w + fs * 0.6, area[1], area[2] - value_w, area[3] - axis_h];
     if plot[2] - plot[0] < 4.0 || plot[3] - plot[1] < 4.0 {
         return;
@@ -299,10 +480,14 @@ fn bars(p: &mut Painter, spec: &ChartSpec, st: &ChartState, col: &Colors, area: 
             t[3] *= fade;
             p.text(name, fs, false, t, plot[0] - fs * 0.45, mid, H::Right);
         }
+        let mut vx = plot[0] + len + fs * 0.35;
+        if pic > 0.0 && p.pic_at(c, plot[0] + len + pic_gap + pic / 2.0, mid, pic, fade) {
+            vx += pic + pic_gap;
+        }
         if spec.show_values {
             let mut t = col.text;
             t[3] *= fade;
-            p.text(&format_value(v, spec.decimals), fs, false, t, plot[0] + len + fs * 0.35, mid, H::Left);
+            p.text(&format_value(v, spec.decimals), fs, false, t, vx, mid, H::Left);
         }
     }
     if spec.show_step && spec.steps.len() > 1 {
@@ -320,7 +505,9 @@ fn columns(p: &mut Painter, spec: &ChartSpec, st: &ChartState, col: &Colors, are
     let amax = (all_max / step).ceil().max(1.0) * step;
     let dec = tick_decimals(step);
     let axis_w = if spec.show_grid { p.measure(&format_value(amax, dec), fs * 0.85, false) + fs * 0.6 } else { 0.0 };
-    let top = if spec.show_values { fs * 1.5 } else { fs * 0.3 };
+    // pictures sit on top of each column (the value above them)
+    let pic = if p.any_pic() { ((area[2] - area[0] - axis_w) / n as f32 * 0.62 * 0.9).min(fs * 2.2).max(0.0) } else { 0.0 };
+    let top = if spec.show_values { fs * 1.5 } else { fs * 0.3 } + if pic > 0.0 { pic + fs * 0.3 } else { 0.0 };
     let plot = [area[0] + axis_w, area[1] + top, area[2], area[3] - fs * 2.0];
     if plot[2] - plot[0] < 4.0 || plot[3] - plot[1] < 4.0 {
         return;
@@ -352,8 +539,12 @@ fn columns(p: &mut Painter, spec: &ChartSpec, st: &ChartState, col: &Colors, are
         if let Some(name) = spec.categories.get(c) {
             p.text(name, fs * 0.9, false, col.text, cx, plot[3] + fs * 1.0, H::Center);
         }
+        let mut above = plot[3] - hgt;
+        if pic > 0.0 && p.pic_at(c, cx, above - fs * 0.25 - pic / 2.0, pic, 1.0) {
+            above -= pic + fs * 0.25;
+        }
         if spec.show_values {
-            p.text(&format_value(v, spec.decimals), fs * 0.85, false, col.text, cx, plot[3] - hgt - fs * 0.7, H::Center);
+            p.text(&format_value(v, spec.decimals), fs * 0.85, false, col.text, cx, above - fs * 0.7, H::Center);
         }
     }
     if spec.show_step && spec.steps.len() > 1 {
@@ -367,14 +558,19 @@ fn columns(p: &mut Painter, spec: &ChartSpec, st: &ChartState, col: &Colors, are
 /// Legend rows (colour chip + text) down the right of `area`; returns the width it took.
 fn legend(p: &mut Painter, spec: &ChartSpec, col: &Colors, area: [f32; 4], fs: f32, rows: &[(usize, String)]) -> f32 {
     let w = rows.iter().map(|(_, t)| p.measure(t, fs * 0.9, false)).fold(0.0f32, f32::max).min((area[2] - area[0]) * 0.35);
-    let chip = fs * 0.75;
+    // with pictures the chips are pictures (a colour chip where a category has none), larger
+    let swatch = fs * 0.75;
+    let chip = if p.any_pic() { fs * 1.4 } else { swatch };
     let total = w + chip + fs * 1.4;
     let x = area[2] - w - chip - fs * 0.4;
-    let line = fs * 1.5;
+    let line = (fs * 1.5).max(chip + fs * 0.3);
     let fit = ((area[3] - area[1]) / line).floor().max(0.0) as usize;
     for (k, (c, t)) in rows.iter().take(fit).enumerate() {
         let y = area[1] + line * (k as f32 + 0.5);
-        p.fill(&Path::round_rect(x, y - chip / 2.0, x + chip, y + chip / 2.0, chip * 0.2), rgb(spec.color(*c), 1.0));
+        if !p.pic_at(*c, x + chip / 2.0, y, chip, 1.0) {
+            let sx = x + (chip - swatch) / 2.0;
+            p.fill(&Path::round_rect(sx, y - swatch / 2.0, sx + swatch, y + swatch / 2.0, swatch * 0.2), rgb(spec.color(*c), 1.0));
+        }
         p.text(t, fs * 0.9, false, col.text, x + chip + fs * 0.4, y, H::Left);
     }
     total
@@ -546,10 +742,15 @@ fn pie(p: &mut Painter, spec: &ChartSpec, st: &ChartState, col: &Colors, area: [
 
 /// The chart alone as straight-alpha sRGB RGBA8 at `w`×`h` (previews, thumbnails).
 pub fn chart_rgba(spec: &ChartSpec, u: f64, d: f64, canvas: (u32, u32), w: u32, h: u32) -> Vec<u8> {
+    chart_rgba_with(spec, u, d, canvas, w, h, &[])
+}
+
+/// [`chart_rgba`] with the category pictures (from [`chart_images`]).
+pub fn chart_rgba_with(spec: &ChartSpec, u: f64, d: f64, canvas: (u32, u32), w: u32, h: u32, images: &[Option<Arc<Image>>]) -> Vec<u8> {
     let (w, h) = (w.clamp(1, 4096), h.clamp(1, 4096));
     let mut img = Image::new(w as usize, h as usize);
     let k = (f64::from(w) / f64::from(canvas.0.max(1))).min(f64::from(h) / f64::from(canvas.1.max(1)));
-    draw_chart(spec, u, d, canvas, &Affine::scale(k, k), &mut img);
+    draw_chart_with(spec, u, d, canvas, &Affine::scale(k, k), images, &mut img);
     img.to_rgba8()
 }
 

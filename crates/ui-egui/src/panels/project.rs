@@ -272,15 +272,37 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     run(app, ui.ctx(), actions);
 }
 
+/// The Project panel's tab title: "Project: <name>", or just the name with Settings ▸ General ▸
+/// Show "Project:" and "Bin:" in Project panel tab off.
+/// `localized`: in the UI language (window titles); else English, as the tab strip has always
+/// been drawn (its automation labels stay the same in every language).
+fn project_tab_title(app: &FilmcraftApp, localized: bool) -> String {
+    let name = &app.session.project.name;
+    match (app.session.prefs.general.show_project_bin_in_tab, localized) {
+        (false, _) => name.clone(),
+        (true, true) => crate::tf!("Project: {}", "プロジェクト: {}", name),
+        (true, false) => format!("Project: {name}"),
+    }
+}
+
+/// A bin tab's (or bin window's) title: "Bin: <name>", or just the name.
+fn bin_tab_title(app: &FilmcraftApp, name: &str, localized: bool) -> String {
+    match (app.session.prefs.general.show_project_bin_in_tab, localized) {
+        (false, _) => name.to_string(),
+        (true, true) => crate::tf!("Bin: {name}", "ビン: {name}"),
+        (true, false) => format!("Bin: {name}"),
+    }
+}
+
 fn tab_strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, strip: Rect, docked: &[usize]) {
     let t = app.tokens;
     ui.painter().line_segment([strip.left_bottom(), strip.right_bottom()], Stroke::new(1.0, t.separator));
     let mut x = strip.min.x + 6.0;
     let active = shown_inst(app);
-    let mut entries: Vec<(Option<usize>, String)> = vec![(None, format!("Project: {}", app.session.project.name))];
+    let mut entries: Vec<(Option<usize>, String)> = vec![(None, project_tab_title(app, false))];
     for k in docked {
         let name = app.session.project.root.find_bin(BinId(app.ui.project_panel.tabs[*k].bin)).map(|b| b.name.clone()).unwrap_or_default();
-        entries.push((Some(*k), format!("Bin: {name}")));
+        entries.push((Some(*k), bin_tab_title(app, &name, false)));
     }
     let mut close = None;
     for (k, label) in entries {
@@ -334,26 +356,22 @@ pub fn floating(app: &mut FilmcraftApp, ctx: &egui::Context) {
         };
         let mut open = true;
         let root = app.ui.project_panel.tabs[k].bin == app.session.project.root.id.0;
-        egui::Window::new(if root {
-            crate::tf!("Project: {}", "プロジェクト: {}", app.session.project.name)
-        } else {
-            crate::tf!("Bin: {name}", "ビン: {name}")
-        })
-        .id(egui::Id::new(("bin-window", k)))
-        .open(&mut open)
-        .default_size(vec2(520.0, 360.0))
-        .min_size(vec2(320.0, 220.0))
-        .collapsible(false)
-        .show(ctx, |ui| {
-            let r = ui.available_rect_before_wrap();
-            let r = Rect::from_min_size(r.min, vec2(r.width().max(320.0), r.height().max(220.0)));
-            ui.allocate_rect(r, Sense::hover());
-            let v = view_of(app, Inst::Tab(k));
-            app.auto.add(&format!("projectBin.{k}.window"), r, &name);
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt(("bin-window-body", k)));
-            child.set_clip_rect(r);
-            body(app, &mut child, r, &v, &mut actions);
-        });
+        egui::Window::new(if root { project_tab_title(app, true) } else { bin_tab_title(app, &name, true) })
+            .id(egui::Id::new(("bin-window", k)))
+            .open(&mut open)
+            .default_size(vec2(520.0, 360.0))
+            .min_size(vec2(320.0, 220.0))
+            .collapsible(false)
+            .show(ctx, |ui| {
+                let r = ui.available_rect_before_wrap();
+                let r = Rect::from_min_size(r.min, vec2(r.width().max(320.0), r.height().max(220.0)));
+                ui.allocate_rect(r, Sense::hover());
+                let v = view_of(app, Inst::Tab(k));
+                app.auto.add(&format!("projectBin.{k}.window"), r, &name);
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt(("bin-window-body", k)));
+                child.set_clip_rect(r);
+                body(app, &mut child, r, &v, &mut actions);
+            });
         if !open {
             close = Some(k);
         }

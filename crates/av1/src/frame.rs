@@ -40,11 +40,61 @@ pub struct Plane {
     pub oy: usize,
 }
 
+/// A copy of `src` (recycled memory for large ones, filled with one copy instead of zeroing
+/// first).
+fn copied(src: &[u16]) -> Vec<u16> {
+    if src.len() >= POOL_MIN_LEN {
+        let len = src.len();
+        let found = {
+            let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
+            pool.iter().position(|v| v.capacity() >= len && v.capacity() <= 2 * len).map(|i| pool.swap_remove(i))
+        };
+        if let Some(mut v) = found {
+            v.clear();
+            v.extend_from_slice(src);
+            return v;
+        }
+    }
+    src.to_vec()
+}
+
+/// A buffer of `len` samples whose contents are unspecified (recycled samples of an earlier
+/// frame, or zeros): for callers that overwrite every sample.
+fn scratch(len: usize) -> Vec<u16> {
+    if len >= POOL_MIN_LEN {
+        let found = {
+            let mut pool = PLANE_POOL.lock().unwrap_or_else(|e| e.into_inner());
+            pool.iter().position(|v| v.capacity() >= len && v.capacity() <= 2 * len).map(|i| pool.swap_remove(i))
+        };
+        if let Some(mut v) = found {
+            v.resize(len, 0);
+            v.truncate(len);
+            return v;
+        }
+    }
+    vec![0; len]
+}
+
 impl Clone for Plane {
     fn clone(&self) -> Plane {
-        let mut data = zeroed(self.data.len());
-        data.copy_from_slice(&self.data);
-        Plane { data, stride: self.stride, rows: self.rows, ox: self.ox, oy: self.oy }
+        Plane { data: copied(&self.data), stride: self.stride, rows: self.rows, ox: self.ox, oy: self.oy }
+    }
+}
+
+/// Mutable rows `y0 ..` of a whole plane (a band of it, for row-parallel filtering).
+pub(crate) struct RowsMut<'a> {
+    pub data: &'a mut [u16],
+    pub stride: usize,
+    /// Plane row of `data[0]`.
+    pub y0: usize,
+}
+
+impl RowsMut<'_> {
+    /// Row `y` (plane coordinates), if inside the band.
+    #[inline(always)]
+    pub fn row_mut(&mut self, y: usize) -> Option<&mut [u16]> {
+        let o = y.checked_sub(self.y0)?.checked_mul(self.stride)?;
+        self.data.get_mut(o..o.checked_add(self.stride)?)
     }
 }
 
@@ -99,6 +149,35 @@ impl Plane {
         let o = (y - self.oy) * self.stride;
         &mut self.data[o + x - self.ox..o + self.stride]
     }
+    /// Disjoint mutable bands of a whole plane: rows [a, b) for each (a, b) of `ranges`, which
+    /// must be ascending and non-overlapping (each is clamped to the plane; a range past the end
+    /// or out of order gives an empty band). Always returns one band per range.
+    pub(crate) fn bands_mut(&mut self, ranges: &[(usize, usize)]) -> Vec<RowsMut<'_>> {
+        let stride = self.stride;
+        let rows = self.data.len().checked_div(stride).unwrap_or(0);
+        let mut rest: &mut [u16] = &mut self.data;
+        let mut at = 0usize;
+        let mut out = Vec::with_capacity(ranges.len());
+        for &(a, b) in ranges {
+            let a = a.clamp(at, rows);
+            let b = b.clamp(a, rows);
+            let tail = std::mem::take(&mut rest);
+            let Some((_, tail)) = tail.split_at_mut_checked((a - at) * stride) else {
+                break;
+            };
+            let Some((band, tail)) = tail.split_at_mut_checked((b - a) * stride) else {
+                break;
+            };
+            rest = tail;
+            at = b;
+            out.push(RowsMut { data: band, stride, y0: a });
+        }
+        while out.len() < ranges.len() {
+            out.push(RowsMut { data: &mut [], stride, y0: rows });
+        }
+        out
+    }
+
     /// Copy this region into the whole plane `dst` (same frame coordinates).
     pub fn copy_into(&self, dst: &mut Plane) {
         for y in 0..self.rows {
@@ -156,6 +235,15 @@ impl FrameBuf {
             width: self.width,
             height: self.height,
         }
+    }
+
+    /// A frame of the same geometry whose samples are unspecified (to be overwritten entirely).
+    pub(crate) fn scratch_like(&self) -> FrameBuf {
+        let mut planes: [Plane; 3] = Default::default();
+        for (d, s) in planes.iter_mut().zip(self.planes.iter()) {
+            *d = Plane { data: scratch(s.data.len()), stride: s.stride, rows: s.rows, ox: s.ox, oy: s.oy };
+        }
+        FrameBuf { planes, ..*self }
     }
 
     pub fn plane_width(&self, plane: usize) -> usize {
@@ -283,5 +371,33 @@ impl MiInfo {
                 dst.palette_colors[k][d..d + w].copy_from_slice(&self.palette_colors[k][y * w..(y + 1) * w]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bands_are_disjoint_and_clamped() {
+        let mut p = Plane::new(4, 10);
+        for (i, v) in p.data.iter_mut().enumerate() {
+            *v = i as u16;
+        }
+        // overlapping, out-of-order and out-of-range ranges never panic and keep one band each
+        let bands = p.bands_mut(&[(0, 2), (5, 7), (6, 9), (3, 4), (8, usize::MAX), (20, 30)]);
+        assert_eq!(bands.len(), 6);
+        assert_eq!((bands[0].y0, bands[0].data.len()), (0, 8));
+        assert_eq!(bands[0].data[0], 0);
+        assert_eq!((bands[1].y0, bands[1].data.len()), (5, 8));
+        assert_eq!(bands[1].data[0], 20);
+        assert_eq!((bands[2].y0, bands[2].data.len()), (7, 8));
+        assert_eq!(bands[3].data.len(), 0);
+        assert_eq!((bands[4].y0, bands[4].data.len()), (9, 4));
+        assert_eq!(bands[5].data.len(), 0);
+        let mut b = bands.into_iter().nth(1).unwrap();
+        assert!(b.row_mut(4).is_none());
+        assert_eq!(b.row_mut(6).map(|r| r[0]), Some(24));
+        assert!(b.row_mut(7).is_none());
     }
 }

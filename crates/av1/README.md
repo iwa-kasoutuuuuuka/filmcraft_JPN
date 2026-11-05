@@ -70,7 +70,8 @@ with libdav1d: **bit-exact** on all 6 fixtures.
 wasm32, or without the default `threads` feature, everything runs on the calling thread). Headers are parsed in order; each frame is
 then decoded by a frame worker once the reference frames it reads are finished, so independent
 frames (hierarchical GOP layers) decode concurrently; tiles of a frame decode in parallel into
-private buffers that are merged afterwards. Results never depend on scheduling (the oracle tests
+private buffers that are merged afterwards; CDEF and the deblocking loop filter run over 64-row
+bands in parallel (at most 8 tasks per pass). Results never depend on scheduling (the oracle tests
 compare 1 thread, many threads and libdav1d). With frame threads, pictures may be returned by a
 later `decode_pts` call or by `flush`; each carries the `pts` of the temporal unit that showed it.
 
