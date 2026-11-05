@@ -576,3 +576,212 @@ fn real_engine_when_running() {
     assert!(r["lines"][0]["seconds"].as_f64().unwrap() > 0.3);
     assert!(!r["creditText"].as_str().unwrap().is_empty());
 }
+
+// ------------------------------------------------------------------------------------- what is ducked
+
+/// Add an audio track with a copy of the demo music at `start` for `dur` seconds (untyped,
+/// `link`ed as given); returns the copy's clip id.
+fn add_music_copy(s: &mut Session, start: f64, dur: f64, link: Option<u64>) -> filmcraft_project::ClipId {
+    s.execute("sequence.addTracks", json!({"video": 0, "audio": 1})).unwrap();
+    let seq_id = s.state.active_sequence.unwrap();
+    s.edit("test", |pr, _| {
+        let id = filmcraft_project::ClipId(pr.alloc_id());
+        let seq = pr.sequence_mut(seq_id).unwrap();
+        let mut m = seq.audio_tracks[1].items[0].clone();
+        m.id = id;
+        m.start = Tick::from_seconds_f64(start);
+        m.duration = Tick::from_seconds_f64(dur);
+        m.link = link;
+        seq.audio_tracks.last_mut().unwrap().items.push(m);
+        Ok(id)
+    })
+    .unwrap()
+}
+
+fn clip(s: &Session, id: filmcraft_project::ClipId) -> filmcraft_project::TrackItem {
+    s.active_sequence().unwrap().find_item(id).unwrap().1.clone()
+}
+
+fn narrate(s: &mut Session, dir: &str, extra: Value) -> Value {
+    let mut p = json!({"engine": "voicevox", "text": "こんにちは、今日はいい天気ですね", "seconds": 4.0, "dir": out_dir(dir), "captions": false});
+    for (k, v) in extra.as_object().unwrap() {
+        p[k] = v.clone();
+    }
+    s.execute("tts.synthesize", p).unwrap()
+}
+
+fn skipped_reason(mix: &Value, c: filmcraft_project::ClipId) -> Option<String> {
+    mix["skipped"].as_array().unwrap().iter().find(|x| x["clip"] == c.0).map(|x| x["reason"].as_str().unwrap().to_string())
+}
+
+fn ducked(mix: &Value, c: filmcraft_project::ClipId) -> bool {
+    mix["ducked"].as_array().unwrap().iter().any(|d| d["clip"] == c.0)
+}
+
+/// Camera audio (linked to its video) is usually speech: left untyped and unducked, while the
+/// demo's plain music still ducks.
+#[test]
+fn linked_camera_audio_is_not_ducked_plain_music_is() {
+    let mut s = demo();
+    s.prefs.narration.voicevox_url = fake(Mode::Good, false);
+    let cam: Vec<_> = s.active_sequence().unwrap().audio_tracks[0].items.iter().filter(|i| i.link.is_some()).cloned().collect();
+    assert!(!cam.is_empty());
+    let r = narrate(&mut s, "camaudio", json!({}));
+    let mix = &r["mix"];
+    assert_eq!(mix["errors"], json!([]), "{mix}");
+    let music = demo_music(&s);
+    assert!(ducked(mix, music.id), "{mix}");
+    let spoken = filmcraft_time::TimeRange::from_bounds(Tick(r["start"].as_i64().unwrap()), Tick(r["end"].as_i64().unwrap()));
+    let under: Vec<_> = cam.iter().filter(|c| c.range().overlaps(&spoken)).collect();
+    assert!(!under.is_empty(), "the demo has camera audio under the narration");
+    for c in under {
+        assert_eq!(&clip(&s, c.id), c, "camera audio untouched");
+        assert!(skipped_reason(mix, c.id).unwrap().contains("linked to video"), "{mix}");
+        assert!(!mix["typedMusic"].as_array().unwrap().contains(&json!(c.id.0)));
+    }
+}
+
+/// A clip on a locked track is never changed, also when it is linked to a clip that is ducked
+/// (linked selection on); a muted track is left alone too.
+#[test]
+fn locked_and_muted_tracks_are_untouched_even_when_linked() {
+    let mut s = demo();
+    s.prefs.narration.voicevox_url = fake(Mode::Good, false);
+    assert!(s.state.linked_selection);
+    let seq_id = s.state.active_sequence.unwrap();
+    // a plain music clip linked to a copy on a locked track
+    let link = s.edit("test", |pr, _| Ok(pr.alloc_id())).unwrap();
+    let free = add_music_copy(&mut s, 3.0, 4.0, Some(link));
+    let locked = add_music_copy(&mut s, 3.0, 4.0, Some(link));
+    let muted = add_music_copy(&mut s, 3.0, 4.0, None);
+    s.edit("test", |pr, _| {
+        let seq = pr.sequence_mut(seq_id).unwrap();
+        let n = seq.audio_tracks.len();
+        seq.audio_tracks[n - 2].locked = true;
+        seq.audio_tracks[n - 1].muted = true;
+        Ok(())
+    })
+    .unwrap();
+    let (locked0, muted0) = (clip(&s, locked), clip(&s, muted));
+    let r = narrate(&mut s, "locked", json!({}));
+    let mix = &r["mix"];
+    assert!(ducked(mix, free), "{mix}");
+    assert_eq!(clip(&s, locked), locked0, "the locked partner is untouched");
+    assert_eq!(clip(&s, muted), muted0, "the muted track is untouched");
+    assert_eq!(skipped_reason(mix, locked).as_deref(), Some("track locked"));
+    assert_eq!(skipped_reason(mix, muted).as_deref(), Some("track muted"));
+    assert!(s.state.linked_selection, "linked selection is restored");
+}
+
+/// Only what plays under a spoken line is ducked, not a clip that sits in a pause between lines.
+#[test]
+fn a_clip_only_in_a_pause_is_not_ducked() {
+    let mut s = demo();
+    s.prefs.narration.voicevox_url = fake(Mode::Good, false);
+    // line 1: 4.0–4.5 s, pause 3 s, line 2 from 7.5 s
+    let gap = add_music_copy(&mut s, 5.0, 1.5, None);
+    let gap0 = clip(&s, gap);
+    let lines = json!([{"text": "こんにちは", "voice": "ずんだもん", "pauseAfter": 3.0}, {"text": "さようなら", "voice": "ずんだもん"}]);
+    let r = narrate(&mut s, "pause", json!({"text": null, "lines": lines}));
+    let mix = &r["mix"];
+    assert!(ducked(mix, demo_music(&s).id), "{mix}");
+    assert_eq!(clip(&s, gap), gap0, "the clip in the pause is untouched");
+    assert!(!ducked(mix, gap) && skipped_reason(mix, gap).is_none(), "{mix}");
+}
+
+/// Music whose Volume has the user's fades is skipped (generateDucking would replace them), and
+/// the fades stay.
+#[test]
+fn music_with_fades_is_skipped_and_keeps_its_keyframes() {
+    use filmcraft_project::ParamValue;
+    let mut s = demo();
+    s.prefs.narration.voicevox_url = fake(Mode::Good, false);
+    let m = demo_music(&s).id;
+    s.execute("essentialSound.setType", json!({"clips": [m.0], "type": "music"})).unwrap();
+    let seq_id = s.state.active_sequence.unwrap();
+    s.edit("fades", |pr, _| {
+        let it = pr.sequence_mut(seq_id).unwrap().find_item_mut(m).unwrap().1;
+        let lvl = it.effect_mut("volume").unwrap().param_mut("level").unwrap();
+        lvl.put_keyframe(Tick::ZERO, ParamValue::Float(-60.0));
+        lvl.put_keyframe(Tick::from_seconds_f64(1.0), ParamValue::Float(-14.0));
+        Ok(())
+    })
+    .unwrap();
+    let m0 = clip(&s, m);
+    let r = narrate(&mut s, "fades", json!({}));
+    let mix = &r["mix"];
+    assert_eq!(clip(&s, m), m0, "the fades are kept");
+    assert!(!ducked(mix, m));
+    assert_eq!(skipped_reason(mix, m).as_deref(), Some("has volume keyframes; run essentialSound.generateDucking to replace them"));
+}
+
+/// Music the user set up for ducking keeps its depth unless `duckReduceDb` is passed.
+#[test]
+fn the_users_reduce_db_is_kept_unless_passed() {
+    let mut s = demo();
+    s.prefs.narration.voicevox_url = fake(Mode::Good, false);
+    let m = demo_music(&s).id;
+    s.execute("essentialSound.setType", json!({"clips": [m.0], "type": "music"})).unwrap();
+    s.execute("essentialSound.set", json!({"clips": [m.0], "values": {"ducking.enabled": true, "ducking.reduceDb": -6.0}})).unwrap();
+    let r = narrate(&mut s, "reduce", json!({}));
+    assert!(ducked(&r["mix"], m), "{}", r["mix"]);
+    assert_eq!(r["mix"]["keptReduceDb"], json!([m.0]));
+    let it = clip(&s, m);
+    assert_eq!(it.essential.as_ref().unwrap().ducking.reduce_db, -6.0);
+    let lvl = it.effect("volume").unwrap().param("level").unwrap();
+    let min = lvl.keyframes.iter().filter_map(|k| k.value.as_f64()).fold(f64::INFINITY, f64::min);
+    assert!((min - -20.0).abs() < 1e-6, "ducked by the user's 6 dB below -14: {min}");
+    s.execute("edit.undo", json!({})).unwrap();
+    // passed explicitly: it wins
+    let r = narrate(&mut s, "reduce2", json!({"duckReduceDb": -20.0}));
+    assert_eq!(r["mix"]["reduceDb"], -20.0);
+    assert_eq!(clip(&s, m).essential.as_ref().unwrap().ducking.reduce_db, -20.0);
+}
+
+/// Earlier narration under new narration is never ducked: untyped (made with the mix off) or
+/// Dialogue.
+#[test]
+fn earlier_narration_is_not_ducked() {
+    let mut s = demo();
+    s.prefs.narration.voicevox_url = fake(Mode::Good, false);
+    let a = narrate(&mut s, "earlier", json!({"autoLevel": false, "duck": false}));
+    let first = filmcraft_project::ClipId(a["clips"][0].as_u64().unwrap());
+    let b = narrate(&mut s, "earlier", json!({"autoLevel": false}));
+    let second = filmcraft_project::ClipId(b["clips"][0].as_u64().unwrap());
+    let first0 = clip(&s, first);
+    assert!(first0.essential.is_none(), "made with the mix off");
+    assert_eq!(skipped_reason(&b["mix"], first).as_deref(), Some("narration"), "{}", b["mix"]);
+    assert!(!ducked(&b["mix"], first));
+    assert!(ducked(&b["mix"], demo_music(&s).id), "{}", b["mix"]);
+    // a third take over both: the Dialogue one is left alone, the untyped one is skipped as narration
+    let c = narrate(&mut s, "earlier", json!({}));
+    assert!(!ducked(&c["mix"], first) && !ducked(&c["mix"], second), "{}", c["mix"]);
+    assert_eq!(clip(&s, first), first0);
+    assert_eq!(clip(&s, second).essential.as_ref().map(|e| e.kind), Some(filmcraft_project::AudioType::Dialogue));
+}
+
+/// With the undo history full (or nearly), Generate is still exactly one undo step and one undo
+/// restores the project as it was (the nested steps used to be evicted mid-command, so the fold
+/// was skipped or folded to a state from the middle of the command).
+#[test]
+fn one_undo_step_at_the_history_limit() {
+    for fill in [0usize, 3, 1] {
+        let mut s = demo();
+        s.prefs.narration.voicevox_url = fake(Mode::Good, false);
+        let limit = s.history.limit;
+        while s.history.undo.len() < limit - fill {
+            let p = s.project.clone();
+            s.history.undo.push(("filler".into(), p));
+        }
+        let before = s.project.clone();
+        let n0 = s.history.undo.len();
+        let r = narrate(&mut s, &format!("limit{fill}"), json!({}));
+        assert!(!r["mix"]["ducked"].as_array().unwrap().is_empty(), "{}", r["mix"]);
+        assert!(s.history.undo.len() <= n0 + 1 && s.history.undo.len() <= limit, "fill {fill}: {} steps", s.history.undo.len());
+        assert_eq!(s.history.undo.last().unwrap().0, "Synthesize Narration");
+        assert_eq!(s.history.undo.iter().filter(|u| u.0 == "Synthesize Narration").count(), 1);
+        s.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*s.project, *before, "fill {fill}: one undo restores the project");
+        assert_eq!(s.history.undo.last().unwrap().0, "filler");
+    }
+}

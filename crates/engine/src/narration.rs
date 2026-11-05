@@ -23,9 +23,10 @@
 //! See `docs/narration.md` and `docs/voice-terms.md`.
 //!
 //! The placed narration is mixed in (Settings ▸ Narration, or `autoLevel` / `duck`): its clips
-//! get the Dialogue audio type and a loudness match to the dialogue target, and the Music /
-//! Ambience / untyped clips on other audio tracks under it are ducked ([`auto_mix`]), all in the
-//! same undo step. The result's `mix` says what was done.
+//! get the Dialogue audio type and a loudness match to the dialogue target, and the music under
+//! its lines is ducked (Music / Ambience clips, and untyped plain audio; never linked camera
+//! audio, nested sequences, earlier narration, or locked / muted tracks; [`auto_mix`]), all in
+//! the same undo step. The result's `mix` says what was done and what was `skipped`.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,7 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use filmcraft_project::{AudioType, CaptionFormat, CaptionTrack, ClipId, ItemId, TrackId, TrackKind};
+use filmcraft_project::{AudioType, CaptionFormat, CaptionTrack, ClipId, ItemId, ItemKind, MediaRef, TrackId, TrackKind};
 use filmcraft_speech::tts::{self, AivmModel, Client, Prosody, Speaker, TtsEngine, TtsError, WavInfo};
 use filmcraft_time::{Tick, TimeRange};
 
@@ -684,8 +685,8 @@ pub fn place(s: &mut Session, p: &Value, r: Rendered) -> Result<Value> {
         Ok((clips, ctrack, caption_ids))
     })?;
     // sit the narration in the mix (nested commands, folded into the same undo step below)
-    let span = TimeRange::from_bounds(starts.first().copied().unwrap_or(at), end);
-    let mix = auto_mix(s, p, &clips, track, span);
+    let spoken: Vec<TimeRange> = plan.iter().map(|(_, st, dur, _, _)| TimeRange::new(*st, *dur)).collect();
+    let mix = auto_mix(s, p, &clips, track, &spoken);
     crate::clip_ops::collapse_history(s, n0, UNDO_LABEL);
     // cache what the engine said
     s.narration.voices.insert(r.engine, (web_time::Instant::now(), r.url.clone(), r.speakers.clone()));
@@ -740,20 +741,29 @@ fn db_clamped(v: f64, lo: f64, hi: f64, def: f64) -> f64 {
 /// 1. the narration clips get the Dialogue type (`essentialSound.setType`; the ducking listens
 ///    to it) and, with auto-level, their loudness is matched to the dialogue target
 ///    (`essentialSound.autoMatch`);
-/// 2. with ducking, the enabled clips on other unlocked audio tracks that overlap the narration
-///    and are Music or Ambience, or have no audio type (they become Music), get
+/// 2. with ducking, the music under a narration line (see [`duck_plan`]) gets
 ///    `ducking.reduceDb` and Volume keyframes (`essentialSound.generateDucking`).
 ///
-/// Never fails the placement: what could not be done is listed in `errors`.
-fn auto_mix(s: &mut Session, p: &Value, clips: &[ClipId], track: TrackId, span: TimeRange) -> Value {
+/// Linked selection is off while it runs, so the commands touch exactly the clips chosen here
+/// (never a linked partner on a locked track). Never fails the placement: what could not be done
+/// is listed in `errors`, the clips left alone on purpose in `skipped`.
+fn auto_mix(s: &mut Session, p: &Value, clips: &[ClipId], track: TrackId, lines: &[TimeRange]) -> Value {
+    let linked = std::mem::replace(&mut s.state.linked_selection, false);
+    let out = auto_mix_steps(s, p, clips, track, lines);
+    s.state.linked_selection = linked;
+    out
+}
+
+fn auto_mix_steps(s: &mut Session, p: &Value, clips: &[ClipId], track: TrackId, lines: &[TimeRange]) -> Value {
     let prefs = &s.prefs.narration;
     let level = bool_p(p, "autoLevel").unwrap_or(prefs.auto_level);
     let duck = bool_p(p, "duck").unwrap_or(prefs.duck);
-    let reduce = db_clamped(f64_p(p, "duckReduceDb").unwrap_or(prefs.duck_reduce_db), -40.0, 0.0, DEFAULT_DUCK_DB);
+    let explicit_reduce = f64_p(p, "duckReduceDb");
+    let reduce = db_clamped(explicit_reduce.unwrap_or(prefs.duck_reduce_db), -40.0, 0.0, DEFAULT_DUCK_DB);
     let dialogue_target = s.prefs.audio.loudness_target(AudioType::Dialogue);
     let target = f64_p(p, "dialogueLufs").map(|t| db_clamped(t, -60.0, 0.0, dialogue_target));
     let mut errors: Vec<Value> = Vec::new();
-    let mut out = json!({"autoLevel": level, "duck": duck, "dialogue": [], "loudness": null, "ducked": [], "typedMusic": [], "reduceDb": null});
+    let mut out = json!({"autoLevel": level, "duck": duck, "dialogue": [], "loudness": null, "ducked": [], "typedMusic": [], "reduceDb": null, "skipped": []});
     if (!level && !duck) || clips.is_empty() {
         out["errors"] = json!(errors);
         return out;
@@ -780,33 +790,31 @@ fn auto_mix(s: &mut Session, p: &Value, clips: &[ClipId], track: TrackId, span: 
     }
     // 2. ducking
     if duck {
-        let mut music: Vec<u64> = Vec::new();
-        let mut untyped: Vec<u64> = Vec::new();
-        if let Some(seq) = s.active_sequence() {
-            for t in seq.audio_tracks.iter().filter(|t| t.id != track && !t.locked) {
-                for it in t.items.iter().filter(|i| i.enabled && !clips.contains(&i.id) && i.range().overlaps(&span)) {
-                    match it.essential.as_ref().map(|e| e.kind) {
-                        Some(AudioType::Music | AudioType::Ambience) => music.push(it.id.0),
-                        None => untyped.push(it.id.0),
-                        Some(_) => {}
-                    }
-                }
-            }
-        }
-        if !untyped.is_empty() {
-            match s.execute("essentialSound.setType", json!({"clips": untyped, "type": "music"})) {
+        let plan = duck_plan(s, p, clips, track, lines, explicit_reduce.is_some());
+        out["skipped"] = json!(plan.skipped);
+        let mut music = plan.music;
+        let mut set_reduce = plan.set_reduce;
+        if !plan.untyped.is_empty() {
+            match s.execute("essentialSound.setType", json!({"clips": plan.untyped, "type": "music"})) {
                 Ok(_) => {
-                    out["typedMusic"] = json!(untyped);
-                    music.extend(&untyped);
+                    out["typedMusic"] = json!(plan.untyped);
+                    music.extend(&plan.untyped);
+                    set_reduce.extend(&plan.untyped);
                 }
                 Err(e) => errors.push(json!({"step": "typeMusic", "error": e.to_string()})),
             }
         }
-        if !music.is_empty() {
+        if !set_reduce.is_empty() {
             out["reduceDb"] = json!(reduce);
-            if let Err(e) = s.execute("essentialSound.set", json!({"clips": music, "key": "ducking.reduceDb", "value": reduce, "begin": true})) {
+            if let Err(e) = s.execute("essentialSound.set", json!({"clips": set_reduce, "key": "ducking.reduceDb", "value": reduce, "begin": true})) {
                 errors.push(json!({"step": "reduceDb", "error": e.to_string()}));
             }
+        }
+        let kept: Vec<u64> = music.iter().copied().filter(|c| !set_reduce.contains(c)).collect();
+        if !kept.is_empty() {
+            out["keptReduceDb"] = json!(kept);
+        }
+        if !music.is_empty() {
             match s.execute("essentialSound.generateDucking", json!({"clips": music})) {
                 Ok(r) => {
                     let ducked: Vec<Value> = r["clips"]
@@ -825,6 +833,89 @@ fn auto_mix(s: &mut Session, p: &Value, clips: &[ClipId], track: TrackId, span: 
     }
     out["errors"] = json!(errors);
     out
+}
+
+/// Which clips the narration ducks.
+#[derive(Default)]
+struct DuckPlan {
+    /// Already Music / Ambience: ducked.
+    music: Vec<u64>,
+    /// No audio type, plain audio: typed Music, then ducked.
+    untyped: Vec<u64>,
+    /// Of `music`, the clips that get `ducking.reduceDb` (the others keep the depth the user set).
+    set_reduce: Vec<u64>,
+    /// Left alone, with the reason: `{clip, name, reason}`.
+    skipped: Vec<Value>,
+}
+
+/// The clips to duck under the narration `clips` (placed on `track`, speaking during `lines`):
+/// the enabled clips on the other audio tracks that overlap a line (not just the pauses between
+/// lines) and are Music or Ambience, or have no audio type and are plain audio (not linked to a
+/// video clip, not a nested sequence, not narration FilmCraft made: those are usually speech,
+/// and Premiere ducks only what is typed Music). Clips on locked or muted tracks and clips whose
+/// Volume already has keyframes the ducking did not make (fades the user drew;
+/// `essentialSound.generateDucking` would replace them) are left alone and listed in `skipped`.
+/// A Music clip whose ducking the user already set up keeps its `reduceDb` unless
+/// `duckReduceDb` was passed (`explicit_reduce`).
+fn duck_plan(s: &Session, p: &Value, clips: &[ClipId], track: TrackId, lines: &[TimeRange], explicit_reduce: bool) -> DuckPlan {
+    let mut plan = DuckPlan::default();
+    let Some(seq) = s.active_sequence() else { return plan };
+    let dir = narration_dir(s, p);
+    for t in seq.audio_tracks.iter().filter(|t| t.id != track) {
+        for it in t.items.iter().filter(|i| i.enabled && !clips.contains(&i.id) && lines.iter().any(|l| i.range().overlaps(l))) {
+            let kind = it.essential.as_ref().map(|e| e.kind);
+            if !matches!(kind, None | Some(AudioType::Music | AudioType::Ambience)) {
+                continue; // Dialogue / SFX: never ducked
+            }
+            let ducking_set = it.essential.as_ref().is_some_and(|e| e.ducking.enabled);
+            let fades = !ducking_set && it.effect("volume").and_then(|e| e.param("level")).is_some_and(|l| l.is_animated());
+            let linked_video = it.link.is_some_and(|l| seq.video_tracks.iter().any(|v| v.items.iter().any(|x| x.link == Some(l))));
+            let nested = s.project.item(it.item).is_some_and(|i| matches!(i.kind, ItemKind::Sequence(_)));
+            let reason = if t.locked {
+                Some("track locked")
+            } else if t.muted {
+                Some("track muted")
+            } else if is_narration_item(s, &dir, it.item) {
+                Some("narration")
+            } else if kind.is_none() && linked_video {
+                Some("untyped and linked to video (likely on-camera speech); set its audio type to Music to duck it")
+            } else if kind.is_none() && nested {
+                Some("untyped nested sequence; set its audio type to Music to duck it")
+            } else if fades {
+                Some("has volume keyframes; run essentialSound.generateDucking to replace them")
+            } else {
+                None
+            };
+            if let Some(r) = reason {
+                plan.skipped.push(json!({"clip": it.id.0, "name": it.name, "reason": r}));
+            } else if kind.is_none() {
+                plan.untyped.push(it.id.0);
+            } else {
+                plan.music.push(it.id.0);
+                if explicit_reduce || !ducking_set {
+                    plan.set_reduce.push(it.id.0);
+                }
+            }
+        }
+    }
+    plan
+}
+
+/// Whether project item `id` is narration `tts.synthesize` made: it carries the narration credit
+/// metadata, or its file is in the narration folder `dir`.
+fn is_narration_item(s: &Session, dir: &str, id: ItemId) -> bool {
+    use crate::narration_credits::{CREDIT_KEY, VOICE_KEY};
+    let Some(it) = s.project.item(id) else { return false };
+    if it.metadata.contains_key(CREDIT_KEY) || it.metadata.contains_key(VOICE_KEY) {
+        return true;
+    }
+    match &it.kind {
+        ItemKind::Media(m) => match &m.media {
+            MediaRef::File { path } => !dir.trim().is_empty() && std::path::Path::new(path).parent().is_some_and(|d| d == std::path::Path::new(dir)),
+            MediaRef::Generator(_) => false,
+        },
+        _ => false,
+    }
 }
 
 // ------------------------------------------------------------------------------------- commands

@@ -65,17 +65,36 @@ Sound tools, in the same undo step as the placement:
    the dialogue target, the `audio.dialogueTargetLufs` preference (−23 LUFS by default;
    `dialogueLufs` overrides it for one call). This is `essentialSound.autoMatch`; the match gain
    shows in Essential Sound ▸ Loudness.
-2. **Ducking** (Settings ▸ Narration ▸ Duck other audio under the narration, `duck`): the enabled
-   clips on the *other* unlocked audio tracks that overlap the narration and are **Music** or
-   **Ambience**, or have no audio type yet (they become Music), get Volume keyframes that lower
-   them by **Duck other audio by** (−15 dB by default, −40…0; `duckReduceDb`) while the narration
-   speaks, with fades. This is `essentialSound.generateDucking` (its keyframes replace earlier
-   Volume keyframes of those clips; the level between the ducks is the clip's highest earlier
-   level). Dialogue and SFX clips are left alone. When nothing is under the narration, nothing is
-   ducked.
+2. **Ducking** (Settings ▸ Narration ▸ Duck other audio under the narration, `duck`): the music
+   under the narration gets Volume keyframes that lower it by **Duck other audio by** (−15 dB by
+   default, −40…0; `duckReduceDb`) while the narration speaks, with fades. This is
+   `essentialSound.generateDucking`; the level between the ducks is the clip's highest earlier
+   level. Like Premiere, only music is ducked. A clip is ducked when it is enabled, on another
+   audio track, overlaps a spoken line (a clip that only sits in a pause between lines is left
+   alone), and is
+   - typed **Music** or **Ambience**, or
+   - has no audio type yet and is *plain audio*: not linked to a video clip (camera audio is
+     usually on-camera speech), not a nested sequence, and not narration FilmCraft made (items
+     with the `Narration Credit` / `Narration Voice` metadata, or a WAV in the narration
+     folder). These become Music.
+
+   Never touched, and listed in `mix.skipped` with the reason:
+   - clips on **locked** or **muted** tracks. Linked selection is ignored here, so a linked
+     partner on a locked track is never changed either;
+   - untyped camera audio, nested sequences and earlier narration;
+   - music whose Volume already has keyframes the ducking did not make, such as fades you drew
+     ("has volume keyframes; run essentialSound.generateDucking to replace them"). Ducking
+     replaces a clip's Volume keyframes, so run it yourself on that clip if you want that.
+     Keyframes from an earlier ducking (Ducking enabled in Essential Sound) are regenerated.
+
+   A Music clip whose ducking you already enabled keeps its own **Reduce by** depth unless you
+   pass `duckReduceDb` (`mix.keptReduceDb` lists those clips). Dialogue and SFX clips are always
+   left alone. When nothing is under the narration, nothing is ducked. To duck camera audio or a
+   nested sequence, give it the Music type first.
 
 The narration clips get the Dialogue type whenever either option is on (the ducking listens to
-Dialogue). The result's `mix` says what was done:
+Dialogue). The whole mix is part of the one **Synthesize Narration** undo step, even when the undo
+history is full. The result's `mix` says what was done:
 
 ```json
 "mix": {
@@ -85,6 +104,7 @@ Dialogue). The result's `mix` says what was done:
   "typedMusic": [12, 18],
   "reduceDb": -15.0,
   "ducked": [{"clip": 18, "keyframes": 4, "regions": [[4.0, 6.4]]}, …],
+  "skipped": [{"clip": 7, "name": "Interview", "reason": "untyped and linked to video (likely on-camera speech); set its audio type to Music to duck it"}],
   "errors": []
 }
 ```

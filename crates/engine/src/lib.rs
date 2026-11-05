@@ -719,7 +719,10 @@ impl Session {
         // and a command that fails leaves nothing behind (Undo used to step through a command's
         // parts, e.g. Add Caption's new track, or Set Look's added Lumetri)
         let history_cmd = matches!(id, "edit.undo" | "edit.redo") || id.starts_with("history.");
-        let mark = (self.exec_depth == 0 && !history_cmd && self.history.undo.len() < self.history.limit).then_some(self.history.undo.len());
+        // (while a command runs, `edit` does not evict old steps, so `mark` and the marks nested
+        // commands take with `collapse_history` stay valid however long the history is; the
+        // history is trimmed to its limit once the command is done)
+        let mark = (self.exec_depth == 0 && !history_cmd).then_some(self.history.undo.len());
         self.exec_depth += 1;
         // Last-resort guard: a panic in a command (a bug that escaped the never-crash rules)
         // becomes an error for the caller (UI, CLI, control channel, MCP) instead of taking the
@@ -739,6 +742,9 @@ impl Session {
             } else if self.history.undo.len() > mark + 1 {
                 clip_ops::collapse_history(self, mark, spec.label.trim_end_matches('…'));
             }
+        }
+        if self.exec_depth == 0 {
+            self.trim_history();
         }
         // source graphics: an edited instance updates the shared layers and the other instances
         if r.is_ok() && spec.journal && id.starts_with("graphics.") && !self.project.source_graphics.is_empty() {
@@ -787,14 +793,24 @@ impl Session {
         let r = f(&mut p, &mut st)?;
         let old = std::mem::replace(&mut self.project, Arc::new(p));
         self.history.undo.push((label.to_string(), old));
-        if self.history.undo.len() > self.history.limit {
-            self.history.undo.remove(0);
+        // inside a command the oldest steps stay until it is done (see `execute`): evicting now
+        // would shift the indices the command folds its steps by
+        if self.exec_depth == 0 {
+            self.trim_history();
         }
         self.history.redo.clear();
         self.history.merge_key = None;
         self.state = st;
         self.bump();
         Ok(r)
+    }
+
+    /// Drop the oldest undo steps beyond the history limit.
+    fn trim_history(&mut self) {
+        let over = self.history.undo.len().saturating_sub(self.history.limit);
+        if over > 0 {
+            self.history.undo.drain(..over);
+        }
     }
 
     /// Like [`Session::edit`], but consecutive calls with the same `key` (and no other edit in
