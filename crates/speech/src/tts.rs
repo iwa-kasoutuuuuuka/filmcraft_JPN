@@ -574,8 +574,9 @@ pub fn parse_speakers(v: &Value) -> Option<Vec<Speaker>> {
                 .filter_map(|st| {
                     let id = st.get("id")?.as_i64()?;
                     let kind = st.get("type").and_then(Value::as_str).map(str::to_string);
-                    // singing voices cannot read text
-                    if kind.as_deref().is_some_and(|k| k != "talk") {
+                    // singing voices cannot read text; talk styles are `talk` or (VOICEVOX 0.26+)
+                    // `streaming_talk`, so only the known non-reading kinds are left out
+                    if kind.as_deref().is_some_and(|k| matches!(k, "sing" | "singing_teacher" | "frame_decode")) {
                         return None;
                     }
                     Some(Style { name: s(st, "name"), id, kind })
@@ -905,14 +906,17 @@ mod tests {
     #[test]
     fn speaker_lists_from_hostile_json() {
         let v = json!([
-            {"name": "ずんだもん", "speaker_uuid": "u1", "styles": [{"name": "ノーマル", "id": 3}, {"name": "歌", "id": 9, "type": "sing"}], "version": "0.1"},
+            {"name": "ずんだもん", "speaker_uuid": "u1", "styles": [{"name": "ノーマル", "id": 3}, {"name": "歌", "id": 9, "type": "sing"}, {"name": "先生", "id": 6000, "type": "singing_teacher"}], "version": "0.1"},
+            // VOICEVOX 0.26 marks its talk styles `streaming_talk` (every voice used to vanish)
+            {"name": "四国めたん", "speaker_uuid": "u2", "styles": [{"name": "ノーマル", "id": 2, "type": "streaming_talk"}, {"name": "あまあま", "id": 0, "type": "talk"}, {"name": "f", "id": 9, "type": "frame_decode"}]},
             {"name": "", "styles": [{"id": 1}]},
             {"name": "no styles"},
             7
         ]);
         let s = parse_speakers(&v).unwrap();
-        assert_eq!(s.len(), 1);
+        assert_eq!(s.len(), 2);
         assert_eq!(s[0].styles.len(), 1, "singing styles are left out");
+        assert_eq!(s[1].styles.iter().map(|x| x.id).collect::<Vec<_>>(), [2, 0], "talk and streaming_talk styles read text");
         assert!(parse_speakers(&json!({"x": 1})).is_none());
         let m = parse_aivm_models(&json!({"m1": {"manifest": {"uuid": "m1", "name": "Anneli", "license": "ACML 1.0", "speakers": [{"uuid": "s1"}]}}}));
         assert_eq!(m[0].license.as_deref(), Some("ACML 1.0"));
