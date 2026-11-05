@@ -79,9 +79,10 @@ In priority order. Agents should prefer this work over adding more checklist ite
    with automatable parameters and their state saved in the project. Next: the plug-in's editor
    window, Audio Units / VST3 on macOS, out-of-process hosting, OpenFX.
 8. **AI features** with openly licensed local models: transcription (on by default since the app and CLI build it), text-based
-   editing, speech enhancement, reframing. Further out, a novel-to-anime pipeline (script model,
-   text-to-speech, automatic assembly, lip sync, ruby text) is sketched in
-   [docs/novel-to-anime.md](docs/novel-to-anime.md).
+   editing, speech enhancement, reframing. Text-to-speech and voice cloning (`speech.synthesize`)
+   run Qwen3-TTS as an external Python script (`tools/qwen3-tts/`, [docs/text-to-speech.md](docs/text-to-speech.md));
+   the rest of the novel-to-anime pipeline (script model, automatic assembly, lip sync) is
+   sketched in [docs/novel-to-anime.md](docs/novel-to-anime.md).
 9. **The web app shell**: file access, WebCodecs, audio.
 
 ### Where we're going

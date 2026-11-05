@@ -1093,6 +1093,7 @@ To call it directly from a script without MCP, send `{"id": 1, "method": "engine
 | **話者に合わせて自動切り替え** | クリップ ➔ マルチカメラ ➔ 話者に合わせて自動切り替え | `multicam.autoSwitch` | 対談・ポッドキャストのマルチカメラで、話している人のカメラへ自動でカットします。 |
 | **SNS 向け書き出しプリセット** | 書き出し ➔ プリセット (Web と SNS) | `file.exportMedia` | TikTok・Instagram リール・YouTube ショート(1080×1920 縦型)、Instagram フィード(正方形 1080×1080・縦 4:5 1080×1350)、Facebook フィード(4:5)、X(1920×1080)用に H.264 で、音量を −14 LUFS にそろえて書き出します。 |
 | **PSD の読み込み** | ファイル ➔ 読み込み (`.psd` / `.psb`) | `file.import` | Photoshop のファイルを、全レイヤーを重ねた 1 枚の画像(透明部分付き)として読み込みます。 |
+| **音声合成と声のクローン** | (コマンドのみ) | `speech.synthesize` / `speech.synthesizer` | テキストの行を WAV に読み上げてメディアとして取り込みます。参照音声(`refAudio`)とその書き起こし(`refText`)を渡すとその声でしゃべります。[Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)(Apache-2.0、日本語対応)を `tools/qwen3-tts/` の Python スクリプトとして外部プロセスで動かし、FilmCraft 自体は純 Rust のままです。Python が無ければその旨を返します。詳細は [`docs/text-to-speech.md`](docs/text-to-speech.md)。 |
 | **カメラ RAW(DNG)** | ファイル ➔ 読み込み (`.dng`) | `file.import` | DNG 形式の RAW 写真を現像して静止画として読み込みます。CinemaDNG の連番も読み込めます。 |
 | **E-AC-3(ドルビーデジタルプラス)** | ファイル ➔ 読み込み | `file.import` | E-AC-3 音声を含む MP4・MKV・MPEG-TS の音声を再生・編集できます。 |
 | **動く GIF・APNG・WebP** | ファイル ➔ 読み込み | `file.import` | アニメーション GIF・APNG・アニメーション WebP を、透明部分を残したまま動画クリップとして読み込みます。 |
@@ -1143,6 +1144,7 @@ Every feature is available both from the menus and by command ID (CLI / agents),
 | **Auto-switch to speaker** | Clip ➔ Multi-Camera ➔ Auto-Switch to Speaker | `multicam.autoSwitch` | In multi-camera interviews and podcasts, automatically cuts to the camera of whoever is speaking. |
 | **Social media export presets** | Export ➔ Presets (Web & Social) | `file.exportMedia` | Exports H.264 for TikTok, Instagram Reels and YouTube Shorts (1080×1920 vertical), Instagram Feed (square 1080×1080, portrait 4:5 1080×1350), Facebook Feed (4:5) and X (1920×1080), with loudness normalized to −14 LUFS. |
 | **PSD import** | File ➔ Import (`.psd` / `.psb`) | `file.import` | Imports a Photoshop document as its flattened composite (all layers merged, with transparency). |
+| **Text-to-speech and voice cloning** | (commands only) | `speech.synthesize` / `speech.synthesizer` | Speaks lines of text into WAV files and imports them as media; with a reference recording (`refAudio`) and its transcript (`refText`) the lines are spoken in that voice. Runs [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) (Apache-2.0, Japanese supported) as an external Python process from `tools/qwen3-tts/`; FilmCraft itself stays pure Rust, and without Python the command says so. See [`docs/text-to-speech.md`](docs/text-to-speech.md). |
 | **Camera raw (DNG)** | File ➔ Import (`.dng`) | `file.import` | Develops DNG raw photos and imports them as stills. CinemaDNG sequences work too. |
 | **E-AC-3 (Dolby Digital Plus)** | File ➔ Import | `file.import` | Plays and edits E-AC-3 audio in MP4, MKV and MPEG-TS files. |
 | **Animated GIF, APNG and WebP** | File ➔ Import | `file.import` | Imports animated GIF, APNG and animated WebP as video clips, keeping transparency. |

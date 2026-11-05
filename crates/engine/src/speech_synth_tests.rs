@@ -10,8 +10,7 @@ fn session(name: &str) -> (Session, std::path::PathBuf) {
     let mut s = Session::default();
     s.execute("file.newProject", json!({"name": "tts"})).ok();
     s.synthesizer = Some(Arc::new(FixedSynthesizer::default()));
-    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!("filmcraft-tts-test-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let dir = std::env::temp_dir().join(format!("filmcraft-tts-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     (s, dir)
 }
