@@ -519,11 +519,16 @@ pub struct RecoveryCandidate {
     pub dir: PathBuf,
     #[serde(flatten)]
     pub meta: JournalMeta,
+    /// "Not Now" was chosen for it: it is kept (File ▸ Recover Unsaved Changes… still offers
+    /// it) but no longer prompts at launch.
+    pub snoozed: bool,
 }
 
 const SNAPSHOT: &str = "snapshot.fcproj";
 const META: &str = "session.json";
 const LOCK: &str = "lock";
+/// Marker file: the candidate was snoozed ("Not Now").
+const SNOOZED: &str = "snoozed";
 
 pub fn recovery_root(data_dir: &Path) -> PathBuf {
     data_dir.join("Recovery")
@@ -554,7 +559,8 @@ pub fn scan_candidates(data_dir: &Path, skip: Option<&Path>) -> Vec<RecoveryCand
         let meta = fs::read(dir.join(META)).ok().and_then(|b| serde_json::from_slice::<JournalMeta>(&b).ok());
         match meta {
             Some(meta) if dir.join(SNAPSHOT).is_file() => {
-                out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta });
+                let snoozed = dir.join(SNOOZED).is_file();
+                out.push(RecoveryCandidate { id: e.file_name().to_string_lossy().into_owned(), dir, meta, snoozed });
             }
             _ => {
                 let _ = fs::remove_dir_all(&dir);
@@ -573,6 +579,12 @@ pub fn load_candidate(c: &RecoveryCandidate) -> Result<filmcraft_format::Loaded,
 
 pub fn discard_candidate(c: &RecoveryCandidate) -> io::Result<()> {
     fs::remove_dir_all(&c.dir)
+}
+
+/// Keep a candidate but stop prompting for it at launch ("Not Now"): a marker file next to its
+/// snapshot, so the choice survives restarts. Nothing is deleted.
+pub fn snooze_candidate(c: &RecoveryCandidate) -> io::Result<()> {
+    fs::write(c.dir.join(SNOOZED), b"")
 }
 
 // ------------------------------------------------------------------ worker

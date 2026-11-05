@@ -985,6 +985,25 @@ fn build() -> Vec<CommandSpec> {
             }
             Ok(json!({"discarded": n}))
         }),
+        cmd!("file.snoozeRecovery", "Not Now (Recover Unsaved Changes)", [], None, r#"{"id":str?,"all":bool?}"#, has_recovery, |s, p| {
+            // "Not Now": keep the unsaved changes (File ▸ Recover Unsaved Changes… still offers
+            // them) but stop asking at every launch; a later crash prompts again
+            let all = bool_p(p, "all").unwrap_or(false);
+            let id = str_p(p, "id").map(str::to_string);
+            let Some(per) = s.persistence.as_mut() else { return Ok(json!({"snoozed": 0})) };
+            let mut n = 0;
+            for (i, c) in per.candidates.iter_mut().enumerate() {
+                if all || id.as_deref().map_or(i == 0, |want| want == c.id) {
+                    crate::autosave::snooze_candidate(c).map_err(|e| EngineError::Other(e.to_string()))?;
+                    c.snoozed = true;
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                return Err(bad("file.snoozeRecovery", "no such recovery session"));
+            }
+            Ok(json!({"snoozed": n}))
+        }),
         query!("file.recoveryList", "List Recoverable Sessions", "{}", |s, _| {
             Ok(s.persistence.as_ref().map(|p| p.candidates_json()).unwrap_or_else(|| json!([])))
         }),

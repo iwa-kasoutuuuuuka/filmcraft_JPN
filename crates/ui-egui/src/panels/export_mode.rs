@@ -1208,7 +1208,8 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         if r.double_clicked() {
                             apply = Some(p.name.clone());
                         }
-                        let r = r.on_hover_text(&p.description);
+                        let desc = if p.builtin { crate::i18n::preset_description(&p.description) } else { p.description.as_str().into() };
+                        let r = r.on_hover_text(desc.as_ref());
                         let _ = r;
                         ui.label(egui::RichText::new(p.settings.format.label()).color(t.text_dim).size(11.0));
                         if !p.builtin {
@@ -1220,7 +1221,8 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.separator();
             let sel = all.iter().find(|p| preset_key(&p.name) == preset_key(&m.selected)).cloned();
             if let Some(p) = &sel {
-                ui.label(egui::RichText::new(&p.description).color(t.text_dim).size(11.5));
+                let desc = if p.builtin { crate::i18n::preset_description(&p.description) } else { p.description.as_str().into() };
+                ui.label(egui::RichText::new(desc.as_ref()).color(t.text_dim).size(11.5));
             }
             ui.horizontal(|ui| {
                 ui.label(crate::i18n::t("Save current settings as:", "現在の設定を次の名前で保存:"));

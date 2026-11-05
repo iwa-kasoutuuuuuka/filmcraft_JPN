@@ -98,3 +98,23 @@ fn input_aimed_at_an_unknown_id_is_an_error() {
     // the app still answers normally afterwards
     d.ok("ui.click", json!({"id": "tools.Razor"}));
 }
+
+/// A click by id on a control under an open modal dialog (Settings) is an error: it would land on
+/// the dialog's backdrop and do nothing. Before, it replied ok. Controls in the dialog still work.
+#[test]
+fn a_click_behind_a_modal_dialog_is_an_error() {
+    let mut d = Driver::demo();
+    let tool = d.ok("ui.elements", json!({"prefix": "tools."}));
+    let behind = tool.as_array().and_then(|a| a.first()).and_then(|e| e["id"].as_str()).map(str::to_string).expect("a tool button");
+    assert_eq!(d.call("ui.click", json!({"id": behind})).0["ok"], true, "reachable while nothing is open");
+    d.ok("ui.menu.invoke", json!({"id": "app.settings.audio"}));
+    d.frames(3);
+    let (r, _) = d.call("ui.click", json!({"id": behind}));
+    assert_eq!(r["ok"], false, "{r}");
+    assert!(r["error"].as_str().unwrap_or("").contains("behind an open dialog"), "{r}");
+    // the dialog's own controls are clickable
+    d.ok("ui.click", json!({"id": "settings.category.general"}));
+    d.ok("ui.click", json!({"id": "settings.cancel"}));
+    d.frames(3);
+    assert_eq!(d.call("ui.click", json!({"id": behind})).0["ok"], true, "reachable again once it closes");
+}

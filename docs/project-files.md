@@ -132,6 +132,10 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
   Recover unsaved changes from 2026-10-01 00:02:09?"*, with the buttons **Recover**, **Not Now** and
   **Discard**. Stale directories without a snapshot are removed. Journals of running sessions are
   never touched.
+- **Not Now** keeps the snapshot and marks it snoozed (a `snoozed` file next to it,
+  `file.snoozeRecovery`): later launches don't ask about it again, File ▸ Recover Unsaved Changes…
+  still offers it (`file.recoveryList` reports `snoozed: true`), and a session that later leaves
+  unsaved changes behind asks again (`Session::recovery_prompt_due`).
 - Recovering loads the snapshot as an **unsaved** project with its original path, so Save writes
   over the original file. The recovered state goes into the new session's own journal before the old
   journal is deleted.

@@ -391,6 +391,10 @@ pub struct Session {
     /// "Pause Media Encoder queue during playback" the export queue starts no new export while it
     /// is set (an export already encoding finishes).
     pub playback_active: bool,
+    /// The interface is in Japanese (set by the UI from Settings ▸ Appearance ▸ Language). With
+    /// Settings ▸ Graphics ▸ default font on Automatic (empty), new text, captions and charts
+    /// then use the bundled Japanese face, so Latin and Japanese characters match.
+    pub japanese_text: bool,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -480,7 +484,19 @@ impl Session {
             exec_depth: 0,
             last_unknown_params: Vec::new(),
             playback_active: false,
+            japanese_text: false,
         }
+    }
+
+    /// The font family new text layers, caption tracks and charts start with: Settings ▸
+    /// Graphics ▸ default font, or on Automatic (empty) the bundled Japanese face when the
+    /// interface is Japanese ([`Session::japanese_text`]), else the default Latin face.
+    pub fn default_text_font(&self) -> String {
+        let chosen = self.prefs.graphics.default_font.trim();
+        if !chosen.is_empty() {
+            return chosen.to_string();
+        }
+        if self.japanese_text { filmcraft_text::fonts::JAPANESE_FAMILY } else { filmcraft_text::fonts::DEFAULT_FAMILY }.to_string()
     }
 
     /// Advance stepped jobs ([`SteppedJob`]) for up to `budget` (at least one step). Returns
@@ -541,6 +557,11 @@ impl Session {
 
     pub fn recovery_candidates(&self) -> &[autosave::RecoveryCandidate] {
         self.persistence.as_ref().map(|p| p.candidates.as_slice()).unwrap_or(&[])
+    }
+
+    /// Unsaved changes the app should ask about at launch: those not snoozed with "Not Now".
+    pub fn recovery_prompt_due(&self) -> bool {
+        self.recovery_candidates().iter().any(|c| !c.snoozed)
     }
 
     /// Tell the worker about the current project state if it changed (cheap: an `Arc` clone and a

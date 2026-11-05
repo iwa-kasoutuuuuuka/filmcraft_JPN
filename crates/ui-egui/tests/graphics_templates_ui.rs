@@ -177,7 +177,10 @@ fn export_dialog_and_install_round_trip() {
     assert_eq!(v["dialog"], "replaceFonts");
     d.frames(3);
     assert!(d.ids("replaceFonts.").contains(&"replaceFonts.ok".to_string()));
-    d.ok("ui.set", json!({"gfxTemplates": {"replace": {"from": "Inter", "to": "Noto Serif"}}}));
+    // the font the text was made with (the default font: the Japanese face in the Japanese UI)
+    let before = d.exec("graphics.fonts.used", json!({}));
+    let from = before[0]["family"].as_str().unwrap_or("Inter").to_string();
+    d.ok("ui.set", json!({"gfxTemplates": {"replace": {"from": from, "to": "Noto Serif"}}}));
     d.frames(2);
     d.ok("ui.click", json!({"id": "replaceFonts.ok"}));
     d.frames(2);

@@ -1200,6 +1200,11 @@ Every feature is available both from the menus and by command ID (CLI / agents),
 - AI エージェント向け: ID を指定したクリック・ドラッグ・スクロールなどは、開いた直後のダイアログのように部品がまだ表示されていなければ少し待ってから操作し、見つからなければエラーを返します(以前は何もせずに成功を返していました)。
 - 環境設定で効果のなかった項目のうち 10 項目(挿入・上書き後にタイムラインを選択、マッチフレームでイン点を設定、開いていたシーケンスの復元、マウスホイールのスクロール方向、タブ名の「プロジェクト:」表示、タイムコードの生成、ハードウェアデコード、ヒンディー数字、ソースモニターでのモノラル化、再生中の書き出しキュー一時停止)が働くようになりました。まだ働かない項目は灰色で表示し、理由をツールチップに出します(一覧は [`docs/preferences.md`](docs/preferences.md))。
 - AV1 のデコードを高速化しました(4K で約 30 → 40 fps、出力は変わりません)。
+- 「未保存の変更を復元」で「後で」を選ぶと、変更は残したまま次回からは起動時に確認しません(ファイル ➔ 未保存の変更を復元… からいつでも復元できます。新しく異常終了したときはまた確認します)。
+- 画面が日本語のとき、新しく作るテキスト・字幕・チャートの既定フォントを同梱の BIZ UDPゴシックにしました。英数字とかな・漢字が同じフォントでそろいます(環境設定 ➔ グラフィック ➔ 既定のフォントが空欄=自動のとき。作成済みのテキストは変わりません)。
+- 書き出しプリセットの説明文と、ラベルの色の名前(アイリス・マンゴーなど)を日本語で表示するようにしました(自分で付けたラベル名はそのまま)。
+- 環境設定で FilmCraft が使わない項目の横に「FilmCraft にない機能」「未対応」と表示し、ポインタを重ねなくても理由が分かるようにしました。
+- AI エージェント向け: 開いているダイアログに隠れた部品を ID でクリックすると、何もせずに成功を返すのではなく、エラーを返します。
 - 5.1 チャンネルの素材をステレオトラックに置いたとき、先頭の 2 チャンネル(L・R)だけが使われ、センター(多くの場合セリフ)とサラウンドが聞こえなかった問題を直しました。チャンネルを指定していなければ BS.775 でステレオにまとめます。あわせて、5.1 の AAC でセンターと左右が入れ替わっていた問題も直しました。
 
 <details>
@@ -1233,6 +1238,11 @@ Every feature is available both from the menus and by command ID (CLI / agents),
 - For AI agents: clicks, drags, scrolls and the like by ID wait briefly for a control that isn't on screen yet (such as in a dialog that has just opened) and return an error if it never appears (they used to report success and do nothing).
 - Ten preferences that had no effect now work (focus the Timeline after Insert/Overwrite, Match Frame sets the In point, restore open sequences, mouse-wheel scrolling direction, "Project:" in tab names, generated timecode, hardware decoding, Hindi digits, summing to mono in the Source Monitor, pausing the export queue during playback). The ones that still don't are greyed out with the reason in a tooltip (full list in [`docs/preferences.md`](docs/preferences.md)).
 - AV1 decoding is faster (about 30 → 40 fps at 4K, identical output).
+- "Not Now" in Recover Unsaved Changes keeps the changes and stops asking at every launch (File ➔ Recover Unsaved Changes… still recovers them; a new crash asks again).
+- With the interface in Japanese, new text, captions and charts default to the bundled BIZ UDPGothic, so Latin and Japanese characters match (when Settings ➔ Graphics ➔ default font is empty, i.e. Automatic; existing text is unchanged).
+- Built-in export preset descriptions and the label colour names (Iris, Mango…) are shown in Japanese in the Japanese interface (label names you typed stay as typed).
+- Settings FilmCraft doesn't act on now say "Not in FilmCraft" or "Not yet" beside them, so the reason shows without hovering.
+- For AI agents: clicking by ID a control hidden behind an open dialog returns an error instead of reporting success and doing nothing.
 - A 5.1 clip on a stereo track used only its first two channels (L and R), so the centre (usually the dialogue) and the surrounds were silent. With no channels picked it is now folded down to stereo with BS.775. 5.1 AAC also had its centre and left/right swapped; fixed.
 
 </details>

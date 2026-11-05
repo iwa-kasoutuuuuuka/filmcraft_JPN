@@ -1694,6 +1694,97 @@ fn tr_export_ja(s: &str) -> &str {
     }
 }
 
+/// A label colour's name as shown: the built-in English names (Iris, Mango…) in Japanese when the
+/// interface is Japanese; a name the user typed in Settings ▸ Labels is shown as typed.
+pub fn label_name(name: &str) -> std::borrow::Cow<'_, str> {
+    if !is_japanese() {
+        return name.into();
+    }
+    let Some(ja) = label_name_ja(name) else { return name.into() };
+    remember(name, ja);
+    ja.into()
+}
+
+/// The Japanese name of a built-in label colour name (`None` for any other text).
+fn label_name_ja(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Violet" => "バイオレット",
+        "Iris" => "アイリス",
+        "Caribbean" => "カリビアン",
+        "Lavender" => "ラベンダー",
+        "Cerulean" => "セルリアン",
+        "Forest" => "フォレスト",
+        "Rose" => "ローズ",
+        "Mango" => "マンゴー",
+        "Purple" => "パープル",
+        "Blue" => "ブルー",
+        "Teal" => "ティール",
+        "Magenta" => "マゼンタ",
+        "Tan" => "タン",
+        "Green" => "グリーン",
+        "Brown" => "ブラウン",
+        "Yellow" => "イエロー",
+        _ => return None,
+    })
+}
+
+/// A built-in export preset's description in Japanese (user presets keep the text the user wrote).
+/// The descriptions are short comma-separated specs ("H.264 1920×1080, VBR 1 pass, 20 Mbps
+/// target, AAC 320 kbps"), translated phrase by phrase.
+pub fn preset_description(d: &str) -> std::borrow::Cow<'_, str> {
+    if !is_japanese() {
+        return d.into();
+    }
+    preset_description_ja(d).into()
+}
+
+fn preset_description_ja(d: &str) -> String {
+    let whole = match d {
+        "Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)" => {
+            Some("Avid 形式の OP-Atom: DNxHR HQ の映像ファイルと、チャンネルごとの 24 ビット 48 kHz PCM ファイル(_A1、_A2…)")
+        }
+        "Numbered PNG stills at the sequence's frame size" => Some("連番の PNG 静止画(シーケンスと同じフレームサイズ)"),
+        "Numbered TIFF stills (RGB, 8-bit)" => Some("連番の TIFF 静止画(RGB、8 ビット)"),
+        "Numbered BMP stills (24-bit)" => Some("連番の BMP 静止画(24 ビット)"),
+        "Looping GIF, 640×360 at 15 fps" => Some("ループする GIF、640×360・15 fps"),
+        _ => None,
+    };
+    if let Some(ja) = whole {
+        return ja.to_string();
+    }
+    // longest phrases first, so a short one doesn't eat part of a longer one
+    const PHRASES: &[(&str, &str)] = &[
+        ("at the sequence's frame size and rate", "(シーケンスと同じフレームサイズとフレームレート)"),
+        ("bitrate adapts to the frame size", "ビットレートはフレームサイズに合わせて変化"),
+        ("9:16 portrait for short-form social video", "9:16 縦型(ショート動画向け)"),
+        ("1:1 square feed post", "1:1 正方形(フィード投稿)"),
+        ("4:5 portrait feed post", "4:5 縦型(フィード投稿)"),
+        ("4:5 portrait feed video", "4:5 縦型(フィード動画)"),
+        ("for video sharing sites", "(動画共有サイト向け)"),
+        ("loudness normalized to", "音量をそろえる:"),
+        ("fast software encode", "高速ソフトウェアエンコード"),
+        ("with alpha channel", "アルファチャンネル付き"),
+        ("scaled to fill", "画面いっぱいに拡大"),
+        ("start timecode", "開始タイムコード付き"),
+        ("bits per pixel", "ビット/ピクセル"),
+        ("9:16 portrait", "9:16 縦型"),
+        ("16:9 landscape", "16:9 横型"),
+        ("long GOP", "ロング GOP"),
+        ("(lossless)", "(ロスレス)"),
+        ("Mbps target", "Mbps(目標)"),
+        ("Mbps average", "Mbps(平均)"),
+        ("1 pass", "1 パス"),
+        ("2 pass", "2 パス"),
+        ("stereo", "ステレオ"),
+        ("-bit", " ビット"),
+    ];
+    let mut out = d.to_string();
+    for (en, ja) in PHRASES {
+        out = out.replace(en, ja);
+    }
+    out.replace("; ", "、").replace(", ", "、").replace(" (", "(")
+}
+
 /// Text drawn by the panels' own helpers (rows, sections, switches, sliders, dialog fields). The
 /// helpers keep the English text as the automation label and show this. Falls back to the
 /// export and settings dictionaries, then to [`tr`].
@@ -2281,6 +2372,29 @@ mod tests {
         assert_eq!(english_of("再生テスト用の素材"), "再生テスト用の素材");
         assert_eq!(english_of("再生テスト用の素材"), "再生テスト用の素材", "the same from the cache");
         assert_eq!(english_of(""), "");
+    }
+
+    #[test]
+    fn label_names_and_preset_descriptions_in_japanese() {
+        assert_eq!(label_name_ja("Iris"), Some("アイリス"));
+        assert_eq!(label_name_ja("Mango"), Some("マンゴー"));
+        assert_eq!(label_name_ja("My Label"), None, "a name the user typed stays");
+        for l in filmcraft_project::Label::ALL {
+            assert!(label_name_ja(l.name()).is_some(), "{} has a Japanese name", l.name());
+        }
+        assert_eq!(
+            preset_description_ja("H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS"),
+            "H.264 9:16 縦型、画面いっぱいに拡大、VBR 1 パス、10 Mbps、音量をそろえる: −14 LUFS"
+        );
+        assert_eq!(preset_description_ja("WAV, stereo 48 kHz 24-bit PCM"), "WAV、ステレオ 48 kHz 24 ビット PCM");
+        assert_eq!(preset_description_ja("Numbered BMP stills (24-bit)"), "連番の BMP 静止画(24 ビット)");
+        // every built-in description loses its English phrases
+        for p in filmcraft_engine::export::builtin_presets() {
+            let ja = preset_description_ja(&p.description);
+            for en in ["portrait", "scaled to fill", "pass,", "bits per pixel", "stereo", "-bit", "loudness"] {
+                assert!(!ja.contains(en), "{:?} → {ja:?} still has {en:?}", p.description);
+            }
+        }
     }
 
     #[test]

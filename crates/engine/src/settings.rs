@@ -27,7 +27,7 @@ use crate::{EngineError, Result, Session};
 /// Essential Sound presets. v2: every Settings category. v3: Timeline Mouse Scrolling takes effect
 /// (v2 files said `vertical`, the old default, while the wheel scrolled horizontally; they are
 /// migrated to `horizontal` so nothing changes for them).
-pub const PREFS_VERSION: u32 = 3;
+pub const PREFS_VERSION: u32 = 4;
 
 // ------------------------------------------------------------------ category values
 
@@ -195,7 +195,8 @@ impl Default for GraphicsPrefs {
             text_miter_limit: 2.5,
             text_line_cap: "butt".into(),
             background_fill: "allLines".into(),
-            default_font: "Inter".into(),
+            // empty = Automatic: the Japanese face when the interface is Japanese, else Inter
+            default_font: String::new(),
             missing_font_replacement: "Inter".into(),
             emoji_font: String::new(),
             shape_line_join: "miter".into(),
@@ -1212,6 +1213,16 @@ pub fn migrate(v: &mut Value) {
             t.insert("mouseScrolling".into(), json!("horizontal"));
         }
         m.insert("version".into(), json!(3));
+    }
+    if ver < 4 {
+        // v3 stored the old default font "Inter"; v4's default is Automatic (empty), which picks
+        // the Japanese face for a Japanese interface. A font the user chose stays.
+        if let Some(g) = m.get_mut("graphics").and_then(Value::as_object_mut)
+            && g.get("defaultFont").and_then(Value::as_str) == Some("Inter")
+        {
+            g.insert("defaultFont".into(), json!(""));
+        }
+        m.insert("version".into(), json!(4));
     }
 }
 

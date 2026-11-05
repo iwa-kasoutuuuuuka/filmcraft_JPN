@@ -16,6 +16,11 @@ per field (`settings::unavailable(key)`):
   Link, Mercury Transmit, Content Credentials, the Media Cache database, .cfa/.pek files), hardware
   FilmCraft does not drive (HDR/EDR display output, ProRes hardware encoding), or a feature
   FilmCraft does not have (importing other projects, writing XMP into media files, plugins).
+Graphics ▸ default font is **Automatic** when empty (the default since preferences v4; a v3 file's
+stored `Inter`, the old default, migrates to Automatic): new text layers, caption tracks and charts
+use the bundled Japanese face (BIZ UDPGothic) when the interface is Japanese, so Latin and kana come
+from one face, and Inter otherwise (`Session::default_text_font`). Existing text keeps its font.
+
 - **notYet** — could be done, not implemented yet. The value is kept (and round-trips) but nothing
   reads it.
 

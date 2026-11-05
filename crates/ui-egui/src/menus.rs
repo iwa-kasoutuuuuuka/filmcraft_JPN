@@ -448,7 +448,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
         }
         // Edit ▸ Label items carry the names from Settings ▸ Labels
         let label = match c.id.strip_prefix("edit.label.").and_then(filmcraft_project::Label::from_name) {
-            Some(l) => session.prefs.labels.name(l),
+            Some(l) => crate::i18n::label_name(&session.prefs.labels.name(l)).into_owned(),
             None => c.label.into(),
         };
         out.push(MenuItem {

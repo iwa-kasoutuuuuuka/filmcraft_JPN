@@ -258,6 +258,14 @@ pub fn unavailable_text(u: settings::Unavailable) -> &'static str {
     }
 }
 
+/// The short note drawn beside a setting FilmCraft does not act on (the tooltip has the full reason).
+pub fn unavailable_badge(u: settings::Unavailable) -> &'static str {
+    match u {
+        settings::Unavailable::NotApplicable => crate::i18n::t("Not in FilmCraft", "FilmCraft にない機能"),
+        settings::Unavailable::NotYet => crate::i18n::t("Not yet", "未対応"),
+    }
+}
+
 fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Field) {
     // a setting FilmCraft does not act on is shown disabled, with the reason as its tooltip
     let unavailable = if f.wired { None } else { settings::unavailable(f.key) };
@@ -318,7 +326,8 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                 }
                 Kind::Label => {
                     field_label(ui, f.label);
-                    let opts: Vec<(String, String)> = Label::ALL.iter().map(|l| (l.name().to_string(), app.session.prefs.labels.name(*l))).collect();
+                    let opts: Vec<(String, String)> =
+                        Label::ALL.iter().map(|l| (l.name().to_string(), crate::i18n::label_name(&app.session.prefs.labels.name(*l)).into_owned())).collect();
                     let cur_s = choice_text(&cur);
                     if let Some(l) = Label::from_name(&cur_s) {
                         let (sw, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
@@ -334,10 +343,17 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                     let mut s = choice_text(&cur);
                     let hint = match f.kind {
                         Kind::Path => crate::i18n::t("Default location", "デフォルトの場所"),
+                        Kind::Font if f.key == "graphics.defaultFont" => {
+                            crate::i18n::t("Automatic (BIZ UDPGothic in Japanese, else Inter)", "自動(日本語表示では BIZ UDPゴシック、それ以外は Inter)")
+                        }
                         Kind::Font => crate::i18n::t("Font family", "フォントファミリー"),
                         _ => "",
                     };
-                    let r = ui.add(egui::TextEdit::singleline(&mut s).desired_width(if matches!(f.kind, Kind::Path) { 300.0 } else { 220.0 }).hint_text(hint));
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut s)
+                            .desired_width(if matches!(f.kind, Kind::Path) || f.key == "graphics.defaultFont" { 340.0 } else { 220.0 })
+                            .hint_text(hint),
+                    );
                     app.auto.add(&format!("settings.{}", f.key), r.rect, f.label);
                     if r.changed() {
                         put(&mut d.values, f.key, json!(s));
@@ -356,6 +372,11 @@ fn draw_field(app: &mut FilmcraftApp, ui: &mut Ui, d: &mut SettingsDraft, f: &Fi
                     field_label(ui, f.label);
                     color_field(app, ui, d, f.key, f.label);
                 }
+            }
+            // say why at a glance, not only in the tooltip
+            if let Some(u) = unavailable {
+                ui.add_space(8.0);
+                ui.label(RichText::new(unavailable_badge(u)).size(11.0).italics().color(app.tokens.text_dim));
             }
         });
     });
