@@ -12,7 +12,7 @@
 //! `ui.get` / `ui.set`. Automation ids (`narration.*`): `engine.<aivisspeech|voicevox>`,
 //! `refresh`, `getEngine`, `voice.<i>` (and `voice.<i>.<k>` in its list), `text.<i>`,
 //! `speed.<i>`, `up.<i>`, `down.<i>`, `remove.<i>`, `preview.<i>`, `terms.<i>`, `add`, `script`,
-//! `addScript`, `captions`, `creditRoll`, `pause`, `autoLevel`, `duck`, `generate`, `cancel`,
+//! `addScript`, `captions`, `creditRoll` (no roll yet) / `updateCreditRoll` (a roll exists), `pause`, `autoLevel`, `duck`, `generate`, `cancel`,
 //! `copyCredits`, `addCreditRoll`, `exportCredits`, `openTerms`, `closeTerms`.
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -92,6 +92,11 @@ pub struct NarrationDraft {
     pub captions: bool,
     /// Add / update the credit roll at the end after generating (`creditRoll`).
     pub credit_roll: bool,
+    /// The sequence has a credit roll and the user unticked "Update the credit roll": Generate
+    /// sends `creditRoll: false` and leaves it alone.
+    pub keep_credit_roll: bool,
+    /// The sequence has a credit roll (refreshed every frame the dialog shows).
+    pub roll_exists: bool,
     /// Silence after each line (seconds).
     pub pause: f64,
     /// Dialogue type + loudness match for the narration clips (`autoLevel`).
@@ -148,8 +153,7 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
             Ok(v) if id == "tts.exportCredits" => {
                 crate::tf!("Wrote the description text to {}.", "説明欄用テキストを {} に書き出しました。", v["path"].as_str().unwrap_or_default())
             }
-            Ok(v) if v["updated"] == true => crate::i18n::t("Updated the credit roll at the end.", "エンドロールのクレジットを更新しました。").to_string(),
-            Ok(_) => crate::i18n::t("Added a credit roll at the end.", "エンドロールにクレジットを追加しました。").to_string(),
+            Ok(v) => roll_message(v),
             Err(e) => e.clone(),
         };
         return Some(r);
@@ -225,11 +229,33 @@ fn params_of(d: &NarrationDraft) -> Value {
         })
         .collect();
     let mut p = json!({"engine": d.engine, "lines": lines, "captions": d.captions, "pause": d.pause, "autoLevel": d.auto_level, "duck": d.duck});
-    // only when ticked: unticked, an existing roll still follows the new narration
-    if d.credit_roll {
+    if d.roll_exists {
+        // a roll exists: it follows the new narration unless "Update the credit roll" is off
+        if d.keep_credit_roll {
+            p["creditRoll"] = json!(false);
+        }
+    } else if d.credit_roll {
         p["creditRoll"] = json!(true);
     }
     p
+}
+
+/// What `tts.addCreditRoll` (or the roll part of `tts.synthesize`) did, in the interface language.
+fn roll_message(v: &Value) -> String {
+    let t = crate::i18n::t;
+    match v["skipped"].as_str() {
+        Some("locked") => {
+            t("The credit roll is on a locked track, so it was not changed.", "エンドロールのトラックがロックされているため、変更しませんでした。")
+        }
+        Some("edited") => t(
+            "The credit roll's text was edited, so it was not changed (Add to Credit Roll rewrites it).",
+            "エンドロールの文字が編集されているため、変更しませんでした(「エンドロールに追加」で作り直せます)。",
+        ),
+        _ if v["updated"] == true && v["changed"] == false => t("The credit roll is up to date.", "エンドロールは最新です。"),
+        _ if v["updated"] == true => t("Updated the credit roll.", "エンドロールのクレジットを更新しました。"),
+        _ => t("Added a credit roll at the end.", "エンドロールにクレジットを追加しました。"),
+    }
+    .to_string()
 }
 
 /// The credits of every voice the sequence uses (falls back to `fallback`, the generation's own).
@@ -249,10 +275,8 @@ fn credit_action(app: &mut FilmcraftApp, d: &mut NarrationDraft, export: bool) {
         Ok(v) => {
             d.status = if export {
                 crate::tf!("Wrote the description text to {}.", "説明欄用テキストを {} に書き出しました。", v["path"].as_str().unwrap_or_default())
-            } else if v["updated"] == true {
-                crate::i18n::t("Updated the credit roll at the end.", "エンドロールのクレジットを更新しました。").to_string()
             } else {
-                crate::i18n::t("Added a credit roll at the end.", "エンドロールにクレジットを追加しました。").to_string()
+                roll_message(&v)
             };
             app.ui.status = d.status.clone();
         }
@@ -352,6 +376,10 @@ fn poll(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mut NarrationDraft) {
                 d.status.push(' ');
                 d.status.push_str(&crate::tf!("Ducked {} clips under it.", "その下の {} 個のクリップを下げました。", ducked));
             }
+            if v["creditRoll"].is_object() {
+                d.status.push(' ');
+                d.status.push_str(&roll_message(&v["creditRoll"]));
+            }
             app.ui.status = d.status.clone();
         }
         Err(e) => d.error = error_text(&e.to_string()),
@@ -395,6 +423,7 @@ fn preview(app: &mut FilmcraftApp, ctx: &egui::Context, d: &mut NarrationDraft, 
 pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
     let Some(mut d) = app.ui.narration.take() else { return };
     poll(app, ctx, &mut d);
+    d.roll_exists = filmcraft_engine::narration_credits::credit_roll_clip(&app.session).is_some();
     let mut elems: Elems = Vec::new();
     let mut close = false;
     let mut do_refresh = false;
@@ -548,8 +577,19 @@ pub fn show(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 let r = ui.checkbox(&mut d.captions, crate::i18n::t("Make captions", "キャプションを作成"));
                 push(&mut elems, "captions", &r, "Make captions");
-                let r = ui.checkbox(&mut d.credit_roll, crate::i18n::t("Credit roll at the end", "最後にエンドロール"));
-                push(&mut elems, "creditRoll", &r, "Credit roll at the end");
+                if d.roll_exists {
+                    // the sequence has a roll: Generate updates it unless this is unticked
+                    let mut update = !d.keep_credit_roll;
+                    let r = ui.checkbox(&mut update, crate::i18n::t("Update the credit roll", "エンドロールを更新")).on_hover_text(crate::i18n::t(
+                        "Add the new voices to the credit roll. Text you edited, a font you chose and where you placed it are kept.",
+                        "新しい声をエンドロールに加えます。編集した文字、選んだフォント、置いた位置はそのままです。",
+                    ));
+                    d.keep_credit_roll = !update;
+                    push(&mut elems, "updateCreditRoll", &r, "Update the credit roll");
+                } else {
+                    let r = ui.checkbox(&mut d.credit_roll, crate::i18n::t("Credit roll at the end", "最後にエンドロール"));
+                    push(&mut elems, "creditRoll", &r, "Credit roll at the end");
+                }
                 ui.label(crate::i18n::t("Pause after each line:", "各行のあとの間:"));
                 let r = ui.add(egui::DragValue::new(&mut d.pause).speed(0.05).range(0.0..=30.0).suffix(crate::i18n::t(" s", " 秒")));
                 push(&mut elems, "pause", &r, "Pause");
