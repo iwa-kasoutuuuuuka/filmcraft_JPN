@@ -33,6 +33,7 @@ pub mod media_browser;
 pub mod media_pool;
 pub mod mixer;
 pub mod multicam;
+pub mod narration;
 pub mod panels;
 pub mod perf;
 pub mod presets;
@@ -352,6 +353,8 @@ pub struct Session {
     pub mcrec: multicam::Recorder,
     /// Voice-over recording: the input device and the take in progress.
     pub voiceover: voiceover::VoiceOver,
+    /// Narration (text-to-speech): cached voice lists, audio rendered in the background.
+    pub narration: narration::NarrationState,
     /// Dynamic (J/K/L) trimming and trim-mode loop playback in progress.
     pub trim_play: trim::TrimPlayback,
     /// Keyboard shortcuts (active bindings, presets; `shortcuts.*` commands).
@@ -467,6 +470,7 @@ impl Session {
             mixrec: Default::default(),
             mcrec: Default::default(),
             voiceover: Default::default(),
+            narration: Default::default(),
             trim_play: Default::default(),
             shortcuts: shortcuts::Shortcuts::new(),
             offline: Default::default(),
@@ -1035,6 +1039,8 @@ mod media_test_util;
 mod mixer_tests;
 #[cfg(test)]
 mod multicam_tests;
+#[cfg(test)]
+mod narration_tests;
 #[cfg(test)]
 mod panels_tests;
 #[cfg(test)]

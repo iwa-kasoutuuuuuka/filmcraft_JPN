@@ -132,6 +132,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.settings.mediaAnalysis", "Media Analysis & Transcription…", ["Edit", "Preferences"], None),
     uic!("app.settings.mediaCache", "Media Cache…", ["Edit", "Preferences"], None),
     uic!("app.settings.memory", "Memory…", ["Edit", "Preferences"], None),
+    uic!("app.settings.narration", "Narration…", ["Edit", "Preferences"], None),
     uic!("app.settings.playback", "Playback…", ["Edit", "Preferences"], None),
     uic!("app.settings.plugins", "Plugins…", ["Edit", "Preferences"], None),
     uic!("app.settings.timeline", "Timeline…", ["Edit", "Preferences"], None),
@@ -193,6 +194,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         return r;
     }
     if let Some(r) = crate::panels::chart_editor::route(app, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
+        return r;
+    }
+    if let Some(r) = crate::panels::narration::route(app, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }

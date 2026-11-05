@@ -61,6 +61,14 @@ resolve on your setup, point `command` at the absolute path of `target/release/f
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
+**Narration (text-to-speech).** For voice-over from a script use `tts.synthesize` (the user's
+local AivisSpeech or VOICEVOX app), not the operating system's speech (Windows SAPI and similar
+sound robotic). `tts.engines` says which engine runs, `tts.voices {engine}` lists voices, and one
+`tts.synthesize {engine, lines: [{text, voice}]}` places every line (each with its own voice) on an
+audio track with matching captions, as one undo step. Give the user the returned `creditText`
+(VOICEVOX voices require a credit such as `VOICEVOX:ずんだもん`; AivisSpeech models have their own
+licences) and point them to `tts.voiceTerms`. See [narration.md](narration.md).
+
 ## 2. Control channel
 
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one

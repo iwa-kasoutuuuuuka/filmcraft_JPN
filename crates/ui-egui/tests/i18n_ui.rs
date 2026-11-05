@@ -132,6 +132,7 @@ fn screens() -> Vec<(&'static str, String)> {
         "mediaAnalysis",
         "mediaCache",
         "memory",
+        "narration",
         "playback",
         "plugins",
         "timeline",
@@ -152,6 +153,7 @@ fn screens() -> Vec<(&'static str, String)> {
         "sequence.removeSilence",
         "sequence.makeVertical",
         "clip.censor",
+        "tts.synthesize",
     ] {
         v.push(("dialog", dialog.to_string()));
     }

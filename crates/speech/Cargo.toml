@@ -14,7 +14,10 @@ default = []
 # Whisper inference on the CPU via candle (pure Rust). Off by default (and in wasm builds).
 whisper = ["dep:candle-core", "dep:candle-nn"]
 # Model downloads over HTTPS (pure-Rust TLS: rustls + RustCrypto, OS certificate verification).
-download = ["dep:ureq", "dep:rustls", "dep:rustls-rustcrypto", "dep:sha2"]
+download = ["dep:ureq", "ureq/rustls-no-provider", "ureq/platform-verifier", "dep:rustls", "dep:rustls-rustcrypto", "dep:sha2"]
+# Text-to-speech through a local AivisSpeech / VOICEVOX engine (plain HTTP to the engine's own
+# localhost API; no TLS). Off by default and in wasm builds.
+tts = ["dep:ureq"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
@@ -25,7 +28,7 @@ thiserror = { workspace = true }
 candle-core = { version = "0.9", default-features = false, optional = true }
 candle-nn = { version = "0.9", default-features = false, optional = true }
 rayon = { workspace = true }
-ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "platform-verifier"], optional = true }
+ureq = { version = "3", default-features = false, optional = true }
 rustls = { version = "0.23", default-features = false, optional = true }
 rustls-rustcrypto = { version = "0.0.2-alpha", optional = true }
 sha2 = { version = "0.10", optional = true }

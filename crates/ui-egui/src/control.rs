@@ -321,6 +321,16 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest,
                     return err(format!("`{k}`: {e}"));
                 }
             }
+            // the open Generate Narration dialog (`panels::narration`), merged
+            if let Some(patch) = p.get("narration") {
+                let Some(d) = app.ui.narration.as_ref() else { return err("the Generate Narration dialog is not open") };
+                let mut cur = serde_json::to_value(d).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(v) => app.ui.narration = Some(v),
+                    Err(e) => return err(format!("`narration`: {e}")),
+                }
+            }
             // Essential Graphics ▸ Browse and the template / font dialogs (`panels::graphics_templates`), merged
             if let Some(patch) = p.get("gfxTemplates") {
                 let mut cur = serde_json::to_value(&app.ui.gfx_templates).unwrap_or_default();

@@ -245,6 +245,7 @@ fn tr_ja(s: &str) -> &str {
         "Black Video…" => "ブラックビデオ…",
         "Color Matte…" => "カラーマット…",
         "Animated Chart…" => "アニメーションチャート…",
+        "Generate Narration…" => "ナレーションを生成…",
         "Edit Chart…" => "チャートを編集…",
         "Chart" => "チャート",
         "Universal Counting Leader…" => "万国規格カウントダウンリーダー…",
@@ -516,6 +517,7 @@ fn tr_ja(s: &str) -> &str {
         "Media Analysis & Transcription" => "メディア分析と文字起こし",
         "Media Cache" => "メディアキャッシュ",
         "Memory" => "メモリ",
+        "Narration" => "ナレーション",
         "Playback" => "再生",
         "Plugins" => "プラグイン",
         "Trim" => "トリム",
@@ -887,6 +889,7 @@ fn tr_ja(s: &str) -> &str {
         "Media Analysis & Transcription…" => "メディア分析と文字起こし…",
         "Media Cache…" => "メディアキャッシュ…",
         "Memory…" => "メモリ…",
+        "Narration…" => "ナレーション…",
         "Playback…" => "再生…",
         "Plugins…" => "プラグイン…",
         "Timeline…" => "タイムライン…",
@@ -1547,6 +1550,19 @@ fn tr_settings_ja(s: &str) -> &str {
         "Russian" => "ロシア語",
         "Hindi" => "ヒンディー語",
         "Speech model" => "音声モデル",
+        // --- Narration ---
+        "Default engine" => "既定のエンジン",
+        "AivisSpeech address" => "AivisSpeech のアドレス",
+        "VOICEVOX address" => "VOICEVOX のアドレス",
+        "Default voice (Speaker/Style)" => "既定の声(話者/スタイル)",
+        "Folder for narration audio" => "ナレーション音声の保存先",
+        "Pause after each line" => "各行のあとの間",
+        "Make captions from the lines" => "セリフからキャプションを作成",
+        "Split captions longer than" => "この文字数を超えるキャプションを分割",
+        "characters" => "文字",
+        "Narration uses the free AivisSpeech or VOICEVOX app, installed and started separately; FilmCraft talks to it on this computer. Every voice has its own terms: credit the voices you use (Generate Narration lists the credits)." => {
+            "ナレーションには、別途インストールして起動した無料の AivisSpeech または VOICEVOX アプリを使います(FilmCraft はこのコンピューター上のアプリと通信します)。声ごとに利用規約があります。使った声のクレジットを表記してください(「ナレーションを生成」がクレジットを一覧表示します)。"
+        }
         "Whisper tiny (fastest)" => "Whisper tiny(最速)",
         "Whisper base (balanced)" => "Whisper base(バランス)",
         "Whisper small (most accurate)" => "Whisper small(最高精度)",
@@ -2440,6 +2456,7 @@ mod tests {
                 || s.ends_with(" fps")
                 || s.contains("% HLG")
                 || ["+ Cmd", "+ Opt", "Dynamic Link", "Whisper"].iter().any(|k| s.starts_with(k))
+                || ["AivisSpeech", "VOICEVOX"].contains(&s)
         };
         let mut missing: Vec<&str> = words.into_iter().filter(|w| !kept(w) && tr_settings_ja(w).is_ascii()).collect();
         missing.sort_unstable();

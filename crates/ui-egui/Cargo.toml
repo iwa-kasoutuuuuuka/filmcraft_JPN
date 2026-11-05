@@ -39,6 +39,8 @@ rustix = { version = "1", default-features = false, features = ["std", "time"] }
 
 [dev-dependencies]
 pollster = "0.4"
+# the Generate Narration test talks to a fake engine over HTTP
+filmcraft-speech = { workspace = true, features = ["tts"] }
 filmcraft-testkit = { workspace = true }
 filmcraft-codecs = { workspace = true }
 # the bench registers OS hardware decoders as the desktop app does (dev-dependency only: ui-egui
