@@ -459,6 +459,8 @@ pub fn export_media(s: &mut Session, p: &Value) -> Result<Value> {
         }
         out["result"] = v["result"].clone();
     }
+    // headless / agent sessions: the edit as a project beside the video
+    crate::agent_project::after_export(s, p, &path, &mut out);
     Ok(out)
 }
 
@@ -662,11 +664,14 @@ fn queue_add(s: &mut Session, p: &Value) -> Result<Value> {
         });
         ids.push(id);
     }
+    let mut out = json!({"added": ids});
     if bool_p(p, "start").unwrap_or(false) {
         s.export_queue.running = true;
         pump_queue(s, bool_p(p, "wait").unwrap_or(false));
+        queue_save_project(s, p, &ids, &mut out);
     }
-    Ok(json!({"added": ids, "items": queue_list_json(s)}))
+    out["items"] = queue_list_json(s);
+    Ok(out)
 }
 
 fn queue_list_json(s: &Session) -> Value {
@@ -684,7 +689,22 @@ fn queue_start(s: &mut Session, p: &Value) -> Result<Value> {
     }
     s.export_queue.running = true;
     pump_queue(s, bool_p(p, "wait").unwrap_or(false));
-    Ok(json!({"running": s.export_queue.running, "items": queue_list_json(s)}))
+    let ids: Vec<u64> = s.export_queue.items.iter().map(|i| i.id).collect();
+    let mut out = json!({"running": s.export_queue.running});
+    queue_save_project(s, p, &ids, &mut out);
+    out["items"] = queue_list_json(s);
+    Ok(out)
+}
+
+/// After starting the queue: save the project beside the first of `ids` that encoded (or is
+/// encoding / about to, when not waiting) — see [`crate::agent_project`].
+fn queue_save_project(s: &mut Session, p: &Value, ids: &[u64], out: &mut Value) {
+    let wait = bool_p(p, "wait").unwrap_or(false);
+    let ok = |st: QueueStatus| st == QueueStatus::Done || (!wait && matches!(st, QueueStatus::Ready | QueueStatus::Encoding));
+    let video = ids.iter().find_map(|id| s.export_queue.items.iter().find(|i| i.id == *id && ok(i.status)).map(|i| i.settings.path.clone()));
+    if let Some(video) = video {
+        crate::agent_project::after_export(s, p, &video, out);
+    }
 }
 
 fn queue_stop(s: &mut Session, _: &Value) -> Result<Value> {
@@ -804,7 +824,12 @@ fn quick(s: &mut Session, p: &Value) -> Result<Value> {
     let id = spawn_export(s, project, seq, settings, format!("Quick Export {}", file_name(&path)), wait)?;
     let used = preset.map(|x| x.name).unwrap_or(name);
     s.export_queue.quick_preset = Some(used.clone());
-    Ok(json!({"job": id, "path": path, "preset": used}))
+    let mut out = json!({"job": id, "path": path, "preset": used});
+    let failed = wait && s.jobs.iter().find(|j| j.id == id).is_some_and(|j| j.to_json()["result"]["error"].is_string());
+    if !failed {
+        crate::agent_project::after_export(s, p, &path, &mut out);
+    }
+    Ok(out)
 }
 
 fn resolve(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1033,20 +1058,27 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec(
             "export.queue.add",
             "Send to Export Queue",
-            r#"{…settings params,"path":str|dir?,"sequences":[id]?,"ranges":[range]?,"start":bool?,"wait":bool?}"#,
+            r#"{…settings params,"path":str|dir?,"sequences":[id]?,"ranges":[range]?,"start":bool?,"wait":bool?,"saveProject":bool?,"projectPath":str?}"#,
             has_seq,
             queue_add,
             true,
         ),
         spec("export.queue.list", "List Export Queue", "{}", always, queue_list, false),
-        spec("export.queue.start", "Start Export Queue", r#"{"wait":bool=false}"#, always, queue_start, true),
+        spec("export.queue.start", "Start Export Queue", r#"{"wait":bool=false,"saveProject":bool?,"projectPath":str?}"#, always, queue_start, true),
         spec("export.queue.stop", "Stop Export Queue", "{}", always, queue_stop, true),
         spec("export.queue.cancel", "Cancel Queued Export", r#"{"id":id?,"wait":bool?}"#, always, queue_cancel, true),
         spec("export.queue.retry", "Retry Queued Export", r#"{"id":id,"start":bool?,"wait":bool?}"#, always, queue_retry, true),
         spec("export.queue.remove", "Remove Queued Export", r#"{"id":id}"#, always, queue_remove, true),
         spec("export.queue.move", "Reorder Queued Export", r#"{"id":id,"to":index?,"by":int?}"#, always, queue_move, true),
         spec("export.queue.clear", "Clear Finished Exports", r#"{"all":bool=false}"#, always, queue_clear, true),
-        spec("export.quick", "Quick Export", r#"{"preset":str?,"path":str?,"wait":bool?, …settings params}"#, has_seq, quick, true),
+        spec(
+            "export.quick",
+            "Quick Export",
+            r#"{"preset":str?,"path":str?,"wait":bool?,"saveProject":bool?,"projectPath":str?, …settings params}"#,
+            has_seq,
+            quick,
+            true,
+        ),
     ]
 }
 

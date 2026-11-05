@@ -61,6 +61,28 @@ resolve on your setup, point `command` at the absolute path of `target/release/f
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
+### Project file with every export
+
+An agent's video should stay editable. In a headless session (`filmcraft-cli` subcommands, `run`
+scripts and the headless MCP server), a successful export (`file.exportMedia`, `export.quick`,
+`export.queue.add` with `start`, `export.queue.start`) also saves the edit as a FilmCraft project:
+
+- to `projectPath` when the command is given one;
+- else to the project's own file, when it has one (opened with `--project`, or saved before);
+- else to `<video name>.fcproj` beside the video. An existing file there is never overwritten:
+  the new project gets a number (`clip 2.fcproj`).
+
+Media referenced by a relative path is stored as an absolute path, and media in the OS temp
+folder (generated or extracted audio, scratch renders) is copied into a `<project name> Media`
+folder beside the project, so the project opens in the desktop app with no missing media.
+Graphics, titles, captions and charts live inside the project file itself.
+
+The command result has `project` (the saved path; tell the user they can open it in FilmCraft to
+keep editing) and `collectedMedia`, or `projectError` when saving failed (the video was still
+exported). `saveProject: false` skips it for one command; `filmcraft-cli --no-project` turns it off
+for the whole run. In bridge mode (the live app) nothing is saved unless the command passes
+`saveProject: true` or `projectPath`: the project is already open in front of the user.
+
 ## 2. Control channel
 
 `filmcraft --control 9876` (or `FILMCRAFT_CONTROL_PORT=9876`) listens on `127.0.0.1` only. Send one
@@ -125,7 +147,9 @@ filmcraft-cli --bridge 127.0.0.1:9876 exec window.workspace.color   # the runnin
 `key=value` values are parsed as JSON when they can be (`3.5`, `true`, `[1,2]`), otherwise taken as
 strings; dotted keys nest (`color.r=1`). `run` prints one JSON line per command
 (`{"line","id","ok","result"|"error"}`) and stops at the first failure unless `--keep-going`.
-`--save` writes back to `--project`; `--save-as path` writes elsewhere.
+`--save` writes back to `--project`; `--save-as path` writes elsewhere. Exports also save the
+project (see [Project file with every export](#project-file-with-every-export)): `export` prints
+the path on stderr and in the result's `project`; `--no-project` turns it off.
 
 ## 3. Verifying UI work
 

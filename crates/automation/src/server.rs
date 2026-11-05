@@ -219,7 +219,7 @@ impl FilmcraftMcp {
     }
 
     #[tool(
-        description = "Run a command by id with JSON params, e.g. {\"id\":\"timeline.razor\",\"params\":{\"seconds\":3.5}} or {\"id\":\"effects.apply\",\"params\":{\"effect\":\"Gaussian Blur\"}}. Undoable edits land in History."
+        description = "Run a command by id with JSON params, e.g. {\"id\":\"timeline.razor\",\"params\":{\"seconds\":3.5}} or {\"id\":\"effects.apply\",\"params\":{\"effect\":\"Gaussian Blur\"}}. Undoable edits land in History. Headless exports (file.exportMedia with wait:true, export.quick, export.queue.*) also save the edit as a FilmCraft project (`<video name>.fcproj` beside the video, or the opened project's file): the result's `project` is its path, tell the user they can open it in FilmCraft to keep editing (`saveProject:false` skips it, `projectPath` picks the file)."
     )]
     async fn command_run(&self, Parameters(p): Parameters<RunParams>) -> Result<CallToolResult, McpError> {
         wrap(self.run(&p.id, p.params.unwrap_or(json!({}))).await)
@@ -359,7 +359,7 @@ impl FilmcraftMcp {
 #[tool_handler(
     router = self.tool_router,
     name = "filmcraft",
-    instructions = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable). `project_inspect`/`sequence_inspect` return ids you can pass to commands; `render_frame` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`)."
+    instructions = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable). `project_inspect`/`sequence_inspect` return ids you can pass to commands; `render_frame` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). Headless exports also save a FilmCraft project file beside the video (result field `project`), so the user can open the edit in the app."
 )]
 impl ServerHandler for FilmcraftMcp {}
 

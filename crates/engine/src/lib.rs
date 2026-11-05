@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod agent_project;
 pub mod audio_plugins;
 pub mod autosave;
 pub mod autoswitch;
@@ -391,6 +392,10 @@ pub struct Session {
     /// "Pause Media Encoder queue during playback" the export queue starts no new export while it
     /// is set (an export already encoding finishes).
     pub playback_active: bool,
+    /// Save the project after a successful export (headless CLI / MCP sessions: agents get a
+    /// `.fcproj` beside their video; see [`agent_project`]). Off in the desktop app; commands
+    /// override it with `saveProject`.
+    pub save_project_on_export: bool,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -480,6 +485,7 @@ impl Session {
             exec_depth: 0,
             last_unknown_params: Vec::new(),
             playback_active: false,
+            save_project_on_export: false,
         }
     }
 
@@ -974,6 +980,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 
 #[cfg(test)]
 mod aaf_omf_tests;
+#[cfg(test)]
+mod agent_project_tests;
 #[cfg(test)]
 mod animated_image_tests;
 #[cfg(test)]

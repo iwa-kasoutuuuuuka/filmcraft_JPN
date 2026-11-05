@@ -1069,6 +1069,39 @@ To call it directly from a script without MCP, send `{"id": 1, "method": "engine
 
 ---
 
+### 動画と一緒にプロジェクトファイルも自動保存 / A project file saved with every video
+
+Claude Code や Antigravity などの AI エージェントが FilmCraft で動画を書き出すと、動画ファイルと一緒に **FilmCraft のプロジェクトファイル（`.fcproj`）も自動で保存** されます。あとから FilmCraft アプリでそのプロジェクトを開けば、AI が作った編集をそのまま手で直し続けられます。
+
+- 対象: ヘッドレスのセッション（`filmcraft-cli` の `export` / `exec` / `run` スクリプト、`filmcraft-headless` MCP サーバー）で、書き出し（`file.exportMedia`、`export.quick`、`export.queue.*`）が成功したとき。
+- 保存先: `projectPath` を指定すればそこへ。`--project` で開いたプロジェクトなどすでにファイルがあればそのファイルへ。なければ動画の隣に `<動画の名前>.fcproj`。同名のファイルがあっても上書きせず、`作品 2.fcproj` のように番号を付けます。
+- 素材: 相対パスで読み込んだ素材は絶対パスで記録し、OS の一時フォルダにある素材（生成・抽出した音声など）は `<プロジェクト名> Media` フォルダへコピーするので、アプリで開いても「メディアが見つからない」になりません。グラフィック・テロップ・キャプション・グラフはプロジェクトファイル自体に入っています。
+- 結果: コマンドの結果の `project` に保存先のパスが入ります（失敗時は `projectError`。動画の書き出し自体は成功しています）。
+- オフにするには: コマンドに `saveProject: false`、CLI 全体では `--no-project`。デスクトップアプリ（ブリッジモード）では、`saveProject: true` か `projectPath` を指定したときだけ保存します。
+
+```powershell
+filmcraft-cli --demo run 編集.jsonl          # 書き出しと一緒に「<動画名>.fcproj」も保存
+filmcraft-cli --demo --no-project export out.mp4   # 動画だけ
+```
+
+<details>
+<summary>English</summary>
+
+When an AI agent such as Claude Code or Antigravity exports a video with FilmCraft, **a FilmCraft project file (`.fcproj`) is saved along with the video**. Open it in the FilmCraft app later and keep editing what the agent made.
+
+- When: in headless sessions (`filmcraft-cli` `export` / `exec` / `run` scripts, the `filmcraft-headless` MCP server), after a successful export (`file.exportMedia`, `export.quick`, `export.queue.*`).
+- Where: to `projectPath` if given; to the project's own file if it has one (e.g. opened with `--project`); otherwise `<video name>.fcproj` beside the video. An existing file is never overwritten: the new project gets a number (`clip 2.fcproj`).
+- Media: media imported by a relative path is stored with its absolute path, and media in the OS temp folder (generated or extracted audio, …) is copied into a `<project name> Media` folder, so the project opens in the app with no missing media. Graphics, titles, captions and charts live inside the project file itself.
+- Result: the command result's `project` holds the saved path (`projectError` if saving failed; the video itself was still exported).
+- To turn it off: `saveProject: false` on the command, or `--no-project` for the whole CLI run. In the desktop app (bridge mode) the project is saved only when a command passes `saveProject: true` or `projectPath`.
+
+```powershell
+filmcraft-cli --demo run edit.jsonl                # saves "<video name>.fcproj" with the export
+filmcraft-cli --demo --no-project export out.mp4   # the video only
+```
+
+</details>
+
 ## <a id="便利機能"></a>✨ この版で追加した便利機能 / Convenience features added in this edition
 
 どの機能もメニュー、コマンド ID(CLI / エージェント)の両方から使えます。すべて 1 回の「元に戻す」で取り消せます。無音カット・範囲を隠す・縦型バージョン・話者に合わせて自動切り替えは、メニューから選ぶと設定ダイアログが開きます(コマンドに引数を付けて呼ぶと、ダイアログなしで実行されます)。
