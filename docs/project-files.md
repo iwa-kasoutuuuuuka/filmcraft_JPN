@@ -94,6 +94,17 @@ one. If a step fails, the temp file is removed and the old file is untouched.
 
 In the UI, Save / Save As / Save a Copy without a `path` show a file dialog.
 
+### Saved with an export (agents and scripts)
+
+Headless sessions (`filmcraft-cli`, its MCP server) save the project after every successful export
+(`Session::save_project_on_export`, `crates/engine/src/agent_project.rs`): to the export's
+`projectPath`, else the project's own file, else `<video name>.fcproj` beside the video (numbered,
+never overwriting an existing file). Relative media paths are made absolute and media in the OS
+temp folder is copied into `<project name> Media/` beside the project. The export commands take
+`saveProject: bool` and `projectPath: str` and return `project` / `collectedMedia` or
+`projectError`. The desktop app does this only when a command asks for it. See
+[agents.md](agents.md#project-file-with-every-export).
+
 ## Auto Save
 
 Preferences ▸ Auto Save (Edit ▸ Preferences ▸ Auto Save…, ⌘,; FilmCraft ▸ Settings… on macOS) works
