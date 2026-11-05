@@ -239,7 +239,8 @@ impl Script {
         self.scenes_in_route().into_iter().flat_map(|s| s.lines.iter().map(move |l| (s, l)))
     }
 
-    /// The expression a line shows: its own, else the speaker's default, else the speaker's first.
+    /// The expression a line shows: its own, else the speaker's default, else `normal`, else the
+    /// speaker's first by name.
     pub fn expression_of<'a>(&'a self, line: &'a ScriptLine) -> Option<(&'a str, &'a Sprite)> {
         let c = self.characters.get(line.speaker.as_deref()?)?;
         if let Some(e) = line.expression.as_deref()
@@ -251,6 +252,10 @@ impl Script {
             && let Some(sp) = c.expressions.get(e)
         {
             return Some((e, sp));
+        }
+        // an expression called `normal` is the natural face; else the first by name
+        if let Some((k, v)) = c.expressions.get_key_value("normal") {
+            return Some((k.as_str(), v));
         }
         c.expressions.iter().next().map(|(k, v)| (k.as_str(), v))
     }
@@ -548,6 +553,10 @@ mod tests {
         let l = s.scenes[0].lines[0].clone();
         assert_eq!(s.expression_of(&l).map(|(n, _)| n), Some("normal"));
         assert!(s.validate().iter().any(|p| p.severity == Severity::Warning && p.message.contains("no expression `angry`")));
+        // no default set: `normal`, even though `angry` sorts first
+        s.characters.get_mut("marina").unwrap().expressions.insert("angry".into(), Sprite { image: "a.png".into(), open_image: None });
+        let l = s.scenes[0].lines[1].clone();
+        assert_eq!(s.expression_of(&l).map(|(n, _)| n), Some("normal"));
         let narr = ScriptLine { id: "n".into(), kind: LineKind::Narration, text: "x".into(), ..Default::default() };
         assert!(s.expression_of(&narr).is_none());
     }

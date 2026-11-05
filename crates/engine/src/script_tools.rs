@@ -56,24 +56,31 @@ pub fn spoken_text(raw: &str) -> String {
 }
 
 /// What is said by a line, ready for a synthesizer: its `reading` if it has one, else its text.
-fn line_speech(l: &ScriptLine) -> String {
+pub(crate) fn line_speech(l: &ScriptLine) -> String {
     spoken_text(l.reading.as_deref().filter(|r| !r.trim().is_empty()).unwrap_or(&l.text))
 }
 
-struct Loaded {
-    path: PathBuf,
-    dir: PathBuf,
-    script: Script,
+pub(crate) struct Loaded {
+    pub(crate) path: PathBuf,
+    pub(crate) dir: PathBuf,
+    pub(crate) script: Script,
     /// The file as JSON, so that rewriting it keeps fields other tools put there.
-    raw: Value,
+    pub(crate) raw: Value,
 }
 
 impl Loaded {
     /// A path from the script, relative to the script's folder.
-    fn resolve(&self, rel: &str) -> PathBuf {
+    pub(crate) fn resolve(&self, rel: &str) -> PathBuf {
         let p = Path::new(rel);
         if p.is_absolute() { p.to_path_buf() } else { self.dir.join(p) }
     }
+    /// The script's file name without `.fcscript.json`, for naming things made from it.
+    pub(crate) fn stem_for_names(&self) -> String {
+        let name = self.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let base = name.strip_suffix(".fcscript.json").or_else(|| name.strip_suffix(".json")).unwrap_or(&name);
+        if base.trim().is_empty() { "Anime".to_string() } else { base.to_string() }
+    }
+
     /// The folder name of this script's outputs: its file name without `.fcscript.json`, and a
     /// short hash of its folder, so `season1/ep1.fcscript.json` and `season2/ep1.fcscript.json`
     /// (and `ep1.v2.json`) do not share audio.
@@ -87,7 +94,7 @@ impl Loaded {
     }
 }
 
-fn load(s: &Session, p: &Value, cmd: &str) -> Result<Loaded> {
+pub(crate) fn load(s: &Session, p: &Value, cmd: &str) -> Result<Loaded> {
     let path = str_p(p, "path").ok_or_else(|| bad(cmd, "`path` (the script file) is required"))?;
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let text = String::from_utf8_lossy(&bytes);
@@ -99,7 +106,7 @@ fn load(s: &Session, p: &Value, cmd: &str) -> Result<Loaded> {
     Ok(Loaded { path, dir, script, raw })
 }
 
-fn out_dir(s: &Session, l: &Loaded, p: &Value) -> Result<PathBuf> {
+pub(crate) fn out_dir(s: &Session, l: &Loaded, p: &Value) -> Result<PathBuf> {
     match str_p(p, "out") {
         Some(o) if !o.trim().is_empty() => Ok(PathBuf::from(o)),
         _ => tts_dir(s).map(|d| d.join(l.stem())).ok_or_else(|| EngineError::Other("no data directory for spoken lines; pass `out`".into())),
@@ -110,7 +117,7 @@ fn problems_json(v: &[Problem]) -> Vec<Value> {
     v.iter().map(|p| serde_json::to_value(p).unwrap_or(Value::Null)).collect()
 }
 
-fn has_recording(l: &Loaded, line: &ScriptLine) -> bool {
+pub(crate) fn has_recording(l: &Loaded, line: &ScriptLine) -> bool {
     line.voice_file.as_deref().is_some_and(|f| l.resolve(f).is_file())
 }
 
@@ -254,18 +261,18 @@ fn pick_voices(s: &mut Session, p: &Value) -> Result<Value> {
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Default, Serialize, Deserialize)]
-struct Manifest {
+pub(crate) struct Manifest {
     #[serde(default)]
-    version: u32,
+    pub(crate) version: u32,
     #[serde(default)]
-    lines: BTreeMap<String, Entry>,
+    pub(crate) lines: BTreeMap<String, Entry>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Entry {
-    hash: String,
-    file: String,
-    seconds: f64,
+pub(crate) struct Entry {
+    pub(crate) hash: String,
+    pub(crate) file: String,
+    pub(crate) seconds: f64,
 }
 
 const MANIFEST: &str = "manifest.json";
@@ -274,7 +281,7 @@ const MANIFEST: &str = "manifest.json";
 /// run can lose. Below the synthesizer's own limit.
 pub const SYNTH_CHUNK: usize = 400;
 
-fn read_manifest(out: &Path) -> Manifest {
+pub(crate) fn read_manifest(out: &Path) -> Manifest {
     std::fs::read_to_string(out.join(MANIFEST)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
@@ -419,7 +426,7 @@ fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
 
 // ---------------------------------------------------------------------------------------------
 
-fn lip_options(p: &Value) -> lip::Options {
+pub(crate) fn lip_options(p: &Value) -> lip::Options {
     let mut o = lip::Options::default();
     if let Some(b) = bool_p(p, "three") {
         o.three_level = b;
@@ -437,7 +444,7 @@ fn lip_options(p: &Value) -> lip::Options {
 }
 
 /// Mouth segments of an audio file: `(start, end, level)` in seconds, and the duration.
-fn mouth_of(s: &Session, path: &Path, o: &lip::Options) -> Result<(f64, Vec<lip::MouthSegment>)> {
+pub(crate) fn mouth_of(s: &Session, path: &Path, o: &lip::Options) -> Result<(f64, Vec<lip::MouthSegment>)> {
     let src = s.media.open_file(&path.to_string_lossy(), &*s.services).map_err(|e| EngineError::Other(format!("{}: {e}", path.display())))?;
     if !src.info().has_audio() {
         return Err(EngineError::Other(format!("{} has no audio", path.display())));

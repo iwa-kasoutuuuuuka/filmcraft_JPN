@@ -103,12 +103,79 @@ Shapes per vowel need the text's reading aligned to the audio and are a later st
 The open picture of a character is `expressions.<name>.openImage` (made once per character, by
 any image tool; FilmCraft generates no pictures).
 
-## What comes next
+## Building the sequence
 
-The assembly step (script → sequence: background, sprites, voices, subtitles and music placed
-by the lines' durations, rebuilt for changed lines only) builds on these files: the manifest gives
-each line's audio and length, `lipsync.json` the mouth, the script the rest.
-See [novel-to-anime.md](novel-to-anime.md) §1.4.
+`anime.build` lays the script out as a new sequence (one undo step: the sequence, the bin of
+imported files and the subtitle track together). Times are exact: a line lasts as long as its
+audio plus a pause, every boundary is on the frame grid, and neighbouring clips abut.
+
+| Track | Holds |
+|---|---|
+| V1 Background | One picture per scene, scaled to fill the frame (`fitBackground: false` keeps its size), pushing in slowly (`push`, 5 % by default; `kenBurns: false` turns it off) |
+| V2 Character | The speaker's picture for the expression of the line. Consecutive lines in the same picture (and the same scene) are one clip. Directions, and narration without a `speaker`, show no character |
+| V3 Mouth | The open-mouth picture (`openImage`) over V2 while the voice is loud (the shapes of `script.lipsync`) |
+| V4 Blink | The `blink` picture (or `<expression>_blink`) over V2 for about 0.12 s (at least three frames), first 1.2 to 2.2 s into a clip and then every 2.7 to 4.6 s, at times fixed by the clip's position, so a rebuild blinks the same way |
+| A1 Voice | Recordings and synthesized lines, brought to one loudness (`levelVoices`, on by default: each clip's gain is set so it matches the median voice, or `voiceLufs`, within 12 dB; a cloned and a preset voice differ by 10 LU or more), as long as their audio (cut at the line's end if a `pauseAfter` of 0 rounds the end down by up to half a frame) |
+| A2 Music | A scene's `bgm`, repeated to fill the scene (each repeat is a whole number of frames, so repeats abut and never overlap); scenes that share it share the clips; `bgmGainDb` (-18); at most 20 000 repeats per stretch, with a warning |
+| A3 Effects | A line's `sfx`; a long one ends where the next begins, or where the sequence ends |
+| Subtitles | The plain text (ruby removed), broken at sentence ends, then commas, into pieces of `captionChars` (36) characters, timed in proportion to their length |
+
+`anime.build {path, out?, name?, width=1920, height=1080, fps=24, pause=0.35, sceneGap=0.6,
+directionSeconds=1, charsPerSecond=7, push=5, spriteScale?, bgmGainDb=-18, sfxGainDb=0,
+captionChars=36, blink=true}`: `pause` follows a spoken line unless its `pauseAfter` says
+otherwise; `sceneGap` is a beat of background at the start of each scene; a line without audio
+yet gets a length estimated at `charsPerSecond` and is listed in `withoutAudio`. Pictures that are
+missing (backgrounds, sprites, and the open-mouth and blink pictures alike) are skipped with a warning; a script with errors, or with no lines, builds nothing.
+Building again makes another sequence, named apart (`name (2)`). The files are imported in one
+step into a bin named after the script, so the whole build is one undo step however long the
+script is, and numbered pictures (`bg_01.png`, `bg_02.png`) are not mistaken for an image
+sequence. A scene lasts at least one frame, even without lines. A script, a size or a frame rate
+that cannot be built is refused before anything is imported, and a build that fails part way
+puts the project back as it was.
+
+A character's expression is the line's `expression`, else `defaultExpression`, else `normal`,
+else the first by name. The open-mouth and blink pictures are optional: without them the
+character simply does not move its mouth or blink.
+
+`anime.check {sequence?, path?, out?, maxSilenceSeconds=5, maxCharsPerSecond=20, captionChars=36,
+loudnessToleranceLu=6}` reports `ok`, `errors`, `warnings`, `stats` and `problems` (each with a
+`kind` and the time):
+
+| Kind | Severity | Meaning |
+|---|---|---|
+| `offline` | error | A clip's media is missing |
+| `gap` | error | The background track has a hole, or ends before the rest |
+| `overlap` | error | Two voices at once |
+| `silence` | warning | More than `maxSilenceSeconds` without a voice |
+| `loudness` | warning | A voice is more than `loudnessToleranceLu` from the median voice (integrated LUFS, BS.1770) |
+| `caption-long` / `caption-fast` / `caption-short` | warning | A subtitle is over twice `captionChars`, runs over `maxCharsPerSecond`, or shows under 0.4 s |
+| `no-audio` | warning | With `path`: a spoken line has neither a recording nor a synthesized file |
+| `empty`, `no-voice` | warning | An empty background or voice track |
+
+`anime.run {path, pickVoices=false, synthesize=true, check=true, export?, preset?, ...}` runs the
+steps in order and returns each one's summary: `validate`, `pickVoices` (only when asked: it
+rewrites the script), `synthesize`, `build`, `check` and, with `export: "out.mp4"`, the export
+(through `export.queue.add`, waiting for it; an encode that ends as anything but `done` is a
+failed step, with the encoder's error). It stops at the first step that fails and names it
+(`failedStep`). Every step can be repeated: spoken lines are cached, so a second run only
+speaks what changed, and builds a fresh sequence beside the first.
+
+## What is not here
+
+- **Pictures are not generated.** Backgrounds, sprites and their open-mouth and blink variants
+  come from you; FilmCraft only places them.
+- **One character at a time.** The sprite track shows the speaker; a scene with two people on
+  screen needs a second sprite track by hand.
+- **Mouth shapes are open or closed.** Per-vowel shapes need the text's reading aligned to the
+  audio.
+- **Sprites are static.** A sprite is placed as it is imported (`spriteScale` sets one scale for
+  all). Only the background moves, so the mouth and blink pictures always line up with the
+  character.
+- **Limits.** A single audio file longer than an hour is not used, a sequence stops at 100 hours,
+  and a script at 400 000 lines; very long scripts also make the subtitle track slow to build
+  (each caption re-sorts the track).
+- **No transitions or fades yet.** Scenes cut; add transitions on V1 by hand or with the
+  effects commands.
 
 ## Tests
 
@@ -116,6 +183,7 @@ See [novel-to-anime.md](novel-to-anime.md) §1.4.
   against prerequisites and story time, expression fallback.
 - `crates/audio-dsp/src/lipsync.rs`: silence and nonsense input, bursts at the right times, a
   click shorter than the minimum, three shapes, a wobbling level that must not flutter.
+- `crates/engine/src/anime_tests.rs`: the plan with files faked (timing on the frame grid, runs, blinks, mouth, music, subtitles, missing files), building with real files (tracks, clip counts, one undo step, nothing built from a bad script), the checks (gaps, overlaps, a quiet voice), the one-call run and its cache, and an export that is opened again and measured.
 - `crates/engine/src/script_tools_tests.rs`: validation and refusal, voice picking and writing,
   synthesizing only what is missing and only once (cache, edit, deleted file, force, language,
   corrupt manifest, a changed reference), lip sync for one file and for a whole script.

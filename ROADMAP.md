@@ -82,8 +82,9 @@ In priority order. Agents should prefer this work over adding more checklist ite
    editing, speech enhancement, reframing. Text-to-speech and voice cloning (`speech.synthesize`)
    run Qwen3-TTS as an external Python script (`tools/qwen3-tts/`, [docs/text-to-speech.md](docs/text-to-speech.md));
    the script model with voice picking, incremental synthesis and lip-sync analysis
-   (`script.*`, [docs/script.md](docs/script.md)) is in; automatic assembly of a script into a
-   sequence is next ([docs/novel-to-anime.md](docs/novel-to-anime.md)).
+   (`script.*`, [docs/script.md](docs/script.md)) and the automatic assembly of a script into a
+   sequence with checks and a one-call run (`anime.*`) are in; converters for particular games
+   and per-vowel mouths are next ([docs/novel-to-anime.md](docs/novel-to-anime.md)).
 9. **The web app shell**: file access, WebCodecs, audio.
 
 ### Where we're going
