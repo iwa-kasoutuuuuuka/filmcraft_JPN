@@ -48,11 +48,20 @@ OPTIONS
   --demo                        open the built-in demo project (headless)
   --save                        save the project back to --project when done
   --save-as <p.fcproj>          save the project to this path when done
+  --no-project                  don't save a project file after exports (headless; see PROJECT
+                                FILES)
   --bridge <127.0.0.1:PORT>     send commands to the running app (`filmcraft --control PORT`)
   --data-dir <dir>              FilmCraft data directory for user export presets (headless;
                                 default: the app's data directory)
   --keep-going                  `run`: report failing lines and continue
   --compact                     one-line JSON output
+
+PROJECT FILES
+  Headless exports (export, exec/run with file.exportMedia, export.quick, export.queue.*) also
+  save the edit as a FilmCraft project, so it opens in the app for more editing: to the --project
+  file when one was opened, else to <video name>.fcproj beside the video (an existing file is never
+  overwritten: `clip 2.fcproj`). Media in the temp folder is copied into `<project> Media/`.
+  The result's `project` field has the path. Per command: saveProject=false, projectPath=p.fcproj.
 
 VALUES
   key=value parses value as JSON when it can (3.5, true, [1,2], {\"a\":1}), else as a string:
@@ -88,6 +97,9 @@ impl Backend {
             return Backend::Bridge(BridgeClient::new(addr).unwrap_or_else(|e| usage(e)));
         }
         let mut s = Session::default();
+        // agents and scripts get the edit as a project beside every video they export
+        // (`<video>.fcproj`, or the --project file); --save-as names the project file itself
+        s.save_project_on_export = !a.flag("--no-project") && a.opt("--save-as").is_none();
         // user export presets (and other per-user libraries) from the data directory
         if let Some(dir) = a.opt("--data-dir").map(std::path::PathBuf::from).or_else(filmcraft_engine::autosave::default_data_dir) {
             s.export_presets.set_dir(&dir);
@@ -365,6 +377,11 @@ async fn main() {
                 Ok(v) => {
                     print(&a, &v);
                     eprintln!("exported {out} in {:.1}s", t0.elapsed().as_secs_f64());
+                    if let Some(proj) = v["project"].as_str() {
+                        eprintln!("project saved to {proj} (open it in FilmCraft to keep editing)");
+                    } else if let Some(e) = v["projectError"].as_str() {
+                        eprintln!("warning: the project was not saved: {e}");
+                    }
                 }
                 Err(e) => fail(format!("export: {e}")),
             }
