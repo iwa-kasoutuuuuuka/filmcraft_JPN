@@ -718,3 +718,92 @@ fn backgrounds_fill_the_frame_unless_told_otherwise() {
     assert!(s.active_sequence().unwrap().video_tracks[0].items.iter().all(|i| !i.scale_to_frame));
     let _ = std::fs::remove_dir_all(&pr.dir);
 }
+
+// ---------------------------------------------------------------------------------------------
+// a game's scenario through tools/game2script
+
+fn system_python() -> Option<String> {
+    ["python", "python3"]
+        .iter()
+        .find(|p| std::process::Command::new(p).arg("--version").stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success()))
+        .map(|p| p.to_string())
+}
+
+#[test]
+fn a_converted_game_scenario_validates_and_builds() {
+    let Some(py) = system_python() else {
+        eprintln!("no python: skipped");
+        return;
+    };
+    let dir = temp("game");
+    for (f, c) in [
+        ("bg/roof.bmp", [10, 20, 80]),
+        ("bg/room.bmp", [80, 20, 10]),
+        ("chara/marina_normal.bmp", [200, 200, 200]),
+        ("chara/marina_normal_open.bmp", [220, 180, 180]),
+    ] {
+        std::fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+        bmp(&dir.join(f), 32, 18, c);
+    }
+    for (f, secs) in [("voice/v001.wav", 2.0), ("voice/v003.wav", 1.5), ("bgm/calm.wav", 2.0), ("se/door.wav", 0.5)] {
+        std::fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+        write_wav16(&dir.join(f), &tone(&[(secs, 0.4)]), RATE).unwrap();
+    }
+    std::fs::create_dir_all(dir.join("scenario")).unwrap();
+    // a Shift-JIS file, as old games have
+    let text = "■ s01 屋上\n@pov まりな\n@bg roof\n@bgm calm\n夜だった。\n@face まりな normal\n[v001]まりな「待って、[漢字/かんじ]が読めない。」\n@se door\n小次郎「俺に任せろ。」\n@bg room\n[v003]まりな「着いた。」\n■ s02 朝\n@bg roof\n朝になった。\n";
+    let (bytes, _, _) = encoding_rs_cp932(text);
+    std::fs::write(dir.join("scenario/ch1.txt"), bytes).unwrap();
+    let profile = dir.join("mine.json");
+    std::fs::write(&profile, json!({"extends": "plain", "characters": {"まりな": {"id": "marina", "voice": {"speaker": "Ono_Anna"}}, "小次郎": {"id": "kojiro", "voice": {"speaker": "Ono_Anna"}}}}).to_string()).unwrap();
+    let converter = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/game2script/game2script.py");
+    let out = dir.join("out").join("story.fcscript.json");
+    let o = std::process::Command::new(&py)
+        .args(["-X", "utf8", "-I"])
+        .arg(&converter)
+        .arg("--input")
+        .arg(dir.join("scenario"))
+        .arg("--assets")
+        .arg(&dir)
+        .arg("--out")
+        .arg(&out)
+        .arg("--profile")
+        .arg(&profile)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let mut s = session();
+    let v = run(&mut s, "script.validate", json!({"path": out}));
+    assert_eq!(v["ok"], json!(true), "{v}");
+    assert_eq!(v["stats"]["scenes"], json!(3), "{v}");
+    assert_eq!(v["stats"]["recorded"], json!(2), "{v}");
+    let r = run(&mut s, "anime.run", json!({"path": out, "out": dir.join("tts"), "width": 320, "height": 180, "fps": 12}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    let build = r["steps"].as_array().unwrap().iter().find(|x| x["step"] == "build").unwrap();
+    let c = &build["clips"];
+    assert_eq!(c["backgrounds"], json!(3), "{build}");
+    assert!(c["characters"].as_u64().unwrap() >= 1 && c["mouths"].as_u64().unwrap() >= 1, "{build}");
+    assert_eq!(c["voices"], json!(5), "{build}");
+    assert_eq!(c["effects"], json!(1), "{build}");
+    assert!(build["withoutAudio"].as_array().unwrap().is_empty(), "{build}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The text as Shift-JIS bytes, by the converter's own reader: this test writes the file through
+/// Python so the crate needs no encoding library.
+fn encoding_rs_cp932(text: &str) -> (Vec<u8>, (), ()) {
+    let py = system_python().unwrap();
+    let o = std::process::Command::new(py)
+        .args(["-X", "utf8", "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read().decode('utf-8').encode('cp932'))"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut c| {
+            use std::io::Write;
+            c.stdin.take().unwrap().write_all(text.as_bytes())?;
+            c.wait_with_output()
+        })
+        .unwrap();
+    (o.stdout, (), ())
+}

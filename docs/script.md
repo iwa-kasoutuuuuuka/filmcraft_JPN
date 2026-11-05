@@ -4,7 +4,7 @@ A **script** is a standalone JSON file (`*.fcscript.json`) that describes a stor
 scenes and lines. It is not part of the `.fcproj`: outside tools write it (an LLM turning a novel
 into lines, a converter for a game's scenario files), and FilmCraft reads it. Everything after it
 is automatic and repeatable: check it, pick voices, speak the missing lines, time the mouths,
-assemble. The plan and the reasons are in [novel-to-anime.md](novel-to-anime.md); speech is in
+assemble. A game's scenario text converts into one with [game-import.md](game-import.md). The plan and the reasons are in [novel-to-anime.md](novel-to-anime.md); speech is in
 [text-to-speech.md](text-to-speech.md).
 
 The commands only read the script and write files beside their other outputs (`<out>/…`), so
