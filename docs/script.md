@@ -122,7 +122,9 @@ an unknown beat, use `openImage`; a closed beat shows the closed mouth. A sprite
 
 It is a fit, not an alignment: every beat gets the same time, so a drawn-out syllable is cut
 short, and a line full of kanji without ruby or `reading` falls back to the plain open mouth for
-most of its length. Give such lines a `reading` for a better result.
+most of its length. Give such lines a `reading` for a better result. Letters and digits count as
+one unknown beat each. A sprite with `vowelImages` and no `openImage` shows nothing for an unknown
+beat or a vowel without a picture, so give every such sprite an `openImage`.
 
 ## Building the sequence
 

@@ -831,7 +831,7 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
         for c in &pl.cues {
             if let Some(sp) = &c.sprite {
                 // per-vowel pictures where the sprite has them, else the one open-mouth picture
-                let pieces: Vec<(Tick, Tick, Option<&PathBuf>)> = if c.shapes.is_empty() {
+                let pieces: Vec<(Tick, Tick, Option<&PathBuf>)> = if sp.vowels.is_empty() {
                     c.mouth.iter().map(|(a, b)| (*a, *b, sp.open.as_ref())).collect()
                 } else {
                     c.shapes.iter().map(|(a, b, v)| (*a, *b, v.and_then(|v| sp.vowels.get(&v)).or(sp.open.as_ref()))).collect()

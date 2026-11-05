@@ -43,7 +43,22 @@ fn to_hiragana(c: char) -> char {
     // katakana ァ..ヶ sit 0x60 above hiragana ぁ..ゖ
     match c as u32 {
         0x30A1..=0x30F6 => char::from_u32(c as u32 - 0x60).unwrap_or(c),
+        // ヷヸヹヺ are ゔ-like: va vi ve vo
+        0x30F7 => 'わ',
+        0x30F8 => 'ゐ',
+        0x30F9 => 'ゑ',
+        0x30FA => 'を',
         _ => c,
+    }
+}
+
+/// Half-width katakana (ｱｲｳ, ｶﾞ) as full width: the voicing marks are dropped, the long mark kept.
+fn full_width(c: char) -> Option<char> {
+    const TABLE: &str = "ヲァィゥェォャュョッーアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン";
+    match c as u32 {
+        0xFF66..=0xFF9D => TABLE.chars().nth((c as u32 - 0xFF66) as usize).or(Some(c)),
+        0xFF9E | 0xFF9F => None,
+        _ => Some(c),
     }
 }
 
@@ -76,10 +91,11 @@ pub fn moras(text: &str) -> Vec<Mora> {
         if out.len() >= MAX_MORA {
             break;
         }
+        let Some(raw) = full_width(raw) else { continue };
         let c = to_hiragana(raw);
         match c {
             'っ' | 'ん' => out.push(Mora::Closed),
-            'ー' | '〜' | '～' => {
+            'ー' | '〜' | '～' | 'ゝ' | 'ゞ' => {
                 if let Some(last) = out.last().copied() {
                     out.push(last);
                 }
@@ -92,8 +108,14 @@ pub fn moras(text: &str) -> Vec<Mora> {
                     'ぃ' => 'i',
                     _ => 'e',
                 };
-                match out.last_mut() {
-                    Some(m @ Mora::Vowel(_)) => *m = Mora::Vowel(v),
+                // a different vowel merges into the beat before (ふぁ, でぃ); the same one
+                // lengthens it (ねぇ, あぁ), which is a beat of its own
+                match out.last().copied() {
+                    Some(Mora::Vowel(w)) if w != v => {
+                        if let Some(last) = out.last_mut() {
+                            *last = Mora::Vowel(v);
+                        }
+                    }
                     _ => out.push(Mora::Vowel(v)),
                 }
             }
@@ -191,6 +213,17 @@ mod tests {
         assert_eq!(moras("おかあさーん"), vec![Vowel('o'), Vowel('a'), Vowel('a'), Vowel('a'), Vowel('a'), Closed]);
         assert!(moras("ー").is_empty(), "nothing to repeat");
         assert_eq!(moras("ゃ"), vec![Vowel('a')], "a stray small kana is a beat of its own");
+        assert_eq!(moras("ねぇ"), vec![Vowel('e'), Vowel('e')], "the same vowel lengthens");
+        assert_eq!(moras("あぁ！"), vec![Vowel('a'), Vowel('a')]);
+        assert_eq!(moras("でぃ"), vec![Vowel('i')]);
+    }
+
+    #[test]
+    fn half_width_katakana_and_odd_marks() {
+        assert_eq!(moras("ｱｲｳ"), vec![Vowel('a'), Vowel('i'), Vowel('u')]);
+        assert_eq!(moras("ｶﾞｰ"), vec![Vowel('a'), Vowel('a')], "the voicing mark is no beat, the long mark repeats");
+        assert_eq!(moras("あゝ"), vec![Vowel('a'), Vowel('a')]);
+        assert_eq!(moras("ヷヸヹヺ"), vec![Vowel('a'), Vowel('i'), Vowel('e'), Vowel('o')]);
     }
 
     #[test]

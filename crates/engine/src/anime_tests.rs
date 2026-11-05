@@ -889,3 +889,20 @@ fn the_build_places_the_vowel_pictures_on_the_mouth_track() {
     assert_eq!(sources.len(), 3, "a, i and (for う and え) the plain open mouth");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_line_of_closed_beats_keeps_the_mouth_shut_when_the_sprite_has_vowel_pictures() {
+    let dir = temp("closed_beats");
+    for (f, c) in [("bg.bmp", [10, 20, 80]), ("m.bmp", [200, 200, 200]), ("mo.bmp", [220, 180, 180]), ("va.bmp", [255, 0, 0])] {
+        bmp(&dir.join(f), 32, 18, c);
+    }
+    write_wav16(&dir.join("v.wav"), &tone(&[(1.0, 0.5)]), RATE).unwrap();
+    let script = r#"{"characters": {"m": {"name": "m", "expressions": {"normal": {"image": "m.bmp", "openImage": "mo.bmp", "vowelImages": {"a": "va.bmp"}}}}},
+        "scenes": [{"id": "s1", "background": "bg.bmp", "lines": [{"id": "a1", "speaker": "m", "text": "ん", "voiceFile": "v.wav"}]}]}"#;
+    let path = dir.join("story.fcscript.json");
+    std::fs::write(&path, script).unwrap();
+    let mut s = session();
+    let r = run(&mut s, "anime.build", json!({"path": path, "out": dir.join("tts")}));
+    assert_eq!(r["clips"]["mouths"], json!(0), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
