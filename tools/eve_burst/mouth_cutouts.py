@@ -18,12 +18,16 @@ fewest dark pixels in the mouth band.
 
 For each expression X of a cluster:
 
-- `<X>_closed.png`: when X's mouth differs from the base by at least `--open-min-h` rows, the base's
-  mouth rectangle pasted onto X (its resting face; only for a picture drawn mouth-open).
-- `<X>_a/_i/_u/_e/_o.png` and `_open`: X's resting face with the mouth rectangle of each open
-  member Y. The candidates are sorted by how far the mouth opens (rectangle height, then dark
-  pixels): the widest is `_a` (and `_open`), then by rank `_o`, `_e`, `_u`, `_i`; with fewer
-  candidates they repeat (one candidate -> all five are the same mouth).
+- A mouth is drawn open when it differs from the base over at least 3 rows and adds at least 8
+  pixels that are not skin (the inside of the mouth; the skin colour is the median on the edge of
+  the rectangle). A mouth in another closed shape (a pout, a frown) moves its line but adds no area,
+  so it is neither a donor nor given a `_closed`.
+- `<X>_closed.png`: for an X drawn open, the base's mouth rectangle pasted onto X (its resting face).
+- `<X>_a/_i/_u/_e/_o.png` and `_open`: X with the base's mouth (so nothing of X's own mouth is left
+  beside the pasted one) and then the mouth rectangle of each open member Y. The candidates are
+  sorted by how far the mouth opens (the added area, then the height): the widest is `_a` (and
+  `_open`), then by rank `_o`, `_e`, `_u`, `_i`; with fewer candidates they repeat (one candidate ->
+  all five are the same mouth).
 - `<X>_blink.png`: only with `--blink-source <code> <NN>` naming a picture drawn with closed eyes;
   its eye rectangle is pasted onto each resting face of its cluster. Without it no blink is made.
 
@@ -271,7 +275,9 @@ class Options:
         self.mouth_max_w = 60
         self.mouth_max_h = 40
         self.eyes_max_h = 60
-        self.open_min_h = 3      # a mouth differing over at least this many rows is drawn open
+        self.open_min_h = 3      # a mouth differing over at least this many rows ...
+        self.open_min_area = 8   # ... and adding this many non-skin pixels is drawn open
+        self.skin_dist = 48      # a channel this far from the skin colour is not skin
         self.dark_luma = 90
         self.pad = 3
         self.feather = 2
@@ -418,6 +424,31 @@ def dark_count(img: Image, box, opt: Options) -> int:
     return n
 
 
+def opening(base: Image, img: Image, rect, opt: Options) -> int:
+    """How much more of rect is not skin in img than in base: the inside of an open mouth.
+
+    The skin colour is the median of base's pixels on the edge of rect. A mouth drawn in another
+    closed shape (a pout, a frown) moves its line but adds little area; an open one adds its inside."""
+    x0, y0, x1, y1 = rect
+    edge = [base.pixel(x, y) for x in range(x0, x1) for y in (y0, y1 - 1)]
+    edge += [base.pixel(x, y) for y in range(y0, y1) for x in (x0, x1 - 1)]
+    edge = [p for p in edge if p[3] >= 200]
+    if not edge:
+        return 0
+    ref = tuple(sorted(p[c] for p in edge)[len(edge) // 2] for c in range(3))
+
+    def count(im):
+        n = 0
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                r, g, b, a = im.pixel(x, y)
+                if a >= 128 and max(abs(r - ref[0]), abs(g - ref[1]), abs(b - ref[2])) > opt.skin_dist:
+                    n += 1
+        return n
+
+    return count(img) - count(base)
+
+
 def pick_ranked(cands: list, vowel: str):
     """cands sorted widest first; the vowel's rank picks one."""
     n = len(cands)
@@ -544,9 +575,11 @@ def _plan_cluster(cl, images, diffs, face, w, h, opt, blink_nn, res):
         if bw > opt.mouth_max_w or bh > opt.mouth_max_h:
             mouth[n] = {"box": box, "tooBig": True}
             continue
-        mouth[n] = {"box": box, "height": bh, "dark": darks[n], "open": bh >= opt.open_min_h}
+        area = opening(images[base], images[n], grow(box, opt.pad, w, h), opt)
+        mouth[n] = {"box": box, "height": bh, "dark": darks[n], "opening": area,
+                    "open": bh >= opt.open_min_h and area >= opt.open_min_area}
     donors = sorted((n for n, m in mouth.items() if m.get("open") and not m.get("tooBig")),
-                    key=lambda n: (-mouth[n]["height"], -mouth[n]["dark"], n))
+                    key=lambda n: (-mouth[n]["opening"], -mouth[n]["height"], n))
     # drop donors whose mouth patch is the same picture as an earlier one
     uniq = []
     for n in donors:
@@ -574,12 +607,19 @@ def _plan_cluster(cl, images, diffs, face, w, h, opt, blink_nn, res):
         if m and m.get("tooBig"):
             e["skipped"] = f"the mouth difference is too large ({m['box'][2] - m['box'][0]}x{m['box'][3] - m['box'][1]} px; hand or pose)"
             continue
-        rest = images[n]
-        if m and m.get("open"):
+        # neutral: n with the base's mouth; the vowels go onto it, so nothing of n's own mouth
+        # (open, or closed in another shape) is left beside the pasted one
+        rest = neutral = images[n]
+        e["mouth"] = "base" if n == base else "same as the base"
+        if m:
             r = grow(m["box"], opt.pad, w, h)
-            rest = paste(images[n], images[base], r, opt.feather)
-            made["closed"] = rest
-            e["closedRect"] = list(r)
+            neutral = paste(images[n], images[base], r, opt.feather)
+            e["mouth"] = "open" if m.get("open") else "closed, another shape"
+            e["opening"] = m["opening"]
+            if m.get("open"):
+                rest = neutral
+                made["closed"] = neutral
+                e["closedRect"] = list(r)
         if not donors:
             e["skipped"] = "no open mouth in this pose to cut from"
             if made:
@@ -588,8 +628,8 @@ def _plan_cluster(cl, images, diffs, face, w, h, opt, blink_nn, res):
         cands = []
         for d in donors:
             r = grow(mouth[d]["box"], opt.pad, w, h)
-            cands.append((d, r, paste(rest, images[d], r, opt.feather)))
-        e["donors"] = [{"from": d, "rect": list(r), "height": mouth[d]["height"], "dark": mouth[d]["dark"]}
+            cands.append((d, r, paste(neutral, images[d], r, opt.feather)))
+        e["donors"] = [{"from": d, "rect": list(r), "height": mouth[d]["height"], "opening": mouth[d]["opening"]}
                        for d, r, _ in cands]
         e["vowels"] = {}
         for v in VOWELS:

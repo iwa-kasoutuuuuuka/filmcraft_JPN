@@ -81,9 +81,11 @@ Six sprites are never referenced by a scenario: `kyo02ad kyo03ad pur01bd pur02bd
 
 ## Mouth and blink variants (drawn outside, named by rule)
 
-Because the game has no open/closed pairs, the mouth and blink pictures are drawn outside FilmCraft
-(the plan uses Antigravity with Gemini) and joined to the script by file name with
-`tools/eve_burst/sprite_variants.py`. Nothing is written into the dump.
+Because the game has no open/closed pairs, the mouth and blink pictures are made outside FilmCraft
+and joined to the script by file name with `tools/eve_burst/sprite_variants.py`. Nothing is written
+into the dump. **The set in use is the one cut from other expressions** ("Made by cutting from other
+expressions" below, decided 2026-11-06), in `eve_sprites/`. Pictures drawn by an image model
+(Antigravity with Gemini, the instruction below) are kept apart in `eve_sprites_gemini/` and not used.
 
 **Where:** a work folder outside the dump, by default `<root>/../eve_sprites/` (for the dump at
 `E:/filmcraft_JPN/PS2_EVE_Bursterror解析データ` that is `E:/filmcraft_JPN/eve_sprites/`), one
@@ -141,8 +143,8 @@ image model, by pasting the mouth rectangle of one expression onto another:
 [`tools/eve_burst/mouth_cutouts.py`](../tools/eve_burst/mouth_cutouts.py).
 
 ```bash
-python tools/eve_burst/mouth_cutouts.py --root "E:/filmcraft_JPN/PS2_EVE_Bursterror解析データ" aka koj \
-    [--out-dir DIR] [--blink-source aka NN] [--overwrite] [--dry-run] [--report cut.json]
+python tools/eve_burst/mouth_cutouts.py --root "E:/filmcraft_JPN/PS2_EVE_Bursterror解析データ" \
+    aka aqu gul hon kag kat koj kyo mar mat may mid nik pur sir uwe yay [--out-dir DIR] [--blink-source aka NN] [--overwrite] [--dry-run] [--report cut.json]
 ```
 
 - Per code and outfit, every pair of pictures is compared (a channel or alpha difference of
@@ -150,10 +152,14 @@ python tools/eve_burst/mouth_cutouts.py --root "E:/filmcraft_JPN/PS2_EVE_Burster
   default 0.30, of the figure) and is small are the same pose. The changed pixels are split into
   connected components, the components into horizontal bands: the lowest band is the mouth, the
   bands above are the eyes and eyebrows.
-- The base of a pose is `00` (else the picture with the fewest dark pixels at the mouth). A picture
-  whose mouth differs from it over 3 rows or more is drawn open and gets `_closed` (the base's mouth
-  pasted in). The vowels are its resting face with each open mouth of the pose, sorted by how far it
-  opens: widest `_a` (= `_open`), then `_o`, `_e`, `_u`, `_i`; with fewer mouths they repeat.
+- The base of a pose is `00` (else the picture with the fewest dark pixels at the mouth). A mouth
+  that differs from the base over 3 rows or more and adds at least 8 pixels that are not skin (the
+  inside of the mouth; skin = the median colour on the rectangle's edge) is drawn open: it is a donor,
+  and its picture gets `_closed` (the base's mouth pasted in). A mouth in another closed shape (a pout,
+  a frown) moves its line but adds no area (measured -16..+7, against +8..+103 for open ones), so it is
+  neither. The vowels are the picture with the base's mouth and then each donor's mouth, sorted by how
+  far it opens (the added area): widest `_a` (= `_open`), then `_o`, `_e`, `_u`, `_i`; with fewer
+  mouths they repeat. A picture whose own mouth is closed keeps it as its resting face.
 - Rectangles get `--pad` (3) pixels of margin and their outer `--feather` (2) pixels blend into the
   picture below; inside, the pixels are the donor's exactly. Existing files are kept unless `--overwrite`.
 - `_blink` only with `--blink-source <code> <NN>` (a picture drawn with closed eyes; its eye
@@ -168,8 +174,12 @@ Limits: the five vowels are not real mouth shapes, only different openings borro
 expressions (an `お`-like round mouth may land on `う`). A picture alone in its pose gets nothing: other
 poses have the head redrawn, not moved (shifting `aka07ad` or the `koj` heads onto another picture
 still leaves about half of the face pixels different), and a hand over the mouth (`aka05ad`, `koj01ad`)
-hides it anyway. Measured: `aka` outfit `a` 6 of 8 pictures (5 mouths each, `_closed` for the 5 drawn
-open), outfit `b` 2 of 2 (one small mouth); `koj` none (all four pictures in different poses).
+hides it anyway. A pose whose mouths are all closed (`aka..b`, `may..c`) gets nothing either.
+Measured on all 17 codes (94 pictures): 51 got the five vowels (331 files, `_closed` for 25). `aka` 6 of
+10 (00 01 02 03 04 06ad; 02 is closed in another shape, so it has no `_closed`), `kyo` 8 of 10, `may`
+10 of 17, `pur` 8 of 14, `yay` 8 of 9, `mid` 4 of 4, `hon` 3 of 6, `mat` 2 of 2, `nik` 2 of 3; nothing
+for `aqu gul kag kat koj mar sir uwe`. No blink: no picture is drawn with plainly closed eyes
+(`yay05ad` and `pur03ad` close them in a smile).
 
 How they are used: V2 shows `image` for the whole line, V3 shows the vowel's picture (or `openImage`)
 while the voice is open, V4 shows the blink picture for about 0.12 s every 3–4 s. Each is a whole

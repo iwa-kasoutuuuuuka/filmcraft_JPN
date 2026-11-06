@@ -41,9 +41,12 @@ def figure(mouth="closed", eyes="open", shift=0):
             for x in range(16, 24):
                 img.put(x + shift, y, DARK)
     elif mouth == "small":
-        for y in range(23, 26):
-            for x in range(18, 22):
+        for y in range(23, 27):
+            for x in range(17, 23):
                 img.put(x + shift, y, DARK)
+    elif mouth == "frown":  # closed, another shape: a line as long as the closed one, moved
+        for x in range(12, 20):
+            img.put(x + shift, 26, DARK)
     return img
 
 
@@ -168,6 +171,19 @@ class AnalyseTest(unittest.TestCase):
         self.assertEqual(e["vowels"]["o"], "aka02ad")
         self.assertEqual(e["vowels"]["i"], "aka01ad")
         self.assertEqual(e["vowels"]["u"], "aka01ad")
+
+    def test_closed_mouth_in_another_shape(self):
+        imgs = {"aka00ad": figure("closed"), "aka01ad": figure("wide"), "aka02ad": figure("frown")}
+        res = mc.analyse(imgs, self.opt)
+        e2 = res["expressions"]["aka02ad"]
+        self.assertEqual(e2["mouth"], "closed, another shape")
+        self.assertEqual([d["from"] for d in e2["donors"]], ["aka01ad"])  # the frown is no donor
+        made2 = res["made"]["aka02ad"]
+        self.assertNotIn("closed", made2)  # its own mouth is already closed
+        a = made2["a"]
+        self.assertEqual(a.pixel(20, 25), DARK)  # the open mouth
+        self.assertEqual(a.pixel(12, 26), SKIN)  # no end of the frown left beside it
+        self.assertEqual(a.pixel(13, 26), SKIN)
 
     def test_other_pose_is_skipped(self):
         imgs = {"aka00ad": figure("closed"), "aka01ad": figure("wide"), "aka02ad": figure("wide", shift=6)}
