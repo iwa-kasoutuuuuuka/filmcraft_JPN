@@ -133,6 +133,44 @@ opacity: anything other than the mouth (or the eyes) that moves shows up as a do
 tend to re-render the whole picture slightly (line weight, colours, a shifted chin); if that happens, cut
 the mouth region out of the result and paste it onto the original in an image editor instead.
 
+### Made by cutting from other expressions
+
+Many expressions of one costume are drawn on the same body and differ only around the eyes and the
+mouth (`aka00ad`..`aka04ad`, `aka06ad`). For those the variants can be made mechanically, without an
+image model, by pasting the mouth rectangle of one expression onto another:
+[`tools/eve_burst/mouth_cutouts.py`](../tools/eve_burst/mouth_cutouts.py).
+
+```bash
+python tools/eve_burst/mouth_cutouts.py --root "E:/filmcraft_JPN/PS2_EVE_Bursterror解析データ" aka koj \
+    [--out-dir DIR] [--blink-source aka NN] [--overwrite] [--dry-run] [--report cut.json]
+```
+
+- Per code and outfit, every pair of pictures is compared (a channel or alpha difference of
+  `--threshold`, default 40). Pairs whose difference stays inside the face (the top `--face-frac`,
+  default 0.30, of the figure) and is small are the same pose. The changed pixels are split into
+  connected components, the components into horizontal bands: the lowest band is the mouth, the
+  bands above are the eyes and eyebrows.
+- The base of a pose is `00` (else the picture with the fewest dark pixels at the mouth). A picture
+  whose mouth differs from it over 3 rows or more is drawn open and gets `_closed` (the base's mouth
+  pasted in). The vowels are its resting face with each open mouth of the pose, sorted by how far it
+  opens: widest `_a` (= `_open`), then `_o`, `_e`, `_u`, `_i`; with fewer mouths they repeat.
+- Rectangles get `--pad` (3) pixels of margin and their outer `--feather` (2) pixels blend into the
+  picture below; inside, the pixels are the donor's exactly. Existing files are kept unless `--overwrite`.
+- `_blink` only with `--blink-source <code> <NN>` (a picture drawn with closed eyes; its eye
+  rectangle, eyebrows included, goes onto each resting face of its pose). Without it there is no blink:
+  no closed eyes are guessed.
+- Review: `<out>/_review/<code>.png`, one row per picture, the face at 2x: original with the
+  rectangles (red mouth, blue eyes), `_closed`, `_a _i _u _e _o`, `_blink`, and the pixels that differ
+  between the original and `_a` in red. A skipped picture shows only its original, framed in red. The
+  JSON report lists per picture the donors, rectangles, files and the reason for anything skipped.
+
+Limits: the five vowels are not real mouth shapes, only different openings borrowed from other
+expressions (an `お`-like round mouth may land on `う`). A picture alone in its pose gets nothing: other
+poses have the head redrawn, not moved (shifting `aka07ad` or the `koj` heads onto another picture
+still leaves about half of the face pixels different), and a hand over the mouth (`aka05ad`, `koj01ad`)
+hides it anyway. Measured: `aka` outfit `a` 6 of 8 pictures (5 mouths each, `_closed` for the 5 drawn
+open), outfit `b` 2 of 2 (one small mouth); `koj` none (all four pictures in different poses).
+
 How they are used: V2 shows `image` for the whole line, V3 shows the vowel's picture (or `openImage`)
 while the voice is open, V4 shows the blink picture for about 0.12 s every 3–4 s. Each is a whole
 sprite laid over the one below, so the variant must match the original everywhere except the mouth or
