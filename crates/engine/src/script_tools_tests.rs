@@ -361,3 +361,103 @@ fn real_model_speaks_a_script_and_the_mouths_follow() {
     eprintln!("lipsync: {lip}");
     assert_eq!(lip["lines"].as_u64().unwrap(), n);
 }
+
+/// `to` written relative to the current folder (`None` when there is no such path, e.g. another
+/// drive).
+fn relative_from_cwd(to: &Path) -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let (cwd, to) = (std::fs::canonicalize(cwd).ok()?, std::fs::canonicalize(to).ok()?);
+    let (a, b): (Vec<_>, Vec<_>) = (cwd.components().collect(), to.components().collect());
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    if common == 0 {
+        return None;
+    }
+    let mut rel = PathBuf::new();
+    for _ in common..a.len() {
+        rel.push("..");
+    }
+    for c in &b[common..] {
+        rel.push(c);
+    }
+    Some(rel)
+}
+
+/// A setup() script in the workspace's `target/` (so it has a path relative to the tests' folder),
+/// with voices picked, a data folder for the default output and the script's absolute path.
+fn setup_in_target(name: &str) -> (Session, PathBuf, PathBuf) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("target").join("script-tests");
+    std::fs::create_dir_all(&root).unwrap();
+    let (mut s, _, tmp_dir) = setup(name);
+    let dir = root.join(tmp_dir.file_name().unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["m1.wav", "m2.wav", "story.fcscript.json"] {
+        std::fs::copy(tmp_dir.join(f), dir.join(f)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    let dir = PathBuf::from(dir.to_string_lossy().trim_start_matches(r"\\?\"));
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    s.data_dir = Some(dir.join("data"));
+    let path = dir.join("story.fcscript.json");
+    run(&mut s, "script.pickVoices", json!({"path": path, "write": true}));
+    (s, path, dir)
+}
+
+#[test]
+fn the_cache_does_not_care_how_the_script_path_was_written() {
+    let (mut s, abs, dir) = setup_in_target("pathform");
+    let rel = relative_from_cwd(&abs).unwrap();
+    assert!(rel.is_relative(), "{rel:?}");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let dotted = dir.join("sub").join("..").join("story.fcscript.json");
+    let r = run(&mut s, "script.synthesize", json!({"path": rel}));
+    assert_eq!((r["synthesized"].clone(), r["cached"].clone()), (json!(2), json!(0)), "{r}");
+    let out = r["out"].clone();
+    // the same script by its absolute path, and by a path with `..` in it: nothing to speak
+    for p in [&abs, &dotted, &rel] {
+        let r = run(&mut s, "script.synthesize", json!({"path": p}));
+        assert_eq!((r["synthesized"].clone(), r["cached"].clone(), r["out"].clone()), (json!(0), json!(2), out.clone()), "{p:?}: {r}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_manifest_from_before_the_path_free_key_is_still_a_cache() {
+    use crate::script_tools::{Manifest, line_key, load, read_manifest};
+    use filmcraft_speech::synth::Synthesizer;
+    let (mut s, abs, dir) = setup_in_target("legacykey");
+    let r = run(&mut s, "script.synthesize", json!({"path": abs}));
+    assert_eq!(r["synthesized"], json!(2), "{r}");
+    let out = PathBuf::from(r["out"].as_str().unwrap());
+    // what older builds wrote when the script came as `E:/…/story.fcscript.json` (the eve tools):
+    // the hash with the reference's path as written, `E:/…\m1.wav` on Windows
+    let fwd = abs.to_string_lossy().replace('\\', "/");
+    let l = load(&s, &json!({"path": fwd}), "test").unwrap();
+    let synth_id = FixedSynthesizer::default().id();
+    let mut m: Manifest = read_manifest(&out);
+    for (_, line) in l.script.lines_in_route() {
+        if let Some(e) = m.lines.get_mut(&line.id) {
+            let k = line_key(&l, line, &l.script.language, "", &synth_id);
+            assert_eq!(e.hash, k.hash);
+            let old = k.legacy_hashes.first().unwrap().clone();
+            // a preset speaker (kojiro) has no reference, and so the same hash in both forms
+            assert_eq!(old != k.hash, k.voice.ref_audio.is_some(), "{}", line.id);
+            e.hash = old;
+        }
+    }
+    std::fs::write(out.join("manifest.json"), serde_json::to_string(&m).unwrap()).unwrap();
+    // a later run by the relative path still finds them, and rewrites them in the new form
+    let rel = relative_from_cwd(&abs).unwrap();
+    let r = run(&mut s, "script.synthesize", json!({"path": rel}));
+    assert_eq!((r["synthesized"].clone(), r["cached"].clone()), (json!(0), json!(2)), "{r}");
+    let m = read_manifest(&out);
+    for (_, line) in l.script.lines_in_route() {
+        if let Some(e) = m.lines.get(&line.id) {
+            assert_eq!(e.hash, line_key(&l, line, &l.script.language, "", &synth_id).hash, "{}", line.id);
+        }
+    }
+    let r = run(&mut s, "script.synthesize", json!({"path": abs}));
+    assert_eq!((r["synthesized"].clone(), r["cached"].clone()), (json!(0), json!(2)), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

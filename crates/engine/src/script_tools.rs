@@ -303,6 +303,82 @@ fn line_hash(parts: &[&str]) -> String {
     format!("{h:016x}")
 }
 
+/// What a line is spoken from, and the manifest hash of it.
+pub(crate) struct LineKey {
+    pub(crate) text: String,
+    pub(crate) voice: Voice,
+    pub(crate) hash: String,
+    /// The hashes builds before this one may have written: they had the reference's path as
+    /// written (so the same script opened by a relative and by an absolute path missed each
+    /// other). Tried with the script's folder as given and as an absolute path with either kind of
+    /// slash, and still accepted, so those caches stay good; a hit rewrites the entry with `hash`.
+    pub(crate) legacy_hashes: Vec<String>,
+}
+
+/// The voice and hash of `line`. The reference is identified by its file name, size and modified
+/// time, not by its path, so how the script's path was written does not matter.
+pub(crate) fn line_key(l: &Loaded, line: &ScriptLine, language: &str, model: &str, synth_id: &str) -> LineKey {
+    let voice = line.speaker.as_deref().and_then(|sp| l.script.characters.get(sp)).and_then(|c| c.voice.as_ref());
+    let ref_audio = voice.filter(|v| !v.ref_audio.trim().is_empty()).map(|v| l.resolve(&v.ref_audio));
+    // a re-recorded reference of the same length is another voice: size and modified time
+    let ref_size = ref_audio
+        .as_ref()
+        .and_then(|a| std::fs::metadata(a).ok())
+        .map(|m| {
+            let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+            format!("{}@{mtime}", m.len())
+        })
+        .unwrap_or_default();
+    let ref_name = ref_audio.as_ref().and_then(|a| a.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let ref_text = voice.and_then(|v| v.ref_text.clone());
+    let speaker = voice.and_then(|v| v.speaker.clone()).filter(|x| !x.trim().is_empty());
+    // a line's own direction wins over the character's standing one
+    let instruct = line.instruct.clone().or_else(|| voice.and_then(|v| v.instruct.clone())).filter(|x| !x.trim().is_empty());
+    let text = line_speech(line);
+    let hash_with = |reference: &str| {
+        line_hash(&[
+            &text,
+            language,
+            model,
+            synth_id,
+            reference,
+            &ref_size,
+            ref_text.as_deref().unwrap_or(""),
+            speaker.as_deref().unwrap_or(""),
+            instruct.as_deref().unwrap_or(""),
+        ])
+    };
+    // no reference (a preset speaker): the same hash as before
+    let hash = hash_with(&ref_audio.as_ref().map(|_| format!("name:{ref_name}")).unwrap_or_default());
+    let mut legacy_hashes: Vec<String> = Vec::new();
+    for reference in legacy_reference_paths(l, voice.map(|v| v.ref_audio.as_str()).filter(|r| !r.trim().is_empty())) {
+        let h = hash_with(&reference);
+        if !legacy_hashes.contains(&h) {
+            legacy_hashes.push(h);
+        }
+    }
+    LineKey { voice: Voice { ref_audio, ref_text, speaker, instruct }, text, hash, legacy_hashes }
+}
+
+/// How older builds may have written the reference's path into the hash: the script's folder
+/// joined with `rel`, the folder as given, or made absolute with `\` or `/` (the eve tools pass
+/// `E:/…/ep01`, giving `E:/…/ep01\../voices/…`). No reference: just "".
+fn legacy_reference_paths(l: &Loaded, rel: Option<&str>) -> Vec<String> {
+    let Some(rel) = rel else { return vec![String::new()] };
+    let mut out = vec![l.resolve(rel).to_string_lossy().to_string()];
+    if Path::new(rel).is_absolute() {
+        return out;
+    }
+    if let Ok(abs) = std::path::absolute(&l.dir) {
+        let abs = abs.to_string_lossy().to_string();
+        let slashed = abs.replace('\\', "/");
+        for dir in [abs, slashed] {
+            out.push(PathBuf::from(dir).join(rel).to_string_lossy().to_string());
+        }
+    }
+    out
+}
+
 fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
     let l = load(s, p, "script.synthesize")?;
     let problems = l.script.validate();
@@ -327,6 +403,8 @@ fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
     let mut cached = Vec::new();
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut recorded = 0usize;
+    // entries cached under the old key, rewritten with the new one
+    let mut upgraded = false;
     for (_, line) in l.script.lines_in_route() {
         if !line.is_spoken() || only.as_ref().is_some_and(|o| !o.contains(&line.id)) {
             continue;
@@ -335,33 +413,7 @@ fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
             recorded += 1;
             continue;
         }
-        let voice = line.speaker.as_deref().and_then(|sp| l.script.characters.get(sp)).and_then(|c| c.voice.as_ref());
-        let ref_audio = voice.filter(|v| !v.ref_audio.trim().is_empty()).map(|v| l.resolve(&v.ref_audio));
-        // a re-recorded reference of the same length is another voice: size and modified time
-        let ref_size = ref_audio
-            .as_ref()
-            .and_then(|a| std::fs::metadata(a).ok())
-            .map(|m| {
-                let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
-                format!("{}@{mtime}", m.len())
-            })
-            .unwrap_or_default();
-        let ref_text = voice.and_then(|v| v.ref_text.clone());
-        let speaker = voice.and_then(|v| v.speaker.clone()).filter(|x| !x.trim().is_empty());
-        // a line's own direction wins over the character's standing one
-        let instruct = line.instruct.clone().or_else(|| voice.and_then(|v| v.instruct.clone())).filter(|x| !x.trim().is_empty());
-        let text = line_speech(line);
-        let hash = line_hash(&[
-            &text,
-            &language,
-            &model,
-            &synth_id,
-            &ref_audio.as_ref().map(|a| a.to_string_lossy().to_string()).unwrap_or_default(),
-            &ref_size,
-            ref_text.as_deref().unwrap_or(""),
-            speaker.as_deref().unwrap_or(""),
-            instruct.as_deref().unwrap_or(""),
-        ]);
+        let LineKey { text, voice, hash, legacy_hashes } = line_key(&l, line, &language, &model, &synth_id);
         let out_path = out.join(format!("{}.wav", file_stem(&line.id, 0)));
         // Windows and macOS file systems ignore case: `A1` and `a1` are one file there
         if !seen_paths.insert(PathBuf::from(out_path.to_string_lossy().to_lowercase())) {
@@ -371,17 +423,22 @@ fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
             ));
         }
         if !force
-            && let Some(e) = manifest.lines.get(&line.id)
-            && e.hash == hash
+            && let Some(e) = manifest.lines.get_mut(&line.id)
+            && (e.hash == hash || legacy_hashes.contains(&e.hash))
             && out.join(&e.file).is_file()
         {
+            if e.hash != hash {
+                e.hash = hash;
+                upgraded = true;
+            }
             cached.push(json!({"id": line.id, "path": out.join(&e.file).to_string_lossy(), "seconds": e.seconds, "status": "cached"}));
             continue;
         }
-        todo.push((
-            Line { id: line.id.clone(), text, voice: Voice { ref_audio, ref_text, speaker, instruct }, language: Some(language.clone()), out: out_path },
-            hash,
-        ));
+        todo.push((Line { id: line.id.clone(), text, voice, language: Some(language.clone()), out: out_path }, hash));
+    }
+
+    if upgraded {
+        write_manifest(&out, &manifest)?;
     }
 
     let mut spoken = Vec::new();
