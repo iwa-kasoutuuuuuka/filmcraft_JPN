@@ -142,6 +142,11 @@ pub struct ScriptLine {
     /// rewrite may replace it freely.
     #[serde(skip_serializing_if = "is_false")]
     pub generated: bool,
+    /// `false`: the line is subtitled but not voiced, as a sound word (`ガタッ`, `プルルルル`)
+    /// that is a noise and not speech. Its sound, if any, is the line's `sfx`; nothing is
+    /// synthesized and a `voiceFile` is not played. Unset or `true`: spoken as usual.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spoken: Option<bool>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -149,8 +154,13 @@ fn is_false(b: &bool) -> bool {
 }
 
 impl ScriptLine {
-    /// Whether the line is to be spoken.
+    /// Whether the line is to be spoken (and so needs a recording or a synthesized voice).
     pub fn is_spoken(&self) -> bool {
+        self.shows_text() && self.spoken != Some(false)
+    }
+
+    /// Whether the line's text is subtitled: every line but a direction, spoken or not.
+    pub fn shows_text(&self) -> bool {
         self.kind != LineKind::Direction && !self.text.trim().is_empty()
     }
 }
@@ -420,6 +430,13 @@ impl Script {
                 {
                     err(&mut out, sid, lid, "subCgAnchor must be two fractions of the frame, 0..1".into());
                 }
+                if l.spoken == Some(false) {
+                    if l.kind == LineKind::Direction {
+                        warn(&mut out, sid, lid, "`spoken: false` on a direction changes nothing (a direction is never spoken)".into());
+                    } else if l.voice_file.is_some() {
+                        warn(&mut out, sid, lid, "`spoken: false`: the voiceFile is not played (a sound for the line goes in `sfx`)".into());
+                    }
+                }
                 if l.is_spoken() && l.voice_file.is_none() {
                     let has_voice = l.speaker.as_deref().and_then(|s| self.characters.get(s)).is_some_and(|c| c.voice.is_some());
                     if !has_voice && l.kind != LineKind::Narration {
@@ -664,6 +681,33 @@ mod tests {
         assert!(w.validate().iter().any(|p| p.severity == Severity::Warning && p.message.contains("direction line")));
         // a slot that does not fit the type is a parse error, not a crash
         assert!(Script::from_json(r#"{"scenes": [{"id": "s", "lines": [{"id": "l", "kind": "narration", "text": "x", "slot": -1}]}]}"#).is_err());
+    }
+
+    #[test]
+    fn a_line_that_is_not_spoken_is_still_subtitled() {
+        let s = Script::from_json(
+            r#"{"characters": {"m": {"name": "m"}}, "scenes": [{"id": "s", "lines": [
+                {"id": "a", "kind": "narration", "text": "ガタッ。", "spoken": false, "sfx": "se/door.wav"},
+                {"id": "b", "speaker": "m", "text": "待って。"},
+                {"id": "c", "speaker": "m", "text": "ぐぅ～。", "spoken": false, "voiceFile": "v/c.wav"},
+                {"id": "d", "kind": "direction", "spoken": false},
+                {"id": "e", "kind": "narration", "text": " ", "spoken": false}]}]}"#,
+        )
+        .unwrap();
+        let l = &s.scenes[0].lines;
+        assert!(!l[0].is_spoken() && l[0].shows_text());
+        assert!(l[1].is_spoken() && l[1].shows_text() && l[1].spoken.is_none());
+        assert!(!l[3].is_spoken() && !l[3].shows_text());
+        // written back only where it was given
+        let j = s.to_json();
+        assert_eq!(j.matches("\"spoken\"").count(), 4, "{j}");
+        assert_eq!(Script::from_json(&j).unwrap(), s);
+        let w: Vec<_> = s.validate().into_iter().filter(|p| p.severity == Severity::Warning).map(|p| (p.line.unwrap_or_default(), p.message)).collect();
+        assert!(w.iter().any(|(l, m)| l == "c" && m.contains("voiceFile is not played")), "{w:?}");
+        assert!(w.iter().any(|(l, m)| l == "d" && m.contains("changes nothing")), "{w:?}");
+        // an unspoken line still needs its text (or it is a direction)
+        assert!(errors(&s).iter().any(|m| m.contains("empty text")), "{:?}", s.validate());
+        assert!(Script::from_json(r#"{"scenes": [{"id": "s", "lines": [{"id": "l", "text": "x", "spoken": "no"}]}]}"#).is_err());
     }
 
     #[test]

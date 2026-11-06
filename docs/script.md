@@ -49,7 +49,7 @@ they change nothing in the project and can run again at any time. Relative paths
 |---|---|
 | `characters.<id>` | `name` (display), `voice` (`refAudio` + `refText`: a reference recording and its transcript, for cloning; or `speaker`: a preset voice such as `Ono_Anna`, with an optional standing `instruct`), `expressions` (pictures by expression name; `openImage` is the open-mouth picture for lip sync, `vowelImages` one per vowel, `blink` the same picture with the eyes closed), `defaultExpression`. |
 | `scenes[]` | `id` (unique), `title`, `pov` (a character id), `when` (story time as text that sorts in time order), `requires` (scenes that must be shown first), `background`, `bgm`, `transition` (`"cut"`, the default, or `"fade"`: in from black), `hideCharacters` (`true`: no character pictures in this scene, as over an event picture or a flashback), `lines`. |
-| `lines[]` | `id` (unique across the whole script: it names the audio file), `kind` (`dialogue` default, `narration`, `monologue`, `direction`), `speaker`, `text`, `reading`, `expression`, `voiceFile`, `instruct`, `sfx`, `pauseAfter`, `generated`, `video` (a movie, on a direction line), `subCg` (an inset picture; `""` takes it away), `subCgAnchor` (`[x, y]`, fractions of the frame), `slot` (1 left, 2 centre, 3 right). |
+| `lines[]` | `id` (unique across the whole script: it names the audio file), `kind` (`dialogue` default, `narration`, `monologue`, `direction`), `speaker`, `text`, `reading`, `expression`, `voiceFile`, `instruct`, `sfx`, `pauseAfter`, `generated`, `spoken` (`false`: subtitled, not voiced), `video` (a movie, on a direction line), `subCg` (an inset picture; `""` takes it away), `subCgAnchor` (`[x, y]`, fractions of the frame), `slot` (1 left, 2 centre, 3 right). |
 | `route` | Scene ids in the order they are shown; empty means file order. Scenes missing from it are not shown. |
 
 Notes:
@@ -61,6 +61,13 @@ Notes:
   character's standing one; a cloned voice follows its recording instead.
 - `voiceFile` is an existing recording of the line (a game's own voice file). Lines that have
   one are never synthesized; lines that do not are spoken in their character's voice.
+- `spoken: false` marks a **sound word** (`ガタッ。`, `プルルルル‥‥`, `ぐぅ～。`): a noise the source
+  writes as a line. It is subtitled like any line, but nothing is synthesized, no voice is laid
+  on A1 (a `voiceFile` is not played; `script.validate` warns) and no mouth moves. Its sound is
+  its `sfx`, on A3 under the voices. It lasts as long as that sound, and at least as long as
+  reading it takes (`charsPerSecond`, 0.8 s at the least), then the usual `pause`. Without an
+  `sfx` it is a silent beat with its subtitle. A game's sound words are found and marked by
+  `tools/eve_burst/onomatopoeia.py`. A sound with no text to show is a direction instead.
 - `generated: true` marks a line a tool wrote to bridge scenes (not in the source story), so a
   later run may rewrite it freely.
 - A **direction** has no text and no speaker: sound effects, a cut, a pause, a movie (`video`).
@@ -91,7 +98,7 @@ keep any draft consistent.
 |---|---|
 | `script.validate {path}` | `ok`, `errors`, `warnings`, `problems` (severity, scene, line, message) and `stats` (characters, scenes, lines, spoken, recorded, recordingMissing, toSynthesize). |
 | `script.pickVoices {path, write?, overwrite?}` | For each character without a voice, the best of their lines that have a recording of their own: 2.5–12 s, nearest 6 s, a calm line (few `！？…、`), a plausible speaking rate (2–12 characters per second), and the text known. Returns `picked` (character, line, refAudio, refText, seconds, candidates), `skipped` with reasons, and `unreadable` files. `write: true` stores the picks in the script (the file is re-formatted; fields this build does not know are kept); without it nothing is written. `overwrite` replaces voices already set. |
-| `script.synthesize {path, out?, ids?, force?, all?, language?, model?, device?, python?, script?}` | Speak every spoken line that has no recording (`all` includes recorded ones), in route order, into `<out>/<id>.wav` (default `<data dir>/tts/<script name>-<8 hex of its folder>`, so same-named scripts in different folders do not share audio; ids that differ only in case are refused, since Windows and macOS would write one file). A `manifest.json` there remembers a hash of each line's spoken text, language, model, synthesizer, direction and voice (reference file name and size, or preset speaker), so **a second run speaks nothing**, and after an edit only the changed lines are spoken again. `force` redoes all, `ids` limits the run. Refuses a script with errors. Lines are spoken in chunks of 400 and the manifest is saved after each, so a run that dies loses at most one chunk and the next goes on from there. A voice reference is identified by its name, size and modified time. Returns `synthesized`, `cached`, `recorded`, `failed` and every line's path and seconds. |
+| `script.synthesize {path, out?, ids?, force?, all?, language?, model?, device?, python?, script?}` | Speak every spoken line that has no recording (`all` includes recorded ones), in route order, into `<out>/<id>.wav` (default `<data dir>/tts/<script name>-<8 hex of its folder>`, so same-named scripts in different folders do not share audio; ids that differ only in case are refused, since Windows and macOS would write one file). A `manifest.json` there remembers a hash of each line's spoken text, language, model, synthesizer, direction and voice (reference file name and size, or preset speaker), so **a second run speaks nothing**, and after an edit only the changed lines are spoken again. `force` redoes all, `ids` limits the run. Refuses a script with errors. Lines are spoken in chunks of 400 and the manifest is saved after each, so a run that dies loses at most one chunk and the next goes on from there. A voice reference is identified by its file name, size and modified time, not its path, so the same script passed by a relative or an absolute path shares one cache (manifests written before this, which held the reference's path as written, still count and are rewritten in the new form on a hit). Returns `synthesized`, `cached`, `recorded`, `failed` and every line's path and seconds. |
 | `script.lipsync {path, out?, three?, openDb?, halfDb?, minSeconds?}` | Mouth shapes for every spoken line that has audio (its own recording, else the synthesized file), written to `<out>/lipsync.json`. |
 | `lipsync.analyze {path, three?, openDb?, halfDb?, minSeconds?}` | The same for one audio file: `segments` of `{start, end, level, startTick, endTick}`. |
 
@@ -147,12 +154,12 @@ audio plus a pause, every boundary is on the frame grid, and neighbouring clips 
 | Top: Sub CG | Only when a line has a `subCg`: the inset picture over everything else, mouths and blinks included |
 | A1 Voice | Recordings and synthesized lines, brought to one loudness (`levelVoices`, on by default: each clip's gain is set so it matches the median voice, or `voiceLufs`, within 12 dB; a cloned and a preset voice differ by 10 LU or more), as long as their audio (cut at the line's end if a `pauseAfter` of 0 rounds the end down by up to half a frame) |
 | A2 Music | A scene's `bgm`, repeated to fill the scene (each repeat is a whole number of frames, so repeats abut and never overlap); scenes that share it share the clips; `bgmGainDb` (-18); at most 20 000 repeats per stretch, with a warning. It goes on under a movie |
-| A3 Effects | A line's `sfx`, and a movie's own sound with it; a long one ends where the next begins, or where the sequence ends |
+| A3 Effects | A line's `sfx`, and a movie's own sound with it; a long one ends where the next begins, or where the sequence ends. The effects are levelled **under the voices** (`levelEffects`, on by default): each one is set to `effectsBelowVoiceLu` (10) under the voices' loudness (`voiceLufs`, else the median voice), cut by as much as it needs and raised by at most 6 dB (a click shorter than one 400 ms loudness block is measured as that block, padded with silence); one that cannot be measured (silent, unreadable, or with `levelEffects: false`) gets `sfxGainDb` (-10). A game's effects are each as loud as they can be, so at full gain a door is as loud as a shout. A movie's sound gets `videoGainDb` (0) |
 | Subtitles | The plain text (ruby removed), broken at sentence ends, then commas, into pieces of `captionChars` (36) characters, timed in proportion to their length |
 
 `anime.build {path, out?, name?, width=1920, height=1080, fps=24, pause=0.35, sceneGap=0.6,
 directionSeconds=1, charsPerSecond=7, push=5, spriteScale?, spriteAlign="center", backgroundFit="fit",
-bgmGainDb=-18, sfxGainDb=0, captionChars=36, blink=true, transitionSeconds=0.5, leftX=0.25, rightX=0.75,
+bgmGainDb=-18, sfxGainDb=-10, videoGainDb=0, levelEffects=true, effectsBelowVoiceLu=10, captionChars=36, blink=true, transitionSeconds=0.5, leftX=0.25, rightX=0.75,
 subCgScale=100}`: `spriteAlign: "bottom"` stands every character picture (and its mouth and blink)
 on the bottom edge of the frame, as on a game screen, instead of centring it; with game pictures
 whose sprites are as tall as the background, `spriteScale` = frame height / picture height × 100
@@ -182,7 +189,7 @@ ends a two-shot that the scene before it left on screen.
 
 - **Movies.** A direction line with `video` (a game's event or date movie) puts the file on V1
   from the line's start for its own length, as the media reports it when opened, and its sound,
-  if any, on A3 (`sfxGainDb`). The line lasts that long (plus its `pauseAfter`; the end is on the
+  if any, on A3 (`videoGainDb`). The line lasts that long (plus its `pauseAfter`; the end is on the
   frame grid, so a movie whose length is not a whole number of frames loses the last part of a
   frame). A file with no length of its own (a still picture) is shown for `directionSeconds`. A
   missing or unreadable movie, or one longer than an hour, is skipped with a warning, and the line
@@ -216,7 +223,7 @@ ends a two-shot that the scene before it left on screen.
   warned about and cuts. Scenes without `transition`, or with `"cut"`, cut as before.
 
 `anime.check {sequence?, path?, out?, maxSilenceSeconds=5, maxCharsPerSecond=20, captionChars=36,
-loudnessToleranceLu=6}` reports `ok`, `errors`, `warnings`, `stats` and `problems` (each with a
+loudnessToleranceLu=6, effectMarginLu=6}` reports `ok`, `errors`, `warnings`, `stats` and `problems` (each with a
 `kind` and the time):
 
 | Kind | Severity | Meaning |
@@ -226,6 +233,7 @@ loudnessToleranceLu=6}` reports `ok`, `errors`, `warnings`, `stats` and `problem
 | `overlap` | error | Two voices at once |
 | `silence` | warning | More than `maxSilenceSeconds` without a voice |
 | `loudness` | warning | A voice is more than `loudnessToleranceLu` from the median voice (integrated LUFS, BS.1770) |
+| `effect-loud` | warning | A sound effect (A3, not a movie's sound; a click shorter than 0.4 s measured as one 400 ms block) is less than `effectMarginLu` under the median voice. `stats` gives `effects` (how many were measured), `medianEffectLufs` and `loudestEffectLufs` beside `medianVoiceLufs` |
 | `caption-long` / `caption-fast` / `caption-short` | warning | A subtitle is over twice `captionChars`, runs over `maxCharsPerSecond`, or shows under 0.4 s |
 | `no-audio` | warning | With `path`: a spoken line has neither a recording nor a synthesized file |
 | `empty`, `no-voice` | warning | An empty background or voice track |
@@ -265,10 +273,11 @@ speaks what changed, and builds a fresh sequence beside the first.
 
 - `crates/project/src/script.rs`: parsing and defaults, ids and speakers, size caps, the route
   against prerequisites and story time, expression fallback, the checks of `video`, `subCg`,
-  `slot` and `transition`.
+  `slot` and `transition`, `spoken: false` (still subtitled, warned with a recording or on a direction).
 - `crates/audio-dsp/src/lipsync.rs`: silence and nonsense input, bursts at the right times, a
   click shorter than the minimum, three shapes, a wobbling level that must not flutter.
-- `crates/engine/src/anime_tests.rs`: the plan with files faked (timing on the frame grid, runs, blinks, mouth, music, subtitles, missing files; a movie's length and sound, a sub CG's time on screen, who stands where in a two-shot and when they blink, a blink waiting for the mouth to close and a sprite's own blink picture), building with real files (tracks, clip counts, one undo step, nothing built from a bad script; a movie cutting the background, its sound, the sub CG's place and size and that it is drawn on top, the two-shot's tracks and mouth positions, a fade that is rendered from black, sprites standing on the bottom with their mouths and blinks and a background filling the frame, checked in the rendered frame), the checks (gaps, overlaps, a quiet voice), the one-call run and its cache, and an export that is opened again and measured.
+- `crates/engine/src/anime_tests.rs`: the plan with files faked (timing on the frame grid, runs, blinks, mouth, music, subtitles, missing files; a movie's length and sound, a sub CG's time on screen, who stands where in a two-shot and when they blink, a blink waiting for the mouth to close and a sprite's own blink picture), building with real files (tracks, clip counts, one undo step, nothing built from a bad script; a movie cutting the background, its sound, the sub CG's place and size and that it is drawn on top, the two-shot's tracks and mouth positions, a fade that is rendered from black, sprites standing on the bottom with their mouths and blinks and a background filling the frame, checked in the rendered frame), sound words (their length from their sound or their reading, subtitled, nothing synthesized or laid on A1) and effects levelled under the voices, the checks (gaps, overlaps, a quiet voice, a loud effect), the one-call run and its cache, and an export that is opened again and measured.
 - `crates/engine/src/script_tools_tests.rs`: validation and refusal, voice picking and writing,
   synthesizing only what is missing and only once (cache, edit, deleted file, force, language,
-  corrupt manifest, a changed reference), lip sync for one file and for a whole script.
+  corrupt manifest, a changed reference, the script's path written relative, absolute or with
+  `..`, a manifest from older builds), lip sync for one file and for a whole script.

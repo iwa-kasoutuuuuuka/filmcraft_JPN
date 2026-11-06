@@ -18,7 +18,7 @@
 //! then the sub CG (an inset) on top; A1 voices, A2 music, A3 sound effects and the movies' own
 //! sound; one subtitle track.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -70,7 +70,15 @@ pub struct Opts {
     /// Scale of sprites in percent (None: as imported).
     pub sprite_scale: Option<f64>,
     pub bgm_gain_db: f64,
+    /// Gain of the sound effects that are not levelled (that cannot be measured, or with
+    /// `levelEffects` off), dB.
     pub sfx_gain_db: f64,
+    /// Gain of a movie's own sound, dB.
+    pub video_gain_db: f64,
+    /// Sound effects are brought to `effects_below_voice` LU under the voices (the median
+    /// voice, or `voice_lufs`): a door or a thud is heard, never as loud as speech.
+    pub level_effects: bool,
+    pub effects_below_voice: f64,
     /// Longest subtitle, characters.
     pub caption_chars: usize,
     pub blink: bool,
@@ -109,7 +117,10 @@ impl Default for Opts {
             push: 5.0,
             sprite_scale: None,
             bgm_gain_db: -18.0,
-            sfx_gain_db: 0.0,
+            sfx_gain_db: -10.0,
+            video_gain_db: 0.0,
+            level_effects: true,
+            effects_below_voice: 10.0,
             caption_chars: 36,
             blink: true,
             fit_background: true,
@@ -151,6 +162,11 @@ impl Opts {
         o.sprite_scale = num(p, "spriteScale", 1.0, 1000.0, cmd)?.or(o.sprite_scale);
         o.bgm_gain_db = num(p, "bgmGainDb", -60.0, 12.0, cmd)?.unwrap_or(o.bgm_gain_db);
         o.sfx_gain_db = num(p, "sfxGainDb", -60.0, 12.0, cmd)?.unwrap_or(o.sfx_gain_db);
+        o.video_gain_db = num(p, "videoGainDb", -60.0, 12.0, cmd)?.unwrap_or(o.video_gain_db);
+        if let Some(b) = bool_p(p, "levelEffects") {
+            o.level_effects = b;
+        }
+        o.effects_below_voice = num(p, "effectsBelowVoiceLu", 0.0, 40.0, cmd)?.unwrap_or(o.effects_below_voice);
         if let Some(v) = u64_p(p, "captionChars") {
             o.caption_chars = usize::try_from(v).unwrap_or(36).clamp(8, 400);
         }
@@ -480,6 +496,8 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
             }
             let cue_start = t;
             let spoken = line.is_spoken();
+            // subtitled; a line that is not spoken (a sound word) is only subtitled
+            let shown = line.shows_text();
             let voice = if spoken { env.voice(line) } else { None };
             let video = match line.video.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
                 Some(f) if line.kind == LineKind::Direction => {
@@ -522,12 +540,17 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
             } else if let Some(m) = &video {
                 // a movie lasts as long as itself; one with no length (a still) the direction time
                 if m.duration > Tick::ZERO { m.duration } else { secs(o.direction) }
+            } else if shown {
+                // a sound word: as long as its sound, and long enough to read
+                let chars = filmcraft_text::ruby::parse(&line.text).plain.chars().filter(|c| !c.is_whitespace()).count() as f64;
+                let read = secs(chars / o.cps).max(secs(0.8));
+                sfx.as_ref().map_or(read, |a| a.duration.max(read))
             } else {
                 sfx.as_ref().map(|a| a.duration).unwrap_or_else(|| secs(o.direction))
             };
             let pause = match line.pause_after {
                 Some(p) => secs(p),
-                None if spoken => secs(o.pause),
+                None if shown => secs(o.pause),
                 None => Tick::ZERO,
             };
             let end = snap(add(add(cue_start, speech), pause)).max(add(cue_start, one));
@@ -618,7 +641,7 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
             }
             // the subtitles
             let mut captions = Vec::new();
-            if spoken {
+            if shown {
                 let plain = filmcraft_text::ruby::parse(&line.text).plain;
                 let pieces = split_caption(&plain, o.caption_chars);
                 let tail = secs(0.2).min(pause);
@@ -1213,6 +1236,8 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
     let frame = (o.width, o.height);
     let scaling = s.prefs.media.default_media_scaling.clone();
     let mut counts = Counts::default();
+    // the lines' sound effects on A3 (not a movie's own sound), levelled below the voices
+    let mut effect_clips: HashSet<filmcraft_project::ClipId> = HashSet::new();
     s.edit(&format!("Build {name}"), |pr, _| {
         let Some((v_ids, a_ids)) =
             pr.sequence(seq).map(|q| (q.video_tracks.iter().map(|t| t.id).collect::<Vec<_>>(), q.audio_tracks.iter().map(|t| t.id).collect::<Vec<_>>()))
@@ -1360,7 +1385,7 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
                 && let Some(item) = find(&items, &m.path)
                 && let Some(mut ti) = make_clip(pr, item, TrackKind::Audio, c.start, c.video_len(one), rate, frame, &scaling)
             {
-                ti.gain_db = o.sfx_gain_db;
+                ti.gain_db = o.video_gain_db;
                 if let Some(prev) = audio[2].last_mut()
                     && prev.end() > ti.start
                 {
@@ -1390,6 +1415,7 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
                 {
                     prev.duration = (ti.start - prev.start).max(one);
                 }
+                effect_clips.insert(ti.id);
                 audio[2].push(ti);
                 counts.effects += 1;
             }
@@ -1456,31 +1482,72 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
     // level the voices: the same recording quality is not the same loudness (a cloned voice and
     // a preset one, a whisper and a shout)
     let mut leveled = 0usize;
-    if o.level_voices {
-        let measured: Vec<(filmcraft_project::ClipId, f64)> = s
-            .project
+    let measured: Vec<(filmcraft_project::ClipId, f64)> = if o.level_voices || o.level_effects {
+        s.project
             .sequence(seq)
             .and_then(|q| q.audio_tracks.first())
             .map(|t| t.items.iter().filter(|it| it.duration >= secs(0.4)).filter_map(|it| clip_loudness(s, it).map(|l| (it.id, l))).collect())
-            .unwrap_or_default();
-        let target = o.voice_lufs.or_else(|| median(&mut measured.iter().map(|m| m.1).collect::<Vec<f64>>()));
-        if let (Some(target), true) = (target, measured.len() >= 2) {
-            let gains: HashMap<filmcraft_project::ClipId, f64> =
-                measured.iter().filter_map(|(id, l)| Some((*id, (target - l).clamp(-12.0, 12.0))).filter(|(_, g)| g.abs() >= 0.5)).collect();
-            if !gains.is_empty() {
-                leveled = gains.len();
-                s.edit("Level Voices", |pr, _| {
-                    let q = pr.sequence_mut(seq).ok_or(EngineError::NoSequence)?;
-                    if let Some(t) = q.audio_tracks.first_mut() {
-                        for it in &mut t.items {
-                            if let Some(g) = gains.get(&it.id) {
-                                it.gain_db = *g;
-                            }
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // where the voices sit once levelled (the median as it is, when they are not levelled)
+    let voice_target = o.voice_lufs.filter(|_| o.level_voices).or_else(|| median(&mut measured.iter().map(|m| m.1).collect::<Vec<f64>>()));
+    if o.level_voices
+        && let (Some(target), true) = (voice_target, measured.len() >= 2)
+    {
+        let gains: HashMap<filmcraft_project::ClipId, f64> =
+            measured.iter().filter_map(|(id, l)| Some((*id, (target - l).clamp(-12.0, 12.0))).filter(|(_, g)| g.abs() >= 0.5)).collect();
+        if !gains.is_empty() {
+            leveled = gains.len();
+            s.edit("Level Voices", |pr, _| {
+                let q = pr.sequence_mut(seq).ok_or(EngineError::NoSequence)?;
+                if let Some(t) = q.audio_tracks.first_mut() {
+                    for it in &mut t.items {
+                        if let Some(g) = gains.get(&it.id) {
+                            it.gain_db = *g;
                         }
                     }
-                    Ok(())
-                })?;
-            }
+                }
+                Ok(())
+            })?;
+        }
+    }
+    // level the effects: a game's sounds are each as loud as they can be, so a thud would be as
+    // loud as a voice. Each is set `effects_below_voice` under the voices (a quiet one is raised
+    // by at most 6 dB; a click shorter than a loudness block is measured as one block); one that
+    // cannot be measured (silent, unreadable) keeps `sfx_gain_db`.
+    let mut leveled_effects = 0usize;
+    if o.level_effects
+        && let Some(target) = voice_target
+        && !effect_clips.is_empty()
+    {
+        let want = target - o.effects_below_voice;
+        let gains: HashMap<filmcraft_project::ClipId, f64> = s
+            .project
+            .sequence(seq)
+            .and_then(|q| q.audio_tracks.get(2))
+            .map(|t| {
+                t.items
+                    .iter()
+                    .filter(|it| effect_clips.contains(&it.id))
+                    .filter_map(|it| effect_loudness(s, it).map(|l| (it.id, (want - (l - it.gain_db)).clamp(-40.0, 6.0))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !gains.is_empty() {
+            leveled_effects = gains.len();
+            s.edit("Level Effects", |pr, _| {
+                let q = pr.sequence_mut(seq).ok_or(EngineError::NoSequence)?;
+                if let Some(t) = q.audio_tracks.get_mut(2) {
+                    for it in &mut t.items {
+                        if let Some(g) = gains.get(&it.id) {
+                            it.gain_db = *g;
+                        }
+                    }
+                }
+                Ok(())
+            })?;
         }
     }
     // the subtitles
@@ -1514,6 +1581,7 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
         },
         "tracks": layout.names,
         "leveledVoices": leveled,
+        "leveledEffects": leveled_effects,
         "withoutAudio": pl.cues.iter().filter(|c| c.estimated).map(|c| c.line.clone()).collect::<Vec<_>>(),
         "warnings": warnings,
     }))
@@ -1549,6 +1617,7 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let max_cps = num(p, "maxCharsPerSecond", 2.0, 100.0, cmd)?.unwrap_or(20.0);
     let max_chars = u64_p(p, "captionChars").map(|v| usize::try_from(v).unwrap_or(36).clamp(8, 400)).unwrap_or(36);
     let tolerance = num(p, "loudnessToleranceLu", 1.0, 30.0, cmd)?.unwrap_or(6.0);
+    let effect_margin = num(p, "effectMarginLu", 0.0, 40.0, cmd)?.unwrap_or(6.0);
     let seq_item = u64_p(p, "sequence").map(ItemId).or(s.state.active_sequence).ok_or(EngineError::NoSequence)?;
     let q = s.project.sequence(seq_item).ok_or_else(|| bad(cmd, "that is not a sequence"))?.clone();
     let one = q.settings.frame_rate.frame_duration();
@@ -1627,6 +1696,33 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     }
+    // sound effects (A3, not a movie's own sound): under the voices
+    let mut effect_lufs: Vec<f64> = Vec::new();
+    if let Some(a3) = q.audio_tracks.get(2) {
+        for it in &a3.items {
+            if s.source(it.item).is_some_and(|src| src.info().has_video()) {
+                continue;
+            }
+            let Some(l) = effect_loudness(s, it) else { continue };
+            effect_lufs.push(l);
+            if let Some(m) = median_voice
+                && l > m - effect_margin
+            {
+                out.push(problem(
+                    Severity::Warning,
+                    "effect-loud",
+                    Some(it.start),
+                    format!(
+                        "sound effect {} is {:+.1} LU from the median voice ({m:.1} LUFS); effects belong at least {effect_margin:.0} LU under it",
+                        it.name,
+                        l - m
+                    ),
+                ));
+            }
+        }
+    }
+    let median_effect = median(&mut effect_lufs.clone());
+    let loudest_effect = effect_lufs.iter().copied().reduce(f64::max);
     // subtitles
     let mut captions = 0usize;
     for t in &q.caption_tracks {
@@ -1678,6 +1774,9 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
             "voices": voices,
             "subtitles": captions,
             "medianVoiceLufs": median_voice,
+            "effects": effect_lufs.len(),
+            "medianEffectLufs": median_effect,
+            "loudestEffectLufs": loudest_effect,
             "linesWithoutAudio": missing_audio,
         },
     }))
@@ -1696,6 +1795,16 @@ fn median(v: &mut [f64]) -> Option<f64> {
 /// Integrated loudness (LUFS) of a clip as heard (its source range, with its own gain), or None
 /// when it cannot be read.
 fn clip_loudness(s: &Session, it: &TrackItem) -> Option<f64> {
+    loudness_of(s, it, 0)
+}
+
+/// The loudness of a sound effect: a click shorter than one 400 ms block of BS.1770 is measured
+/// as one block (padded with silence), so a short thud has a level too.
+fn effect_loudness(s: &Session, it: &TrackItem) -> Option<f64> {
+    loudness_of(s, it, 19_200)
+}
+
+fn loudness_of(s: &Session, it: &TrackItem, min_samples: usize) -> Option<f64> {
     const RATE: u32 = 48_000;
     let src = s.source(it.item)?;
     if !src.info().has_audio() {
@@ -1703,7 +1812,12 @@ fn clip_loudness(s: &Session, it: &TrackItem) -> Option<f64> {
     }
     let start = it.source_in.to_units_floor(RATE as i64);
     let len = usize::try_from(it.duration.to_units_floor(RATE as i64)).ok().filter(|n| *n > 0 && *n <= RATE as usize * 600)?;
-    let buf = src.audio(start, len, RATE).ok()?;
+    let mut buf = src.audio(start, len, RATE).ok()?;
+    for c in &mut buf.channels {
+        if c.len() < min_samples {
+            c.resize(min_samples, 0.0);
+        }
+    }
     let chans: Vec<&[f32]> = buf.channels.iter().map(Vec::as_slice).collect();
     if chans.is_empty() {
         return None;
@@ -1766,11 +1880,11 @@ fn run_all(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(v) => v,
         Err(e) => return stop(&mut steps, "build", e.to_string()),
     };
-    steps.push(json!({"step": "build", "ok": true, "sequence": built["sequence"], "seconds": built["seconds"], "lines": built["lines"], "clips": built["clips"], "withoutAudio": built["withoutAudio"], "warnings": built["warnings"]}));
+    steps.push(json!({"step": "build", "ok": true, "sequence": built["sequence"], "seconds": built["seconds"], "lines": built["lines"], "clips": built["clips"], "leveledVoices": built["leveledVoices"], "leveledEffects": built["leveledEffects"], "withoutAudio": built["withoutAudio"], "warnings": built["warnings"]}));
     let mut ok = true;
     if bool_p(p, "check").unwrap_or(true) {
         let mut q = json!({"sequence": built["sequence"], "path": path});
-        for k in ["out", "captionChars", "maxSilenceSeconds", "maxCharsPerSecond", "loudnessToleranceLu"] {
+        for k in ["out", "captionChars", "maxSilenceSeconds", "maxCharsPerSecond", "loudnessToleranceLu", "effectMarginLu"] {
             if let Some(v) = p.get(k) {
                 q[k] = v.clone();
             }
@@ -1823,14 +1937,14 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "anime.build",
             "Build Anime Sequence",
-            r#"{"path":str,"out":str?,"name":str?,"width":u32=1920,"height":u32=1080,"fps":f64=24,"pause":f64=0.35,"sceneGap":f64=0.6,"directionSeconds":f64=1,"charsPerSecond":f64=7,"push":f64=5,"kenBurns":bool?,"spriteScale":f64?,"spriteAlign":str="center","backgroundFit":str="fit","bgmGainDb":f64=-18,"sfxGainDb":f64=0,"captionChars":n=36,"blink":bool=true,"fitBackground":bool=true,"levelVoices":bool=true,"voiceLufs":f?,"transitionSeconds":f64=0.5,"leftX":f64=0.25,"rightX":f64=0.75,"subCgScale":f64=100,"three":bool?,"openDb":f?,"halfDb":f?,"minSeconds":f?}"#,
+            r#"{"path":str,"out":str?,"name":str?,"width":u32=1920,"height":u32=1080,"fps":f64=24,"pause":f64=0.35,"sceneGap":f64=0.6,"directionSeconds":f64=1,"charsPerSecond":f64=7,"push":f64=5,"kenBurns":bool?,"spriteScale":f64?,"spriteAlign":str="center","backgroundFit":str="fit","bgmGainDb":f64=-18,"sfxGainDb":f64=-10,"videoGainDb":f64=0,"levelEffects":bool=true,"effectsBelowVoiceLu":f64=10,"captionChars":n=36,"blink":bool=true,"fitBackground":bool=true,"levelVoices":bool=true,"voiceLufs":f?,"transitionSeconds":f64=0.5,"leftX":f64=0.25,"rightX":f64=0.75,"subCgScale":f64=100,"three":bool?,"openDb":f?,"halfDb":f?,"minSeconds":f?}"#,
             build,
             true,
         ),
         spec(
             "anime.check",
             "Check Anime Sequence",
-            r#"{"sequence":id?,"path":str?,"out":str?,"maxSilenceSeconds":f64=5,"maxCharsPerSecond":f64=20,"captionChars":n=36,"loudnessToleranceLu":f64=6}"#,
+            r#"{"sequence":id?,"path":str?,"out":str?,"maxSilenceSeconds":f64=5,"maxCharsPerSecond":f64=20,"captionChars":n=36,"loudnessToleranceLu":f64=6,"effectMarginLu":f64=6}"#,
             check,
             false,
         ),

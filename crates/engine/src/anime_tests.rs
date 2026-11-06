@@ -1355,3 +1355,94 @@ fn sprites_can_stand_on_the_bottom_and_backgrounds_can_fill_the_frame() {
     assert!(s.execute("anime.build", json!({"path": pr.path, "backgroundFit": 3})).is_err());
     let _ = std::fs::remove_dir_all(&pr.dir);
 }
+
+// ---------------------------------------------------------------------------------------------
+// sound words: subtitled, never spoken, their sound on the effects track and under the voices
+
+#[test]
+fn a_sound_word_is_subtitled_for_its_sound_and_never_waits_for_a_voice() {
+    let s = Script::from_json(
+        r#"{"characters": {"m": {"name": "m", "expressions": {"normal": {"image": "m.png", "openImage": "mo.png"}}}},
+        "scenes": [{"id": "s", "background": "bg.png", "lines": [
+            {"id": "crash", "kind": "narration", "text": "ガシャーン！", "spoken": false, "sfx": "crash.wav"},
+            {"id": "thud", "kind": "narration", "text": "ドテッ。", "spoken": false, "sfx": "thud.wav"},
+            {"id": "jiri", "kind": "narration", "text": "ジリッ‥‥。", "spoken": false},
+            {"id": "guu", "speaker": "m", "text": "ぐぅ～。", "spoken": false, "voiceFile": "guu_voice.wav"},
+            {"id": "a1", "speaker": "m", "text": "待って。"}]}]}"#,
+    )
+    .unwrap();
+    let rate = FrameRate::from_f64(24.0);
+    let o = Opts::default();
+    let mut f = fake();
+    for (k, v) in [("crash.wav", 1.6), ("thud.wav", 0.15), ("guu", 3.0), ("guu_voice.wav", 3.0)] {
+        f.audio.insert(k.into(), v);
+    }
+    let pl = plan(&s, rate, &o, &mut f);
+    let cue = |id: &str| pl.cues.iter().find(|c| c.line == id).unwrap();
+    let len = |id: &str| (cue(id).end - cue(id).start).seconds();
+    // as long as its sound (plus the pause after a line), never shorter than a reading of it
+    assert!((len("crash") - (1.6 + 0.35)).abs() < 0.05, "{}", len("crash"));
+    assert!((len("thud") - (0.8 + 0.35)).abs() < 0.05, "{}", len("thud"));
+    // no sound: the time to read it (6 characters at 7 a second)
+    assert!((len("jiri") - (6.0 / 7.0 + 0.35)).abs() < 0.05, "{}", len("jiri"));
+    for id in ["crash", "thud", "jiri", "guu"] {
+        let c = cue(id);
+        assert!(c.voice.is_none() && c.mouth.is_empty() && !c.estimated, "{id}: {c:?}");
+        assert!(!c.captions.is_empty(), "{id} is subtitled");
+        assert!(!pl.warnings.iter().any(|w| w.contains(&format!("line {id}:"))), "{:?}", pl.warnings);
+    }
+    assert!(cue("crash").sfx.is_some() && cue("jiri").sfx.is_none());
+    // the recording of an unspoken line is not played, and the speaker still stands there
+    assert!(cue("guu").sprite.is_some() && (len("guu") - (0.8 + 0.35)).abs() < 0.05, "{}", len("guu"));
+    // the spoken line is unchanged: its voice and its mouth
+    assert!(cue("a1").voice.is_some() && !cue("a1").mouth.is_empty());
+}
+
+#[test]
+fn sound_effects_sit_under_the_voices_and_the_check_measures_them() {
+    let dir = temp("words");
+    bmp(&dir.join("bg.bmp"), 32, 18, [1, 2, 3]);
+    let mut lines = Vec::new();
+    for i in 0..3 {
+        write_wav16(&dir.join(format!("v{i}.wav")), &tone(&[(1.0, 0.1)]), RATE).unwrap();
+        lines.push(json!({"id": format!("l{i}"), "kind": "narration", "text": "声", "voiceFile": format!("v{i}.wav")}));
+    }
+    // a game's effects are as loud as they go: far louder than the voices
+    write_wav16(&dir.join("crash.wav"), &tone(&[(1.2, 0.9)]), RATE).unwrap();
+    write_wav16(&dir.join("click.wav"), &tone(&[(0.1, 0.9)]), RATE).unwrap();
+    write_wav16(&dir.join("hum.wav"), &tone(&[(2.0, 0.01)]), RATE).unwrap();
+    lines.push(json!({"id": "w1", "kind": "narration", "text": "ガシャーン！", "spoken": false, "sfx": "crash.wav"}));
+    lines.push(json!({"id": "w2", "kind": "narration", "text": "カチッ。", "spoken": false, "sfx": "click.wav"}));
+    lines.push(json!({"id": "w3", "kind": "narration", "text": "ジリッ。", "spoken": false}));
+    lines.push(json!({"id": "d1", "kind": "direction", "sfx": "hum.wav"}));
+    let path = dir.join("w.fcscript.json");
+    std::fs::write(&path, json!({"scenes": [{"id": "s", "background": "bg.bmp", "lines": lines}]}).to_string()).unwrap();
+    let mut s = session();
+    // nothing to speak: the sound words are not synthesized
+    let v = run(&mut s, "script.validate", json!({"path": path}));
+    assert_eq!((v["stats"]["spoken"].clone(), v["stats"]["toSynthesize"].clone()), (json!(3), json!(0)), "{v}");
+    let r = run(&mut s, "anime.run", json!({"path": path, "out": dir.join("o")}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    assert_eq!(r["steps"][1]["synthesized"], json!(0), "{r}");
+    let b = &r["steps"][2];
+    assert_eq!((b["clips"]["voices"].clone(), b["clips"]["effects"].clone(), b["clips"]["subtitles"].clone()), (json!(3), json!(3), json!(6)), "{b}");
+    // all three are levelled, the click measured as one 400 ms block
+    assert_eq!(b["leveledEffects"], json!(3), "{b}");
+    let q = s.active_sequence().unwrap();
+    assert!(q.audio_tracks[0].items.iter().all(|i| i.name.starts_with('v')), "only voices on A1");
+    let gains: Vec<f64> = q.audio_tracks[2].items.iter().map(|i| i.gain_db).collect();
+    assert!(gains[0] < -20.0 && gains[1] < -20.0 && gains[1] > gains[0] && gains[2] == 6.0, "{gains:?}");
+    let c = &r["steps"][3];
+    let (voice, effect) = (c["stats"]["medianVoiceLufs"].as_f64().unwrap(), c["stats"]["loudestEffectLufs"].as_f64().unwrap());
+    assert!((voice - effect - 10.0).abs() < 1.0, "voice {voice} effect {effect}: {c}");
+    assert!(!c["problems"].as_array().unwrap().iter().any(|p| p["kind"] == "effect-loud" || p["kind"] == "no-audio"), "{c}");
+    // not levelled and at full gain, the crash is as loud as a voice and the check says so
+    let b = run(&mut s, "anime.build", json!({"path": path, "out": dir.join("o"), "levelEffects": false, "sfxGainDb": 0}));
+    assert_eq!(b["leveledEffects"], json!(0), "{b}");
+    let c = run(&mut s, "anime.check", json!({"sequence": b["sequence"]}));
+    let loud: Vec<&Value> = c["problems"].as_array().unwrap().iter().filter(|p| p["kind"] == "effect-loud").collect();
+    assert_eq!(loud.len(), 2, "the crash and the click: {c}");
+    // a hostile margin is refused, not a crash
+    assert!(s.execute("anime.build", json!({"path": path, "effectsBelowVoiceLu": f64::MAX})).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
