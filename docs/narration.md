@@ -15,6 +15,25 @@ yourself. Nothing is sent to the internet.
 Agents (Claude Code, Antigravity, …): use `tts.synthesize` for narration instead of the
 operating system's speech (Windows SAPI sounds robotic). See [For agents](#for-agents).
 
+## Which route
+
+Narration (`tts.synthesize`) is one of two ways FilmCraft speaks text. The other is Qwen3-TTS,
+for cloning voices from recordings; both are behind the same commands for scripts and anime
+([text-to-speech.md](text-to-speech.md), [script.md](script.md)):
+
+| | Qwen3-TTS (`engine: "qwen3"`, the default) | AivisSpeech / VOICEVOX (`engine: "aivisspeech"` / `"voicevox"`) |
+|---|---|---|
+| Voice | a clone of a reference recording (`refAudio` + `refText`), or a preset `speaker` with an `instruct` direction | an installed voice by name: `speaker` = `"Speaker/Style"` (or a style id); none: Settings ▸ Narration ▸ Default voice, else the engine's first voice |
+| What runs | the helper script in an external Python (`tools/qwen3-tts/`; a GPU helps) | the app's own engine over HTTP on this machine (start the app first) |
+| Address | `python` / `script` params | `url`, else Settings ▸ Narration (`narration.aivisspeechUrl`, `narration.voicevoxUrl`; 127.0.0.1:10101 / :50021) |
+| Languages | ten, Japanese and English among them | Japanese |
+| Credits | none recorded (the model's licence asks for none; a cloned voice needs its speaker's consent) | every item made remembers its voice's credit (`Narration Credit` / `Narration Voice`), so `tts.credits`, `tts.addCreditRoll` and `tts.exportCredits` cover it ([voice-terms.md](voice-terms.md)) |
+| Commands | `speech.synthesize`, `script.synthesize`, `anime.run` | the same with `engine`, plus `tts.synthesize` (narration placed on the timeline with captions, levels and ducking; [narration.md](narration.md)) |
+
+In a [script](script.md) each character's `voice` can name its own `engine`, so one story can mix
+a cloned voice with an AivisSpeech or VOICEVOX character; characters without one (and the
+narrator) use the command's `engine`.
+
 ## Install and start an engine
 
 1. Download and install the app:

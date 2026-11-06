@@ -96,12 +96,7 @@ pub(crate) fn after_synthesize(s: &mut Session, p: &Value, n0: usize, result: &m
     if !marks.is_empty() {
         s.edit(crate::narration::UNDO_LABEL, |pr, _| {
             for (item, c) in &marks {
-                if let Some(it) = pr.item_mut(*item) {
-                    if let Some(line) = c["credit"].as_str() {
-                        it.metadata.insert(CREDIT_KEY.into(), line.to_string());
-                    }
-                    it.metadata.insert(VOICE_KEY.into(), c.to_string());
-                }
+                mark_item(pr, *item, c);
             }
             Ok(())
         })?;
@@ -128,6 +123,25 @@ pub(crate) fn after_synthesize(s: &mut Session, p: &Value, n0: usize, result: &m
     }
     crate::clip_ops::collapse_history(s, n0, crate::narration::UNDO_LABEL);
     Ok(())
+}
+
+/// Remember on item `id` the voice credit `c` (a [`filmcraft_speech::tts::credit`]): the
+/// `Narration Credit` line and the whole credit as `Narration Voice`. Every route that makes
+/// narration through a local engine (`tts.synthesize`, `speech.synthesize`, `anime.build` from
+/// `script.synthesize`'s lines) records it the same way, so the credit commands find it.
+pub(crate) fn mark_item(pr: &mut Project, id: ItemId, c: &Value) {
+    if let Some(it) = pr.item_mut(id) {
+        if let Some(line) = c["credit"].as_str() {
+            it.metadata.insert(CREDIT_KEY.into(), line.to_string());
+        }
+        it.metadata.insert(VOICE_KEY.into(), c.to_string());
+    }
+}
+
+/// The distinct credits among `credits` (one per voice, first seen first).
+pub(crate) fn distinct<'a>(credits: impl IntoIterator<Item = &'a Value>) -> Vec<Value> {
+    let mut seen = HashSet::new();
+    credits.into_iter().filter(|c| c.is_object() && seen.insert(dedup_key(c))).take(MAX_CREDITS).cloned().collect()
 }
 
 // ------------------------------------------------------------------------------------- collect

@@ -1,0 +1,6 @@
+# Qwen3-TTS helper for FilmCraft (tools/qwen3-tts/README.md).
+# Install a CUDA build of torch first for GPU inference, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch>=2.4
+qwen-tts>=0.1
+soundfile>=0.12

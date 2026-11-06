@@ -370,14 +370,10 @@ fn detect_image_sequence(s: &Session, path: &str) -> bool {
     filmcraft_media::sequence::Numbered::parse(path).is_some() && crate::media_pool::image_sequence_frames(path, &*s.services).is_ok_and(|f| f.len() > 1)
 }
 
-fn import_source(
-    s: &mut Session,
-    path: &str,
-    name: String,
-    src: filmcraft_media::SharedSource,
-    identity: filmcraft_project::MediaIdentity,
-    bin: Option<filmcraft_project::BinId>,
-) -> Result<ItemId> {
+/// What importing `src` adds to the project: the item's label and its clip, with the Settings
+/// that shape an import applied (label defaults, still timebase, generated timecode). Changes
+/// nothing; [`import_source`] and batch imports (`anime.build`) add the result in one edit.
+pub(crate) fn imported_clip(s: &Session, path: &str, src: &filmcraft_media::SharedSource, identity: filmcraft_project::MediaIdentity) -> (Label, MediaClip) {
     let mut info = src.info().clone();
     // Settings ▸ Labels ▸ Label Defaults
     let label = s.prefs.labels.for_media(info.kind, info.has_video(), info.has_audio());
@@ -391,25 +387,30 @@ fn import_source(
     if s.prefs.media.timecode == "generate" {
         info.start_timecode = None;
     }
-    let path_s = path.to_string();
-    let id = s.edit(&format!("Import {name}"), |p, _| {
-        Ok(p.add_item(
-            &name,
-            label,
-            ItemKind::Media(MediaClip {
-                media: MediaRef::File { path: path_s },
-                info,
-                interpret: Default::default(),
-                mark_in: None,
-                mark_out: None,
-                markers: vec![],
-                offline: false,
-                proxy: None,
-                identity: Some(identity),
-            }),
-            bin,
-        ))
-    })?;
+    let clip = MediaClip {
+        media: MediaRef::File { path: path.to_string() },
+        info,
+        interpret: Default::default(),
+        mark_in: None,
+        mark_out: None,
+        markers: vec![],
+        offline: false,
+        proxy: None,
+        identity: Some(identity),
+    };
+    (label, clip)
+}
+
+fn import_source(
+    s: &mut Session,
+    path: &str,
+    name: String,
+    src: filmcraft_media::SharedSource,
+    identity: filmcraft_project::MediaIdentity,
+    bin: Option<filmcraft_project::BinId>,
+) -> Result<ItemId> {
+    let (label, clip) = imported_clip(s, path, &src, identity);
+    let id = s.edit(&format!("Import {name}"), |p, _| Ok(p.add_item(&name, label, ItemKind::Media(clip), bin)))?;
     s.media.insert_file(id, path, src);
     Ok(id)
 }
@@ -2408,6 +2409,9 @@ fn build() -> Vec<CommandSpec> {
     ];
     crate::sequence_tools::splice(&mut v);
     v.extend(crate::captions::commands());
+    v.extend(crate::speech_synth::commands());
+    v.extend(crate::script_tools::commands());
+    v.extend(crate::anime::commands());
     v.extend(crate::settings::commands());
     v.extend(crate::mixer::commands());
     v.extend(crate::multicam::commands());
