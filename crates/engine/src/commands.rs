@@ -1067,7 +1067,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|flac"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"maxBitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"keyframeDistance":u32?,"sdr":bool?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudness":"streaming|podcast|ebuR128|atscA85|aribTrB32"|lufs|false?,"loudnessLufs":f64?,"truePeakDbtp":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"alpha":bool=false,"dnxProfile":"lb|sq|hq|hqx"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|flac"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"maxBitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"keyframeDistance":u32?,"sdr":bool?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudness":"streaming|podcast|ebuR128|atscA85|aribTrB32"|lufs|false?,"loudnessLufs":f64?,"truePeakDbtp":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"alpha":bool=false,"dnxProfile":"lb|sq|hq|hqx"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false,"saveProject":bool?,"projectPath":str?}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -2989,7 +2989,7 @@ fn name_project(p: &mut filmcraft_project::Project, name: String) {
     p.name = name;
 }
 
-fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
+pub(crate) fn write_project(s: &mut Session, path: &str, adopt: bool) -> Result<Value> {
     let t0 = web_time::Instant::now();
     // Save As renames the project after its new file (not an edit: no undo step, not dirty).
     if adopt

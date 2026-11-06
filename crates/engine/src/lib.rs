@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod aaf_omf;
+pub mod agent_project;
 pub mod anime;
 pub mod audio_plugins;
 pub mod autosave;
@@ -409,6 +410,10 @@ pub struct Session {
     /// desktop app and the CLI set it). Settings ▸ Appearance ▸ Language "Auto" follows it where
     /// the engine itself writes text in the interface language (the narration credit heading).
     pub system_language: Option<String>,
+    /// Save the project after a successful export (headless CLI / MCP sessions: agents get a
+    /// `.fcproj` beside their video; see [`agent_project`]). Off in the desktop app; commands
+    /// override it with `saveProject`.
+    pub save_project_on_export: bool,
 }
 
 /// An export advanced a batch at a time on the host's thread ([`Session::pump_jobs`]).
@@ -502,6 +507,7 @@ impl Session {
             playback_active: false,
             japanese_text: false,
             system_language: None,
+            save_project_on_export: false,
         }
     }
 
@@ -1028,6 +1034,8 @@ pub fn media_duration(p: &Project, _pool: &MediaPool, id: ItemId) -> Option<Tick
 
 #[cfg(test)]
 mod aaf_omf_tests;
+#[cfg(test)]
+mod agent_project_tests;
 #[cfg(test)]
 mod animated_image_tests;
 #[cfg(test)]
