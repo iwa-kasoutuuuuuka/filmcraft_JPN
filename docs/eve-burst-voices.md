@@ -297,3 +297,100 @@ on the real data). `soundfile` is optional and only needed for a WAV that is not
 was not installed and not needed. The data folder is only read. The tests build a tiny fake tree
 with generated tones (noisy, clipped, gapped, too short, laughing and shouting clips) and skip the
 real-data tests when the data folder is absent (set `EVE_BURST_DATA` for another location).
+
+## 7. Fixing the extras' voices across episodes
+
+The converter numbers unnamed speakers per script (`n001`, `m-n003`, ...), so the same 守衛 has
+another id in every episode and a voice set by id would change from episode to episode.
+[`tools/eve_burst/extras_voices.py`](../tools/eve_burst/extras_voices.py) keys the extras by their
+**display name** instead: name -> voice class -> one designed reference, the same in every script.
+Standard library only (the pitch check uses `wave` + `array`); the table and the voices live
+outside the repository, under `eve_out/voices/`.
+
+```
+python tools/eve_burst/extras_voices.py --scripts "eve_out/series/eve.ep*.fcscript.json" \
+    --scripts "eve_out/adapted/eve.ep*.fcscript.json" --voices-dir eve_out/voices --init --list
+python tools/eve_burst/extras_voices.py --scripts ... --voices-dir eve_out/voices --design [--dry-run]
+python tools/eve_burst/extras_voices.py --scripts ... --voices-dir eve_out/voices --apply \
+    --root DATA --out-dir eve_out/voiced --tag voiced [--report report.json]
+```
+
+- `--list` prints every character without a voice by display name, with its lines, the lines
+  that would be synthesized, the scripts it is in, how it will be voiced (`ref:<code>` for a named
+  character in `voice_refs.json`, `narrator`, `skip`, `role`) and, for a role, its class and voice.
+- `--init` writes `extras_roles.json` (or adds new names to it; edits are kept): `voices` (id ->
+  `gender`, `design`, `refText`), `classes` (class -> gender and an ordered voice list), `names`
+  (display name -> `class`, optional pinned `voice`, `variant`), `aliases` (`pur` -> `pul`: the
+  same actress) and `skipIds` (`sfx`, whose lines are all sound files). A new name's class is
+  guessed from generic role words, in this order: child (子供, 男の子, 少年), female-old (おばちゃん),
+  female-young (女の子, 娘, ウエイトレス, 生徒), female-mid (女, 婦, 受付), gatekeeper (守衛), security
+  (警備員), police (警官, 刑事), front (フロント), thug (野郎, チンピラ), male-old (親父, 老人),
+  male-young (若い, ボーイ), announcer (TV, 放送), male-mid (男, 員, 人, 手, 客, 店...), else unknown
+  (声, 声１...). A trailing １/２ or Ａ/Ｂ, or 左/中央/右, picks the first, second or third voice of the
+  class (`variant`), so 男１ and 男２ differ. Proper names (シルディ, サラ, 景子) need an edit.
+- `--design` designs the voices the names can use and that `extras/extras_refs.json` does not
+  have yet (the six designed before, front, police, man-a, man-b, man-c, woman-a, are reused):
+  three candidates each, written as one `filmcraft_tts.py --jobs` file and spoken by one process
+  (the GPU is used serially; a warning is printed when `nvidia-smi` shows it busy). Of the
+  candidates in `extras/cand/<voice>-<k>.wav` the pick is the one whose median F0 (autocorrelation
+  of 40 ms frames every 20 ms at about 8 kHz) fits the gender (male 60-160 Hz, female 165-300,
+  child 200-450, any 90-300) and whose length is 3-15 s; then the steadiest pitch (narrowest 10-90 %
+  range); then the longest. It is copied to `extras/<voice>.wav` and recorded in
+  `extras_refs.json` with `f0`, `why` and the other candidates. The F0 matches the earlier numpy
+  measurement (`pick_f0.py`) to the hertz on the six existing voices. An existing `<voice>.wav`
+  that is not in `extras_refs.json` is never overwritten (that is why the old `guard.wav`, whose
+  transcript was not kept, stays and 守衛 got a new `gatekeeper`).
+- `--apply` writes a copy of each script (`--out-dir` + `--tag`, `--out` for one, `--in-place` to
+  overwrite). A character that has a voice is never touched. Named characters get their clone from
+  `voice_refs.json` (via `apply_voices.apply`, no preset fallback); `narrator` the clone of the
+  scenes' point of view (`koj` for 小次郎編, `mar` for まりな編; a scene without `pov` takes the one
+  before it in the route). A script whose narration is in both routes gives the narrator the
+  majority's voice and moves the other route's narration lines to `narrator-<pov>` (same name
+  語り). Extras get their name's voice; two extras that speak in the same scene never share one:
+  the name with fewer lines **over all the scripts given** (`--scripts` plus `--rank-scripts`, which
+  are only counted) takes the next voice of its class, then any voice of the same gender, and the
+  report lists it under `moved` (`clash` if nothing was free). So the big roles never move; pin a
+  `voice` in the table for a small role that must not move either (a pinned voice is never moved,
+  only reported as a clash). Paths are written relative to the output script and the script's
+  other paths are rebased to the output folder.
+
+### Result on the 29 episodes (2026-11-06)
+
+The voiceless characters of `eve_out/series` and `eve_out/adapted` (29 scripts each): 18 named
+codes (all in `voice_refs.json`; `pur` through its alias `pul`), the narrator, `sfx` (every line
+a recording) and **78 extra names**. 13 voices were taken by the names: the six designed before
+and ten designed now (30 candidates, one GPU process, 11 minutes with the model load; every pick
+inside its window):
+
+| voice | used by | pick | F0 Hz (10-90 %) | other candidates |
+|---|---|---|---:|---|
+| gatekeeper | 守衛 | `gatekeeper-1` | 127 (104-145) | 154, 101 |
+| security | 警備員 | `security-2` | 143 (116-154) | 157, 99 |
+| male-mid-2 | second male (男２, clashes) | `male-mid-2-2` | 98 (78-110) | 118, 205 |
+| male-young-2 | 本を読んでる人, clashes | `male-young-2-3` | 108 (89-143) | 143, 229 |
+| thug | 中央の野郎 | `thug-2` | 157 (113-242) | 242, 216 |
+| female-young | ウエイトレス, 景子, 生徒 | `female-young-1` | 258 (205-400) | 364, 381 |
+| female-mid-2 | サラ, 女２ | `female-mid-2-2` | 178 (148-211) | 211, 195 |
+| female-old | おばちゃん | `female-old-2` | 205 (163-250) | 229, 93 |
+| unknown | 声, 声１..., 野次馬の声 | `unknown-1` | 138 (108-167) | 111, 136 |
+| vamp | シルディ (table only) | `vamp-1` | 235 (205-267) | 242, 267 |
+
+(`child` was not designed: no name uses it.) Two thug candidates came out at 216-242 Hz and the
+pick is at the edge of the male window (157 Hz, with a wide 113-242 Hz spread). Pitch says
+nothing about whether a voice sounds right, so the ten picks were listened to on 2026-11-06 and
+kept as they are (`--redo <voice>` designs one again).
+
+`--apply` on all 58 scripts (into `eve_out/voiced/`, `eve.epNN.voiced.fcscript.json` from
+series and `eve.epNN.adapted.voiced.fcscript.json` from adapted; the inputs are unchanged):
+**every spoken line without a recording has a voice** (34,339 lines to synthesize), and
+`script.validate` reports **0 errors and 0 warnings** in all 58. The narrator is `mar` or `koj` by
+the episode's route; ep29 (both routes) has `narrator` = mar and `narrator-koj` for 小次郎's scenes.
+68 of the 78 names have one voice in every episode; the other ten are small roles that sometimes
+share a scene with a bigger one of the same class (サラリーマン with 男, コピー機の男 with 机に向かう男,
+男１/男２, 警官の声 with 警官, ...): 27 moves in all. Two clashes are left: 本を呼んでる人 with
+本を読んでる人 in ep11 (one person, the name misspelt in the game, so one voice is right) and 声４
+in ep29 (five unknown voices in one scene, more than the class has).
+
+Tests: `tools/eve_burst/tests/test_extras_voices.py` (classification, the table and its repair,
+F0 of generated tones and broken files, the pick, the design jobs, the apply with a fake script and
+WAVs, the same name with another id in another script, hostile input, the command line).

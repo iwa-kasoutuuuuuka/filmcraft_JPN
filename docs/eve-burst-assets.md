@@ -212,3 +212,32 @@ Gaps worth knowing (not asset-resolution failures):
   "Mouth and blink variants".
 - `hack_k`/`hack_m` are the terminal screens: they are images only, the scenario passes a flag.
 - Unverified: whether the `表情アニメ` clips contain a blink; whether sprite slot 1 is left and 3 is right.
+
+
+## Protagonist sprites (the hero of a route)
+
+In their own route the game never draws the player character, so a script converted from that
+route alone can have `koj` (小次郎編) or `mar` (まりな編) with no `expressions`, and a speaker with
+no picture is not shown (the rule is in [script.md](script.md): the line's `expression`, else
+`defaultExpression`, else `normal`, else the first by name). The data has their sprites all the
+same: `02_画像/立ち絵/koj_天城小次郎/koj00ad.png`, `koj00bd`, `koj01ad`, `koj01bd` (and mar's in
+`mar_法条まりな/`).
+[`tools/eve_burst/protagonist_sprites.py`](../tools/eve_burst/protagonist_sprites.py) gives each
+protagonist of a script (a scene `pov` in `--who`, default `koj,mar`) that has no expressions
+every sprite of theirs, named as the converter names them (`koj00ad` -> `00ad`, resolved with
+`assets.py`), and `defaultExpression` (`00ad`, else the first of outfit `a`, else the first). Lines
+keep their own `expression`; the others show the default. A protagonist that already has
+expressions is left alone (`--fill-default` only adds a missing `defaultExpression`).
+
+```
+python tools/eve_burst/protagonist_sprites.py --scripts "eve_out/voiced/*.fcscript.json" \
+    --root "E:/filmcraft_JPN/PS2_EVE_Bursterror解析データ" --in-place     # or --out-dir DIR [--tag T]
+```
+
+Image paths are written relative to the output script, and the script's other relative paths are
+rebased when the output goes to another folder. Measured on the 29 episode scripts
+(`eve_out/series`, and `eve_out/adapted`): every protagonist already had the four sprites, because
+the episodes carry the character table of the whole game (the protagonist's sprites from the other
+route), and their lines without an `expression` show the first by name, `00ad`. The tool changed
+nothing there; it matters for a script cut from one route only. Tests:
+`tools/eve_burst/tests/test_protagonist_sprites.py`.
