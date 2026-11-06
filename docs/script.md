@@ -47,9 +47,9 @@ they change nothing in the project and can run again at any time. Relative paths
 
 | Field | Meaning |
 |---|---|
-| `characters.<id>` | `name` (display), `voice` (`refAudio` + `refText`: a reference recording and its transcript, for cloning; or `speaker`: a preset voice such as `Ono_Anna`, with an optional standing `instruct`), `expressions` (pictures by expression name; `openImage` is the open-mouth picture for lip sync), `defaultExpression`. |
-| `scenes[]` | `id` (unique), `title`, `pov` (a character id), `when` (story time as text that sorts in time order), `requires` (scenes that must be shown first), `background`, `bgm`, `lines`. |
-| `lines[]` | `id` (unique across the whole script: it names the audio file), `kind` (`dialogue` default, `narration`, `monologue`, `direction`), `speaker`, `text`, `reading`, `expression`, `voiceFile`, `instruct`, `sfx`, `pauseAfter`, `generated`. |
+| `characters.<id>` | `name` (display), `voice` (`refAudio` + `refText`: a reference recording and its transcript, for cloning; or `speaker`: a preset voice such as `Ono_Anna`, with an optional standing `instruct`), `expressions` (pictures by expression name; `openImage` is the open-mouth picture for lip sync, `vowelImages` one per vowel, `blink` the same picture with the eyes closed), `defaultExpression`. |
+| `scenes[]` | `id` (unique), `title`, `pov` (a character id), `when` (story time as text that sorts in time order), `requires` (scenes that must be shown first), `background`, `bgm`, `transition` (`"cut"`, the default, or `"fade"`: in from black), `hideCharacters` (`true`: no character pictures in this scene, as over an event picture or a flashback), `lines`. |
+| `lines[]` | `id` (unique across the whole script: it names the audio file), `kind` (`dialogue` default, `narration`, `monologue`, `direction`), `speaker`, `text`, `reading`, `expression`, `voiceFile`, `instruct`, `sfx`, `pauseAfter`, `generated`, `video` (a movie, on a direction line), `subCg` (an inset picture; `""` takes it away), `subCgAnchor` (`[x, y]`, fractions of the frame), `slot` (1 left, 2 centre, 3 right). |
 | `route` | Scene ids in the order they are shown; empty means file order. Scenes missing from it are not shown. |
 
 Notes:
@@ -63,7 +63,11 @@ Notes:
   one are never synthesized; lines that do not are spoken in their character's voice.
 - `generated: true` marks a line a tool wrote to bridge scenes (not in the source story), so a
   later run may rewrite it freely.
-- A **direction** has no text and no speaker: sound effects, a cut, a pause.
+- A **direction** has no text and no speaker: sound effects, a cut, a pause, a movie (`video`).
+- `video`, `subCg`, `slot` and a scene's `transition` are laid out as described under "Movies,
+  sub CGs, two-shots and fades" below. `script.validate` reports a `slot` other than 1, 2 or 3, a
+  `subCgAnchor` outside the frame, an empty `video` and an unknown `transition` as errors, and a
+  `video` on a line that is not a direction as a warning (it is not shown there).
 - Counts and lengths are capped (500 characters, 10 000 scenes, 200 000 lines, 4 000 characters
   per text, 64 MB per file); everything in the file is treated as hostile.
 
@@ -134,20 +138,32 @@ audio plus a pause, every boundary is on the frame grid, and neighbouring clips 
 
 | Track | Holds |
 |---|---|
-| V1 Background | One picture per scene, scaled to fill the frame (`fitBackground: false` keeps its size), pushing in slowly (`push`, 5 % by default; `kenBurns: false` turns it off) |
-| V2 Character | The speaker's picture for the expression of the line. Consecutive lines in the same picture (and the same scene) are one clip. Directions, and narration without a `speaker`, show no character |
+| V1 Background | One picture per scene, fitted inside the frame (a picture of another shape leaves bars at the sides or top; `backgroundFit: "fill"` covers the frame instead, cutting the edges; `fitBackground: false` keeps its size), pushing in slowly (`push`, 5 % by default; `kenBurns: false` turns it off). A line's `video` takes its place for the movie's length (fitted or filled the same way); the picture is cut around it and goes on pushing in where it left off. A scene with `transition: "fade"` fades in from black here |
+| V2 Character | The speaker's picture for the expression of the line, in the centre (slot 2, as imported). Consecutive lines in the same picture (and the same scene) are one clip. Directions, and narration without a `speaker`, show no character |
 | V3 Mouth | The open-mouth picture (`openImage`) over V2 while the voice is loud (the shapes of `script.lipsync`); the picture for the vowel being spoken where the sprite has `vowelImages` |
-| V4 Blink | The `blink` picture (or `<expression>_blink`) over V2 for about 0.12 s (at least three frames), first 1.2 to 2.2 s into a clip and then every 2.7 to 4.6 s, at times fixed by the clip's position, so a rebuild blinks the same way |
+| V4 Blink | The sprite's `blink` picture (else the expression `<expression>_blink`, else one called `blink`) over V2 for about 0.12 s (at least three frames), first 1.2 to 2.2 s into a line and then every 2.7 to 4.6 s, at times fixed by the line's position, so a rebuild blinks the same way. The blink picture is a whole sprite with the mouth closed, so a blink that would fall while the mouth is open waits until it closes (and is left out when the line ends first) |
+| V5–V7 Left, Left Mouth, Left Blink | Only when a line has `slot: 1`: the same three for the character at the left of a two-shot |
+| V8–V10 Right, Right Mouth, Right Blink | Only when a line has `slot: 3` (they follow V4 directly when no line is at the left) |
+| Top: Sub CG | Only when a line has a `subCg`: the inset picture over everything else, mouths and blinks included |
 | A1 Voice | Recordings and synthesized lines, brought to one loudness (`levelVoices`, on by default: each clip's gain is set so it matches the median voice, or `voiceLufs`, within 12 dB; a cloned and a preset voice differ by 10 LU or more), as long as their audio (cut at the line's end if a `pauseAfter` of 0 rounds the end down by up to half a frame) |
-| A2 Music | A scene's `bgm`, repeated to fill the scene (each repeat is a whole number of frames, so repeats abut and never overlap); scenes that share it share the clips; `bgmGainDb` (-18); at most 20 000 repeats per stretch, with a warning |
-| A3 Effects | A line's `sfx`; a long one ends where the next begins, or where the sequence ends |
+| A2 Music | A scene's `bgm`, repeated to fill the scene (each repeat is a whole number of frames, so repeats abut and never overlap); scenes that share it share the clips; `bgmGainDb` (-18); at most 20 000 repeats per stretch, with a warning. It goes on under a movie |
+| A3 Effects | A line's `sfx`, and a movie's own sound with it; a long one ends where the next begins, or where the sequence ends |
 | Subtitles | The plain text (ruby removed), broken at sentence ends, then commas, into pieces of `captionChars` (36) characters, timed in proportion to their length |
 
 `anime.build {path, out?, name?, width=1920, height=1080, fps=24, pause=0.35, sceneGap=0.6,
-directionSeconds=1, charsPerSecond=7, push=5, spriteScale?, bgmGainDb=-18, sfxGainDb=0,
-captionChars=36, blink=true}`: `pause` follows a spoken line unless its `pauseAfter` says
+directionSeconds=1, charsPerSecond=7, push=5, spriteScale?, spriteAlign="center", backgroundFit="fit",
+bgmGainDb=-18, sfxGainDb=0, captionChars=36, blink=true, transitionSeconds=0.5, leftX=0.25, rightX=0.75,
+subCgScale=100}`: `spriteAlign: "bottom"` stands every character picture (and its mouth and blink)
+on the bottom edge of the frame, as on a game screen, instead of centring it; with game pictures
+whose sprites are as tall as the background, `spriteScale` = frame height / picture height × 100
+(1080 / 448 → 241) keeps them in proportion to a fitted background (with `backgroundFit: "fill"`,
+the larger ratio, as the background: 1920 / 640 → 300).
+`pause` follows a spoken line unless its `pauseAfter` says
 otherwise; `sceneGap` is a beat of background at the start of each scene; a line without audio
-yet gets a length estimated at `charsPerSecond` and is listed in `withoutAudio`. Pictures that are
+yet gets a length estimated at `charsPerSecond` and is listed in `withoutAudio`. The result
+counts the clips by kind (`backgrounds`, `videos`, `characters`, `mouths`, `blinks`, `subCgs`,
+`voices`, `music`, `effects`, `videoSounds`, `fades`, `subtitles`) and names the video tracks in
+order (`tracks`). Pictures that are
 missing (backgrounds, sprites, and the open-mouth and blink pictures alike) are skipped with a warning; a script with errors, or with no lines, builds nothing.
 Building again makes another sequence, named apart (`name (2)`). The files are imported in one
 step into a bin named after the script, so the whole build is one undo step however long the
@@ -158,7 +174,46 @@ puts the project back as it was.
 
 A character's expression is the line's `expression`, else `defaultExpression`, else `normal`,
 else the first by name. The open-mouth and blink pictures are optional: without them the
-character simply does not move its mouth or blink.
+character simply does not move its mouth or blink. A scene with `hideCharacters: true` places no
+character picture, mouth or blink at all (its voices, subtitles and effects are unchanged), and
+ends a two-shot that the scene before it left on screen.
+
+### Movies, sub CGs, two-shots and fades
+
+- **Movies.** A direction line with `video` (a game's event or date movie) puts the file on V1
+  from the line's start for its own length, as the media reports it when opened, and its sound,
+  if any, on A3 (`sfxGainDb`). The line lasts that long (plus its `pauseAfter`; the end is on the
+  frame grid, so a movie whose length is not a whole number of frames loses the last part of a
+  frame). A file with no length of its own (a still picture) is shown for `directionSeconds`. A
+  missing or unreadable movie, or one longer than an hour, is skipped with a warning, and the line
+  lasts `directionSeconds` (or its `sfx`) as a direction without one would. When the movie has
+  sound, the line's `sfx` is not played (one sound at a time on A3), with a warning. A movie ends
+  the sub CG and the two-shot on screen; characters are never shown over it (a direction shows
+  none), and the music goes on under it.
+- **Sub CGs.** A line's `subCg` (an inset, such as a 272x247 picture over the scene) is placed on
+  the top track at its own pixel size (`scaleToFrame` off, Scale 100 %, or `subCgScale` for all of
+  them), centred in the frame or at `subCgAnchor` (`[0.25, 0.25]`: a quarter across, a quarter
+  down). It stays from that line until the next `subCg`, a `video` or the end of the scene;
+  `"subCg": ""` takes it away. It is above the mouth and blink tracks because those pictures are
+  whole sprites (the closed one with another mouth or eyes): under them, a speaking or blinking
+  character would cover the inset. A missing picture is a warning; the one before it still ends.
+- **Two-shots.** `slot: 1` puts the speaker at the left, `3` at the right (their centres at
+  `leftX` and `rightX` of the frame width, a quarter and three quarters by default, half way
+  down; Scale is as for the centre, `spriteScale`), `2` in the centre alone. Someone at the left
+  or right stays there, in the picture of their last line, while others speak and through
+  narration and directions, until someone else takes the place, they move to the other side, a
+  line puts a character in the centre, a movie plays, or the scene ends. A line without `slot`
+  stays where its speaker stands, else goes to the centre (and so ends a two-shot); a line whose
+  speaker has no picture (a narrator, a hero who is never shown) changes nothing. So giving the
+  one pictured character of a dialogue a side keeps them on screen through the other's lines. The open
+  mouth and the blinks go only with the one speaking, on that side's own tracks and at its place;
+  the listener keeps still.
+- **Fades.** A scene with `transition: "fade"` fades in from black over `transitionSeconds` (0.5),
+  from the scene's start: a Cross Dissolve from nothing onto the first clip of V1 (shortened to
+  that clip when it is shorter). The fade is part of `sceneGap`'s beat of background, so with the
+  default gap (0.6 s) no character appears before it ends; with a shorter gap the first character
+  shows over the fade. A scene with nothing on V1 at its start (no background, no movie) is
+  warned about and cuts. Scenes without `transition`, or with `"cut"`, cut as before.
 
 `anime.check {sequence?, path?, out?, maxSilenceSeconds=5, maxCharsPerSecond=20, captionChars=36,
 loudnessToleranceLu=6}` reports `ok`, `errors`, `warnings`, `stats` and `problems` (each with a
@@ -187,26 +242,33 @@ speaks what changed, and builds a fresh sequence beside the first.
 
 - **Pictures are not generated.** Backgrounds, sprites and their open-mouth and blink variants
   come from you; FilmCraft only places them.
-- **One character at a time.** The sprite track shows the speaker; a scene with two people on
-  screen needs a second sprite track by hand.
+- **Three places, two at once.** A character stands at the left, the centre or the right; the
+  centre shows one person alone, so three on screen at once is not possible. Who stands where is
+  only what the lines' `slot` says: a character who does not speak cannot be put on screen, and
+  a listener cannot change expression until they speak again.
 - **Mouth shapes follow the reading, not the sound.** The vowels are spread evenly over the
   open mouth (see above); nothing listens to which vowel is actually spoken.
-- **Sprites are static.** A sprite is placed as it is imported (`spriteScale` sets one scale for
-  all). Only the background moves, so the mouth and blink pictures always line up with the
+- **Sprites are static.** A sprite is placed as it is imported, centred or standing on the bottom
+  (`spriteScale` sets one scale for all). Only the background moves, so the mouth and blink pictures always line up with the
   character.
 - **Limits.** A single audio file longer than an hour is not used, a sequence stops at 100 hours,
   and a script at 400 000 lines; very long scripts also make the subtitle track slow to build
   (each caption re-sorts the track).
-- **No transitions or fades yet.** Scenes cut; add transitions on V1 by hand or with the
-  effects commands.
+- **One transition.** A scene cuts or fades in from black; there is no fade out, no cross
+  dissolve between two scenes and no transition between lines (add them on V1 by hand or with
+  the transition commands). The fade is on V1 only: what is above it (a character, a sub CG) is
+  not faded.
+- **Sprites and sub CGs do not move.** A sub CG appears and disappears with a cut; nothing slides
+  in.
 
 ## Tests
 
 - `crates/project/src/script.rs`: parsing and defaults, ids and speakers, size caps, the route
-  against prerequisites and story time, expression fallback.
+  against prerequisites and story time, expression fallback, the checks of `video`, `subCg`,
+  `slot` and `transition`.
 - `crates/audio-dsp/src/lipsync.rs`: silence and nonsense input, bursts at the right times, a
   click shorter than the minimum, three shapes, a wobbling level that must not flutter.
-- `crates/engine/src/anime_tests.rs`: the plan with files faked (timing on the frame grid, runs, blinks, mouth, music, subtitles, missing files), building with real files (tracks, clip counts, one undo step, nothing built from a bad script), the checks (gaps, overlaps, a quiet voice), the one-call run and its cache, and an export that is opened again and measured.
+- `crates/engine/src/anime_tests.rs`: the plan with files faked (timing on the frame grid, runs, blinks, mouth, music, subtitles, missing files; a movie's length and sound, a sub CG's time on screen, who stands where in a two-shot and when they blink, a blink waiting for the mouth to close and a sprite's own blink picture), building with real files (tracks, clip counts, one undo step, nothing built from a bad script; a movie cutting the background, its sound, the sub CG's place and size and that it is drawn on top, the two-shot's tracks and mouth positions, a fade that is rendered from black, sprites standing on the bottom with their mouths and blinks and a background filling the frame, checked in the rendered frame), the checks (gaps, overlaps, a quiet voice), the one-call run and its cache, and an export that is opened again and measured.
 - `crates/engine/src/script_tools_tests.rs`: validation and refusal, voice picking and writing,
   synthesizing only what is missing and only once (cache, edit, deleted file, force, language,
   corrupt manifest, a changed reference), lip sync for one file and for a whole script.

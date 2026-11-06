@@ -72,6 +72,10 @@ pub struct Sprite {
     /// `openImage` while that vowel is spoken. A vowel without one falls back to `openImage`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vowel_images: BTreeMap<String, String>,
+    /// The same picture with the eyes closed (for blinking). Without it the expression
+    /// `<name>_blink`, else one called `blink`, is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blink: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +121,23 @@ pub struct ScriptLine {
     /// Silence after the line, seconds (else the build's default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pause_after: Option<f64>,
+    /// A movie shown full screen for its own length (a direction line only): it covers the
+    /// background, and its sound plays with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<String>,
+    /// A picture shown over the characters at its own pixel size (an inset), from this line until
+    /// the next `subCg`, a `video` or the end of the scene. An empty string takes it away.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub_cg: Option<String>,
+    /// Where the centre of the `subCg` goes, as fractions of the frame (`[0.5, 0.5]`: the middle).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub_cg_anchor: Option<[f64; 2]>,
+    /// Where the speaker stands: 1 left, 2 centre (one person on screen), 3 right. A character
+    /// at the left or right stays there while others speak, until the scene ends, a `video`
+    /// plays, someone else takes the place or a line puts a character in the centre. Without it:
+    /// where the speaker already stands, else the centre.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u32>,
     /// Written by a tool to bridge scenes (not in the source story): a different voice or a
     /// rewrite may replace it freely.
     #[serde(skip_serializing_if = "is_false")]
@@ -152,7 +173,24 @@ pub struct Scene {
     pub background: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bgm: Option<String>,
+    /// How the scene begins: `"cut"` (the default) or `"fade"` (in from black).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition: Option<String>,
+    /// No character pictures in this scene (an event picture as the background, a flashback):
+    /// the voices and subtitles stay, sprites, mouths and blinks are not placed.
+    #[serde(skip_serializing_if = "is_false")]
+    pub hide_characters: bool,
     pub lines: Vec<ScriptLine>,
+}
+
+/// The scene transitions a build knows.
+pub const TRANSITIONS: [&str; 2] = ["cut", "fade"];
+
+impl Scene {
+    /// Whether the scene fades in (an unknown transition is a cut; `validate` reports it).
+    pub fn fades_in(&self) -> bool {
+        self.transition.as_deref().is_some_and(|t| t.trim().eq_ignore_ascii_case("fade"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -318,6 +356,11 @@ impl Script {
             {
                 warn(&mut out, sid, None, format!("pov `{p}` is not a character"));
             }
+            if let Some(t) = &sc.transition
+                && !TRANSITIONS.iter().any(|k| t.trim().eq_ignore_ascii_case(k))
+            {
+                err(&mut out, sid, None, format!("transition `{t}` is not one of {}", TRANSITIONS.join(", ")));
+            }
             for l in &sc.lines {
                 let lid = Some(l.id.as_str());
                 if l.id.is_empty() || l.id.chars().count() > MAX_ID_CHARS {
@@ -359,6 +402,23 @@ impl Script {
                     && !(p.is_finite() && (0.0..=MAX_PAUSE).contains(&p))
                 {
                     err(&mut out, sid, lid, format!("pauseAfter must be 0..{MAX_PAUSE} seconds"));
+                }
+                if let Some(s) = l.slot
+                    && !(1..=3).contains(&s)
+                {
+                    err(&mut out, sid, lid, format!("slot must be 1 (left), 2 (centre) or 3 (right), got {s}"));
+                }
+                if let Some(v) = &l.video {
+                    if v.trim().is_empty() {
+                        err(&mut out, sid, lid, "empty video".into());
+                    } else if l.kind != LineKind::Direction {
+                        warn(&mut out, sid, lid, "a video is only shown on a direction line; this one is ignored".into());
+                    }
+                }
+                if let Some(a) = l.sub_cg_anchor
+                    && !a.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+                {
+                    err(&mut out, sid, lid, "subCgAnchor must be two fractions of the frame, 0..1".into());
                 }
                 if l.is_spoken() && l.voice_file.is_none() {
                     let has_voice = l.speaker.as_deref().and_then(|s| self.characters.get(s)).is_some_and(|c| c.voice.is_some());
@@ -573,6 +633,37 @@ mod tests {
         let e = errors(&s);
         assert!(e.iter().any(|m| m.contains("reading longer")), "{e:?}");
         assert!(e.iter().any(|m| m.contains("instruct longer")), "{e:?}");
+    }
+
+    #[test]
+    fn movies_insets_places_and_transitions_are_checked() {
+        let s = Script::from_json(
+            r#"{"characters": {"m": {"name": "m"}}, "scenes": [{"id": "s", "transition": "fade", "lines": [
+                {"id": "v", "kind": "direction", "video": "mv/op.mp4"},
+                {"id": "c", "kind": "narration", "text": "x", "subCg": "cg/a.png", "subCgAnchor": [0.5, 0.25]},
+                {"id": "l", "speaker": "m", "text": "x", "slot": 1}]}]}"#,
+        )
+        .unwrap();
+        assert!(errors(&s).is_empty(), "{:?}", s.validate());
+        assert!(s.scenes[0].fades_in());
+        assert_eq!(s.scenes[0].lines[1].sub_cg_anchor, Some([0.5, 0.25]));
+        assert_eq!(Script::from_json(&s.to_json()).unwrap(), s);
+        let mut bad = s.clone();
+        bad.scenes[0].transition = Some("wipe".into());
+        bad.scenes[0].lines[2].slot = Some(4);
+        bad.scenes[0].lines[1].sub_cg_anchor = Some([f64::NAN, 2.0]);
+        bad.scenes[0].lines[0].video = Some(" ".into());
+        let e = errors(&bad);
+        for want in ["transition `wipe`", "slot must be", "subCgAnchor", "empty video"] {
+            assert!(e.iter().any(|m| m.contains(want)), "{want}: {e:?}");
+        }
+        assert!(!bad.scenes[0].fades_in());
+        // a video on a spoken line is a warning: it is not shown there
+        let mut w = s.clone();
+        w.scenes[0].lines[2].video = Some("mv/op.mp4".into());
+        assert!(w.validate().iter().any(|p| p.severity == Severity::Warning && p.message.contains("direction line")));
+        // a slot that does not fit the type is a parse error, not a crash
+        assert!(Script::from_json(r#"{"scenes": [{"id": "s", "lines": [{"id": "l", "kind": "narration", "text": "x", "slot": -1}]}]}"#).is_err());
     }
 
     #[test]

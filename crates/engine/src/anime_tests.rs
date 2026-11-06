@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 use crate::Session;
-use crate::anime::{Audio, Opts, PlanEnv, plan, split_caption};
+use crate::anime::{Audio, Movie, Opts, PlanEnv, plan, split_caption};
 use filmcraft_project::script::{Script, ScriptLine};
 use filmcraft_speech::FixedSynthesizer;
 use filmcraft_speech::synth::write_wav16;
@@ -68,6 +68,8 @@ fn run(s: &mut Session, cmd: &str, p: Value) -> Value {
 #[derive(Default)]
 struct Fake {
     audio: HashMap<String, f64>,
+    /// Movies: seconds (0 for a still) and whether they have sound.
+    movies: HashMap<String, (f64, bool)>,
     mouth: Vec<(f64, f64)>,
     missing: Vec<String>,
 }
@@ -86,6 +88,10 @@ impl PlanEnv for Fake {
     }
     fn image(&mut self, path: &Path) -> bool {
         !self.missing.iter().any(|m| path.to_str() == Some(m.as_str()))
+    }
+    fn movie(&mut self, path: &Path) -> Option<Movie> {
+        let (d, audio) = *self.movies.get(path.to_str()?)?;
+        Some(Movie { path: path.to_path_buf(), duration: Tick::from_seconds_f64(d), audio })
     }
     fn mouth(&mut self, _: &Audio) -> Vec<(f64, f64)> {
         self.mouth.clone()
@@ -905,4 +911,447 @@ fn a_line_of_closed_beats_keeps_the_mouth_shut_when_the_sprite_has_vowel_picture
     let r = run(&mut s, "anime.build", json!({"path": path, "out": dir.join("tts")}));
     assert_eq!(r["clips"]["mouths"], json!(0), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------------------------
+// movies, sub CGs, two-shots and fades
+
+fn snapped(rate: FrameRate, secs: f64) -> Tick {
+    rate.snap_nearest(Tick::from_seconds_f64(secs))
+}
+
+#[test]
+fn a_movie_lasts_its_own_length_and_its_sound_wins_over_the_effect() {
+    let rate = FrameRate::from_f64(24.0);
+    let s = Script::from_json(
+        r#"{"characters": {"m": {"name": "m", "expressions": {"normal": {"image": "m.png"}}}},
+        "scenes": [{"id": "s1", "background": "bg.png", "lines": [
+            {"id": "a1", "speaker": "m", "text": "待って。"},
+            {"id": "v1", "kind": "direction", "video": "op.mp4", "sfx": "door.wav"},
+            {"id": "a2", "speaker": "m", "text": "どうして？"},
+            {"id": "v2", "kind": "direction", "video": "gone.mp4"},
+            {"id": "v3", "kind": "direction", "video": "still.png"},
+            {"id": "v4", "kind": "direction", "video": "quiet.mp4", "sfx": "door.wav"},
+            {"id": "a3", "speaker": "m", "text": "ここ。", "video": "op.mp4"}]}]}"#,
+    )
+    .unwrap();
+    let mut f = fake();
+    f.audio.insert("a3".into(), 1.0);
+    f.movies.insert("op.mp4".into(), (3.1, true));
+    f.movies.insert("still.png".into(), (0.0, false));
+    f.movies.insert("quiet.mp4".into(), (2.0, false));
+    let pl = plan(&s, rate, &Opts::default(), &mut f);
+    let cue = |id: &str| pl.cues.iter().find(|c| c.line == id).unwrap();
+    let one = rate.frame_duration();
+    // the movie sets the line's length, on the frame grid, and the next line follows it
+    let v1 = cue("v1");
+    assert_eq!(v1.end - v1.start, snapped(rate, 3.1));
+    // 3.1 s is 74.4 frames: the line ends on the grid and the movie is cut there
+    assert_eq!(v1.video_len(one), v1.end - v1.start);
+    assert_eq!(cue("a2").start, v1.end);
+    assert!(v1.sprite.is_none() && v1.captions.is_empty());
+    // its own sound plays: the line's sound effect does not, and the build says so
+    assert!(v1.sfx.is_none());
+    assert!(pl.warnings.iter().any(|w| w.contains("v1") && w.contains("video's own sound")), "{:?}", pl.warnings);
+    // a missing movie: warned about, the direction lasts the default second
+    let v2 = cue("v2");
+    assert!(v2.video.is_none() && pl.warnings.iter().any(|w| w.contains("gone.mp4")));
+    assert_eq!(v2.end - v2.start, Tick::from_seconds_f64(1.0));
+    // a still has no length of its own: the default second, and shown all of it
+    let v3 = cue("v3");
+    assert!(v3.video.is_some());
+    assert_eq!((v3.end - v3.start, v3.video_len(one)), (Tick::from_seconds_f64(1.0), Tick::from_seconds_f64(1.0)));
+    // a silent movie keeps the effect
+    let v4 = cue("v4");
+    assert!(v4.sfx.is_some() && v4.video.is_some());
+    assert_eq!(v4.end - v4.start, Tick::from_seconds_f64(2.0));
+    // a movie on a spoken line is not shown (validate warns about it)
+    assert!(cue("a3").video.is_none());
+}
+
+#[test]
+fn a_scene_that_hides_characters_keeps_voices_and_subtitles_but_places_no_sprite() {
+    let script = Script::from_json(
+        r#"{"characters": {"m": {"name": "m", "expressions": {"normal": {"image": "m.png", "openImage": "mo.png"}, "normal_blink": {"image": "mb.png"}}}},
+        "scenes": [
+          {"id": "s1", "lines": [{"id": "a", "speaker": "m", "text": "待って。", "slot": 3}]},
+          {"id": "s2", "hideCharacters": true, "background": "cg.png", "lines": [
+            {"id": "b", "speaker": "m", "text": "あのときは。", "slot": 3},
+            {"id": "c", "speaker": "m", "text": "ね。"}]},
+          {"id": "s3", "lines": [{"id": "d", "speaker": "m", "text": "ほら。"}]}]}"#,
+    )
+    .unwrap();
+    assert!(script.scenes[1].hide_characters && !script.scenes[0].hide_characters);
+    let rate = FrameRate::from_f64(24.0);
+    let mut f = Fake::default();
+    for id in ["a", "b", "c", "d"] {
+        f.audio.insert(id.into(), 3.0);
+    }
+    f.mouth = vec![(0.2, 0.7)];
+    let pl = plan(&script, rate, &Opts::default(), &mut f);
+    let cue = |id: &str| pl.cues.iter().find(|c| c.line == id).unwrap();
+    // the right-hand character of s1 ends with s1; s2 has no one on screen; s3 shows m again
+    let runs: Vec<(&str, u8, Tick, Tick)> = pl.runs.iter().map(|r| (r.speaker.as_str(), r.slot, r.start, r.end)).collect();
+    assert_eq!(runs, vec![("m", 3, cue("a").start, pl.scenes[0].end), ("m", 2, cue("d").start, cue("d").end)]);
+    for id in ["b", "c"] {
+        let c = cue(id);
+        assert!(c.sprite.is_none() && c.mouth.is_empty(), "{id}");
+        assert!(c.voice.is_some() && !c.captions.is_empty(), "{id}");
+    }
+    assert!(!cue("a").mouth.is_empty() && !cue("d").mouth.is_empty());
+    // written back only when set
+    let json = serde_json::to_string(&script).unwrap();
+    assert_eq!(json.matches("hideCharacters").count(), 1, "{json}");
+}
+
+fn two_shot() -> Script {
+    Script::from_json(
+        r#"{"characters": {
+            "m": {"name": "m", "expressions": {"normal": {"image": "m.png", "openImage": "mo.png"}, "smile": {"image": "ms.png"}, "normal_blink": {"image": "mb.png"}}},
+            "k": {"name": "k", "expressions": {"normal": {"image": "k.png", "openImage": "ko.png"}}}},
+        "scenes": [
+          {"id": "s1", "lines": [
+            {"id": "l1", "speaker": "m", "text": "待って。", "slot": 1},
+            {"id": "l2", "speaker": "k", "text": "なに？", "slot": 3},
+            {"id": "l3", "speaker": "m", "text": "あのね。"},
+            {"id": "n1", "kind": "narration", "text": "風が吹いた。"},
+            {"id": "l4", "speaker": "k", "text": "ひとりで。", "slot": 2},
+            {"id": "l5", "speaker": "m", "text": "ねえ。", "slot": 3},
+            {"id": "l6", "speaker": "m", "text": "ほら。", "slot": 1, "expression": "smile"},
+            {"id": "l7", "speaker": "k", "text": "うん。", "slot": 1}]},
+          {"id": "s2", "lines": [
+            {"id": "l8", "speaker": "m", "text": "朝。", "slot": 1},
+            {"id": "d1", "kind": "direction"}]}]}"#,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_two_shot_keeps_the_listener_on_screen_and_moves_only_the_speakers_mouth() {
+    let rate = FrameRate::from_f64(24.0);
+    let mut f = Fake::default();
+    for id in ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"] {
+        f.audio.insert(id.into(), 4.0);
+    }
+    f.mouth = vec![(0.2, 0.7), (1.0, 1.4)];
+    let pl = plan(&two_shot(), rate, &Opts::default(), &mut f);
+    let cue = |id: &str| pl.cues.iter().find(|c| c.line == id).unwrap();
+    let slots: Vec<(&str, u8)> = pl.cues.iter().map(|c| (c.line.as_str(), c.slot)).collect();
+    // l3 asks for no place and stays where m stands; l4 in the centre ends the two-shot
+    assert_eq!(slots, vec![("l1", 1), ("l2", 3), ("l3", 1), ("n1", 2), ("l4", 2), ("l5", 3), ("l6", 1), ("l7", 1), ("l8", 1), ("d1", 2)]);
+    assert_eq!(pl.runs.len(), 7, "{:?}", pl.runs.iter().map(|r| (r.speaker.clone(), r.slot, r.start, r.end)).collect::<Vec<_>>());
+    // m stands at the left through k's line and the narration, until k takes the centre
+    let m1 = &pl.runs[0];
+    assert_eq!((m1.slot, m1.start, m1.end), (1, cue("l1").start, cue("n1").end));
+    assert_eq!(m1.speaking, vec![(cue("l1").start, cue("l1").end), (cue("l3").start, cue("l3").end)]);
+    let k1 = &pl.runs[1];
+    assert_eq!((k1.speaker.as_str(), k1.slot, k1.start, k1.end), ("k", 3, cue("l2").start, cue("n1").end));
+    assert_eq!(k1.speaking, vec![(cue("l2").start, cue("l2").end)]);
+    // the centre shows k alone
+    assert_eq!((pl.runs[2].slot, pl.runs[2].start, pl.runs[2].end), (2, cue("l4").start, cue("l4").end));
+    // m moves from the right to the left (one place at a time); a new expression is a new clip
+    assert_eq!((pl.runs[3].slot, pl.runs[3].end), (3, cue("l5").end));
+    assert_eq!((pl.runs[4].slot, pl.runs[4].start, pl.runs[4].end), (1, cue("l6").start, cue("l6").end));
+    assert_eq!(pl.runs[4].sprite.closed, PathBuf::from("ms.png"));
+    // k takes the left from m
+    assert_eq!((pl.runs[5].speaker.as_str(), pl.runs[5].slot, pl.runs[5].start), ("k", 1, cue("l7").start));
+    // a two-shot ends with its scene, through lines with no one on screen
+    let last = pl.runs.last().unwrap();
+    assert_eq!((last.slot, last.start, last.end), (1, cue("l8").start, pl.scenes[1].end));
+    assert_eq!(last.end, cue("d1").end);
+    // blinks only while the character speaks
+    assert!(!m1.blinks.is_empty());
+    for r in &pl.runs {
+        for (a, b) in &r.blinks {
+            assert!(r.speaking.iter().any(|(x, y)| a >= x && b <= y), "a blink outside speech: {a:?} {r:?}");
+        }
+    }
+    // the mouth moves with the speaker's line only
+    assert!(!cue("l2").mouth.is_empty());
+    for c in &pl.cues {
+        assert!(c.mouth.iter().all(|(a, b)| *a >= c.start && *b <= c.end));
+    }
+}
+
+#[test]
+fn a_sub_cg_stays_until_the_next_one_a_movie_or_the_end_of_the_scene() {
+    let rate = FrameRate::from_f64(24.0);
+    let s = Script::from_json(
+        r#"{"scenes": [
+          {"id": "s1", "lines": [
+            {"id": "c1", "kind": "narration", "text": "一。", "subCg": "cg1.png"},
+            {"id": "c2", "kind": "narration", "text": "二。"},
+            {"id": "c3", "kind": "narration", "text": "三。", "subCg": "cg2.png", "subCgAnchor": [0.25, 0.75]},
+            {"id": "c4", "kind": "narration", "text": "四。", "subCg": ""},
+            {"id": "c5", "kind": "narration", "text": "五。", "subCg": "cg3.png"},
+            {"id": "mv", "kind": "direction", "video": "op.mp4"},
+            {"id": "c6", "kind": "narration", "text": "六。", "subCg": "nope.png"}]},
+          {"id": "s2", "transition": "fade", "lines": [
+            {"id": "c7", "kind": "narration", "text": "七。", "subCg": "cg4.png", "subCgAnchor": [3, 0.5]}]}]}"#,
+    )
+    .unwrap();
+    let mut f = Fake::default();
+    f.movies.insert("op.mp4".into(), (2.0, false));
+    f.missing = vec!["nope.png".into()];
+    let pl = plan(&s, rate, &Opts::default(), &mut f);
+    let cue = |id: &str| pl.cues.iter().find(|c| c.line == id).unwrap();
+    let got: Vec<(&str, Tick, Tick, Option<(f64, f64)>)> = pl.sub_cgs.iter().map(|g| (g.path.to_str().unwrap(), g.start, g.end, g.anchor)).collect();
+    assert_eq!(
+        got,
+        vec![
+            ("cg1.png", cue("c1").start, cue("c3").start, None),
+            ("cg2.png", cue("c3").start, cue("c4").start, Some((0.25, 0.75))),
+            ("cg3.png", cue("c5").start, cue("mv").start, None),
+            // an anchor off the frame is the middle (validate reports it)
+            ("cg4.png", cue("c7").start, pl.scenes[1].end, None),
+        ]
+    );
+    assert!(pl.warnings.iter().any(|w| w.contains("nope.png")), "{:?}", pl.warnings);
+    // the scene's transition is carried to the plan
+    assert_eq!(pl.scenes.iter().map(|s| s.fade).collect::<Vec<_>>(), vec![false, true]);
+}
+
+/// The colour at pixel (x, y) of the active sequence at `t`: (r, g, b).
+fn pixel(s: &Session, t: Tick, x: usize, y: usize) -> (f32, f32, f32) {
+    let seq = s.state.active_sequence.unwrap();
+    let provider = s.media.provider(s.project.clone(), s.services.clone());
+    let img = filmcraft_render::render_sequence(&s.project, seq, t, filmcraft_render::RenderOptions { scale: 1.0, ..Default::default() }, &provider);
+    let i = (y * img.w + x) * 4;
+    (img.px[i], img.px[i + 1], img.px[i + 2])
+}
+
+fn motion(ti: &filmcraft_project::TrackItem, param: &str) -> filmcraft_project::Param {
+    ti.effects.iter().find(|e| e.effect == "motion").and_then(|e| e.params.get(param)).unwrap().clone()
+}
+
+fn pos(ti: &filmcraft_project::TrackItem) -> (f64, f64) {
+    let p = motion(ti, "position").value.as_vec2().unwrap();
+    (p.x, p.y)
+}
+
+#[test]
+fn the_build_places_a_movie_a_sub_cg_a_two_shot_and_a_fade() {
+    let dir = temp("eve");
+    for (f, c) in [
+        ("bg1.bmp", [10, 20, 200]),
+        ("bg2.bmp", [10, 200, 20]),
+        ("m.bmp", [200, 200, 200]),
+        ("mo.bmp", [220, 180, 180]),
+        ("mb.bmp", [150, 150, 150]),
+        ("k.bmp", [100, 100, 100]),
+        ("ko.bmp", [120, 90, 90]),
+    ] {
+        bmp(&dir.join(f), 32, 18, c);
+    }
+    bmp(&dir.join("cg.bmp"), 12, 10, [250, 10, 10]);
+    crate::media_test_util::make_movie(&dir.join("mv.mp4"), filmcraft_media::DemoScene::Aurora, 64, 36, 48);
+    for v in ["v1", "v2", "v3", "v4"] {
+        write_wav16(&dir.join(format!("{v}.wav")), &tone(&[(0.3, 0.0), (0.6, 0.5), (0.3, 0.0), (0.6, 0.5)]), RATE).unwrap();
+    }
+    let script = json!({
+        "characters": {
+            "m": {"name": "m", "expressions": {"normal": {"image": "m.bmp", "openImage": "mo.bmp"}, "blink": {"image": "mb.bmp"}}},
+            "k": {"name": "k", "expressions": {"normal": {"image": "k.bmp", "openImage": "ko.bmp"}}}},
+        "scenes": [
+          {"id": "s1", "background": "bg1.bmp", "transition": "fade", "lines": [
+            {"id": "a1", "speaker": "m", "text": "待って。", "voiceFile": "v1.wav", "slot": 1},
+            {"id": "a2", "speaker": "k", "text": "なに？", "voiceFile": "v2.wav", "slot": 3, "subCg": "cg.bmp", "subCgAnchor": [0.25, 0.25]},
+            {"id": "mv", "kind": "direction", "video": "mv.mp4"},
+            {"id": "a3", "speaker": "m", "text": "見た？", "voiceFile": "v3.wav"}]},
+          {"id": "s2", "background": "bg2.bmp", "lines": [
+            {"id": "a4", "speaker": "k", "text": "うん。", "voiceFile": "v4.wav"}]}]});
+    let path = dir.join("eve.fcscript.json");
+    std::fs::write(&path, script.to_string()).unwrap();
+    let mut s = session();
+    let n_items = s.project.items.len();
+    let r = run(&mut s, "anime.build", json!({"path": path, "out": dir.join("tts"), "width": 320, "height": 180, "fps": 24}));
+    let c = &r["clips"];
+    assert_eq!((c["videos"].clone(), c["videoSounds"].clone(), c["subCgs"].clone(), c["fades"].clone()), (json!(1), json!(1), json!(1), json!(1)), "{r}");
+    assert_eq!(c["backgrounds"], json!(3), "the first scene's background is cut around the movie: {r}");
+    let names: Vec<&str> = r["tracks"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert_eq!(names, vec!["Background", "Character", "Mouth", "Blink", "Left", "Left Mouth", "Left Blink", "Right", "Right Mouth", "Right Blink", "Sub CG"]);
+    let q = s.active_sequence().unwrap().clone();
+    let one = q.settings.frame_rate.frame_duration();
+    assert_eq!(q.video_tracks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), names);
+    let voices = &q.audio_tracks[0].items;
+    assert_eq!(voices.len(), 4);
+    let (a1, a2, a3) = (voices[0].start, voices[1].start, voices[2].start);
+
+    // V1: background, the movie for its own two seconds, background again, the next scene
+    let v1 = &q.video_tracks[0].items;
+    assert_eq!(v1.len(), 4);
+    assert!(v1.windows(2).all(|w| w[0].end() == w[1].start), "V1 has no holes");
+    let movie = &v1[1];
+    assert_eq!(s.project.item(movie.item).unwrap().name, "mv.mp4");
+    assert_eq!(movie.duration, Tick::from_seconds_f64(2.0));
+    assert_eq!(movie.end(), a3, "the next line follows the movie");
+    assert_eq!(v1[0].item, v1[2].item, "the same background before and after");
+    // the background goes on pushing in where it left off
+    let key = |ti: &filmcraft_project::TrackItem, k: usize| motion(ti, "scale").keyframes[k].value.as_f64().unwrap();
+    assert!(key(&v1[2], 0) > key(&v1[0], 0) && key(&v1[2], 0) >= key(&v1[0], 1) - 0.01);
+    // A3: the movie's sound with it
+    let a3_items = &q.audio_tracks[2].items;
+    assert_eq!(a3_items.len(), 1);
+    assert_eq!((a3_items[0].start, a3_items[0].duration, a3_items[0].item), (movie.start, movie.duration, movie.item));
+
+    // the fade: from nothing onto the first background, at the scene's start; the second cuts
+    let fades = &q.video_tracks[0].transitions;
+    assert_eq!(fades.len(), 1);
+    assert_eq!((fades[0].start, fades[0].duration, fades[0].from, fades[0].to), (Tick::ZERO, Tick(one.0 * 12), None, Some(v1[0].id)));
+    let black = pixel(&s, Tick::ZERO, 160, 90);
+    let half = pixel(&s, Tick(one.0 * 6), 160, 90);
+    let full = pixel(&s, Tick(one.0 * 13), 160, 90);
+    assert!(black.2 < 0.05, "starts black: {black:?}");
+    assert!(half.2 > black.2 + 0.1 && half.2 < full.2 - 0.1, "half way: {half:?} of {full:?}");
+
+    // the two-shot: m at the left through k's line, k at the right, until the movie
+    let left = &q.video_tracks[4].items;
+    let right = &q.video_tracks[7].items;
+    assert_eq!(left.len(), 1);
+    assert_eq!((left[0].start, left[0].end(), pos(&left[0])), (a1, movie.start, (80.0, 90.0)));
+    assert_eq!(right.len(), 1);
+    assert_eq!((right[0].start, right[0].end(), pos(&right[0])), (a2, movie.start, (240.0, 90.0)));
+    // each mouth on its speaker's side, at its place, inside its own line
+    let left_mouth = &q.video_tracks[5].items;
+    let right_mouth = &q.video_tracks[8].items;
+    assert!(!left_mouth.is_empty() && !right_mouth.is_empty());
+    assert!(left_mouth.iter().all(|m| m.start >= a1 && m.end() <= a2 && pos(m) == (80.0, 90.0)));
+    assert!(right_mouth.iter().all(|m| m.start >= a2 && m.end() <= movie.start && pos(m) == (240.0, 90.0)));
+    assert!(q.video_tracks[6].items.iter().all(|b| b.start >= a1 && b.end() <= a2), "m blinks only while speaking");
+    assert!(q.video_tracks[9].items.is_empty(), "k has no blink picture");
+    // after the movie m is alone in the centre, as imported
+    let center = &q.video_tracks[1].items;
+    assert_eq!(center.len(), 2);
+    assert_eq!((center[0].start, pos(&center[0])), (a3, (160.0, 90.0)));
+    assert!(q.video_tracks[2].items.iter().all(|m| m.start >= a3));
+
+    // the sub CG: from k's line to the movie, its own 12x10 pixels, centred at a quarter
+    let cg = &q.video_tracks[10].items;
+    assert_eq!(cg.len(), 1);
+    assert_eq!((cg[0].start, cg[0].end(), pos(&cg[0]), cg[0].scale_to_frame), (a2, movie.start, (80.0, 45.0), false));
+    assert_eq!(motion(&cg[0], "scale").value.as_f64(), Some(100.0));
+    let mid = a2 + Tick(one.0 * 2);
+    let inside = pixel(&s, mid, 80, 45);
+    let outside = pixel(&s, mid, 80 + 9, 45);
+    assert!(inside.0 > 0.8 && inside.2 < 0.2, "the sub CG is drawn on top: {inside:?}");
+    assert!(outside.0 < 0.8 || outside.2 > 0.2, "and is no larger than itself: {outside:?}");
+
+    // the check finds nothing wrong, and one undo takes it all back
+    let chk = run(&mut s, "anime.check", json!({"sequence": r["sequence"]}));
+    assert_eq!(chk["ok"], json!(true), "{chk}");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.project.items.len(), n_items);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_script_without_the_new_fields_builds_the_four_tracks_as_before() {
+    let pr = project("plain", "");
+    let mut s = session();
+    let r = run(&mut s, "anime.build", params(&pr));
+    assert_eq!(r["tracks"], json!(["Background", "Character", "Mouth", "Blink"]), "{r}");
+    let c = &r["clips"];
+    assert_eq!((c["videos"].clone(), c["subCgs"].clone(), c["fades"].clone()), (json!(0), json!(0), json!(0)));
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.video_tracks.len(), 4);
+    assert!(q.video_tracks[0].transitions.is_empty());
+    // a fade with nothing to fade onto is a warning, not a failure
+    let text = std::fs::read_to_string(&pr.path).unwrap().replace(r#"{"id": "s2", "background": "bg2.bmp","#, r#"{"id": "s2", "transition": "fade","#);
+    std::fs::write(&pr.path, text).unwrap();
+    let r = run(&mut s, "anime.build", params(&pr));
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("nothing on the background track")), "{r}");
+    assert_eq!(r["clips"]["fades"], json!(0));
+    // out-of-range layout options are refused
+    assert!(s.execute("anime.build", json!({"path": pr.path, "leftX": 2})).is_err());
+    assert!(s.execute("anime.build", json!({"path": pr.path, "transitionSeconds": 0})).is_err());
+    let _ = std::fs::remove_dir_all(&pr.dir);
+}
+
+#[test]
+fn a_blink_waits_for_the_mouth_to_close_and_a_sprite_can_carry_its_own_blink() {
+    let rate = FrameRate::from_f64(24.0);
+    let script = Script::from_json(
+        r#"{"characters": {"m": {"name": "m", "expressions": {
+            "normal": {"image": "m.png", "openImage": "mo.png", "blink": "mb.png"}}}},
+          "scenes": [{"id": "s1", "lines": [{"id": "a1", "speaker": "m", "text": "あいうえお"}]}]}"#,
+    )
+    .unwrap();
+    let mut f = Fake::default();
+    f.audio.insert("a1".into(), 12.0);
+    // the mouth is open nearly all the time: closed only at 3.0-3.5 s and 7.0-7.6 s
+    f.mouth = vec![(0.0, 3.0), (3.5, 7.0), (7.6, 12.0)];
+    let pl = plan(&script, rate, &Opts::default(), &mut f);
+    let r = &pl.runs[0];
+    assert_eq!(r.sprite.blink.as_deref(), Some(Path::new("mb.png")), "the sprite's own blink picture");
+    assert!(!r.blinks.is_empty(), "{r:?}");
+    let open = &pl.cues[0].mouth;
+    assert_eq!(open.len(), 3, "{open:?}");
+    for (a, b) in &r.blinks {
+        assert!(open.iter().all(|(x, y)| b <= x || a >= y), "blink {a:?}..{b:?} over an open mouth {open:?}");
+        assert_eq!(rate.snap_nearest(*a), *a);
+        assert!(*a >= r.start && *b <= r.end);
+    }
+    assert!(r.blinks.windows(2).all(|w| w[0].1 < w[1].0), "blinks apart");
+    // a sprite without mouth pictures has nothing to wait for: the blinks keep their times
+    let still = Script::from_json(
+        r#"{"characters": {"m": {"name": "m", "expressions": {"normal": {"image": "m.png", "blink": "mb.png"}}}},
+          "scenes": [{"id": "s1", "lines": [{"id": "a1", "speaker": "m", "text": "あいうえお"}]}]}"#,
+    )
+    .unwrap();
+    let mut f = Fake::default();
+    f.audio.insert("a1".into(), 12.0);
+    f.mouth = vec![(0.0, 12.0)];
+    let pl = plan(&still, rate, &Opts::default(), &mut f);
+    assert!(pl.cues[0].mouth.is_empty());
+    assert!(pl.runs[0].blinks.len() >= 2, "{:?}", pl.runs[0].blinks);
+    // an empty `blink` falls back to the expression called `blink`
+    let fallback = Script::from_json(
+        r#"{"characters": {"m": {"name": "m", "expressions": {"normal": {"image": "m.png", "blink": " "}, "blink": {"image": "b2.png"}}}},
+          "scenes": [{"id": "s1", "lines": [{"id": "a1", "speaker": "m", "text": "あ"}]}]}"#,
+    )
+    .unwrap();
+    let pl = plan(&fallback, rate, &Opts::default(), &mut fake());
+    assert_eq!(pl.runs[0].sprite.blink.as_deref(), Some(Path::new("b2.png")));
+}
+
+#[test]
+fn sprites_can_stand_on_the_bottom_and_backgrounds_can_fill_the_frame() {
+    let pr = project("align", "");
+    let mut s = session();
+    run(&mut s, "script.synthesize", params(&pr));
+    let mut p = params(&pr);
+    for (k, v) in [("width", json!(64)), ("height", json!(48)), ("spriteScale", json!(200)), ("spriteAlign", json!("bottom")), ("backgroundFit", json!("fill"))]
+    {
+        p[k] = v;
+    }
+    run(&mut s, "anime.build", p);
+    let q = s.active_sequence().unwrap().clone();
+    // the 32x18 background covers 64x48: the larger ratio, 48 / 18, then it pushes in from there
+    let bg = &q.video_tracks[0].items[0];
+    assert!(!bg.scale_to_frame);
+    let k0 = motion(bg, "scale").keyframes[0].value.as_f64().unwrap();
+    assert!((k0 - 48.0 / 18.0 * 100.0).abs() < 0.01, "{k0}");
+    // the sprite (32x18 at 200 %, so 64x36) stands on the bottom: its centre 18 px above it;
+    // its mouth and blink land exactly on it
+    assert!(!q.video_tracks[1].items.is_empty() && !q.video_tracks[2].items.is_empty() && !q.video_tracks[3].items.is_empty());
+    for t in 1..=3 {
+        for ti in &q.video_tracks[t].items {
+            assert_eq!(pos(ti), (32.0, 30.0), "track {t}");
+        }
+    }
+    // and in the frame: the bottom row is the sprite's grey, the top row the background's blue
+    let at = q.video_tracks[1].items[0].start;
+    let (r, g, b) = pixel(&s, at, 32, 47);
+    assert!((r - g).abs() < 0.05 && (g - b).abs() < 0.05 && r > 0.4, "{:?}", (r, g, b));
+    let (r, _, b) = pixel(&s, at, 32, 2);
+    assert!(b > r, "{:?}", (r, b));
+    // the defaults are as before: fitted, centred as imported
+    run(&mut s, "anime.build", json!({"path": pr.path, "out": pr.dir.join("tts"), "width": 64, "height": 48}));
+    let q = s.active_sequence().unwrap().clone();
+    assert!(q.video_tracks[0].items[0].scale_to_frame);
+    assert_eq!(pos(&q.video_tracks[1].items[0]), (32.0, 24.0));
+    // anything else is refused
+    assert!(s.execute("anime.build", json!({"path": pr.path, "spriteAlign": "top"})).is_err());
+    assert!(s.execute("anime.build", json!({"path": pr.path, "backgroundFit": 3})).is_err());
+    let _ = std::fs::remove_dir_all(&pr.dir);
 }

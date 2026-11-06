@@ -12,8 +12,11 @@
 //! lengths, pauses are converted once, every boundary is snapped to a frame so neighbouring clips
 //! abut.
 //!
-//! Tracks: V1 background, V2 the speaking character's sprite, V3 its open-mouth picture while the
-//! voice is loud, V4 its blink picture; A1 voices, A2 music, A3 sound effects; one subtitle track.
+//! Tracks: V1 background (and movies, which cover it for their length; a scene can fade in), V2
+//! the character in the centre, V3 its open-mouth picture while the voice is loud, V4 its blink
+//! picture; when a script uses them, the same three for the left and the right of a two-shot,
+//! then the sub CG (an inset) on top; A1 voices, A2 music, A3 sound effects and the movies' own
+//! sound; one subtitle track.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -23,9 +26,10 @@ use serde_json::{Value, json};
 use filmcraft_audio_dsp::lipsync as lip;
 use filmcraft_audio_dsp::vowels;
 use filmcraft_edit as edit;
+use filmcraft_geom::Vec2;
 use filmcraft_project::keyframe::{Keyframe, ParamValue};
 use filmcraft_project::script::{LineKind, Script, ScriptLine, Severity};
-use filmcraft_project::{ItemId, ItemKind, Project, TrackItem, TrackKind};
+use filmcraft_project::{EffectKind, ItemId, ItemKind, Project, TrackItem, TrackKind, Transition, TransitionAlign, TransitionId};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, str_p, u64_p};
@@ -42,6 +46,8 @@ const MAX_SECONDS: f64 = 360_000.0;
 const MAX_AUDIO_SECONDS: f64 = lip::MAX_SECONDS;
 /// Most repeats of music over a stretch (the number of clips, not a time).
 const MAX_MUSIC_CLIPS: usize = 20_000;
+/// Longest movie used, seconds: a file whose header claims more is treated as unusable.
+const MAX_VIDEO_SECONDS: f64 = 3600.0;
 
 // ---------------------------------------------------------------------------------------------
 // Options
@@ -74,6 +80,20 @@ pub struct Opts {
     pub level_voices: bool,
     /// The loudness voices are brought to, LUFS (None: the median voice).
     pub voice_lufs: Option<f64>,
+    /// Length of a scene's fade in, seconds.
+    pub transition_seconds: f64,
+    /// Where the centres of the left and right characters of a two-shot stand, as fractions of
+    /// the frame width.
+    pub left_x: f64,
+    pub right_x: f64,
+    /// Scale of sub CGs in percent (100: their own pixel size).
+    pub sub_cg_scale: f64,
+    /// `spriteAlign: "bottom"`: a character's picture stands on the bottom of the frame (as on
+    /// a game screen) instead of being centred.
+    pub sprite_bottom: bool,
+    /// `backgroundFit: "fill"`: a background (and a movie) covers the whole frame, cut at the
+    /// edges where its shape differs, instead of being fitted inside it.
+    pub fill_background: bool,
 }
 
 impl Default for Opts {
@@ -95,6 +115,12 @@ impl Default for Opts {
             fit_background: true,
             level_voices: true,
             voice_lufs: None,
+            transition_seconds: 0.5,
+            left_x: 0.25,
+            right_x: 0.75,
+            sub_cg_scale: 100.0,
+            sprite_bottom: false,
+            fill_background: false,
         }
     }
 }
@@ -138,6 +164,26 @@ impl Opts {
             o.level_voices = b;
         }
         o.voice_lufs = num(p, "voiceLufs", -60.0, 0.0, cmd)?.or(o.voice_lufs);
+        o.transition_seconds = num(p, "transitionSeconds", 0.05, 10.0, cmd)?.unwrap_or(o.transition_seconds);
+        o.left_x = num(p, "leftX", 0.0, 1.0, cmd)?.unwrap_or(o.left_x);
+        o.right_x = num(p, "rightX", 0.0, 1.0, cmd)?.unwrap_or(o.right_x);
+        o.sub_cg_scale = num(p, "subCgScale", 1.0, 1000.0, cmd)?.unwrap_or(o.sub_cg_scale);
+        match p.get("spriteAlign") {
+            None | Some(Value::Null) => {}
+            Some(v) => match v.as_str().map(str::trim) {
+                Some("center") | Some("centre") => o.sprite_bottom = false,
+                Some("bottom") => o.sprite_bottom = true,
+                _ => return Err(bad(cmd, format!("`spriteAlign` must be \"center\" or \"bottom\", got {v}"))),
+            },
+        }
+        match p.get("backgroundFit") {
+            None | Some(Value::Null) => {}
+            Some(v) => match v.as_str().map(str::trim) {
+                Some("fit") => o.fill_background = false,
+                Some("fill") => o.fill_background = true,
+                _ => return Err(bad(cmd, format!("`backgroundFit` must be \"fit\" or \"fill\", got {v}"))),
+            },
+        }
         if bool_p(p, "kenBurns") == Some(false) {
             o.push = 0.0;
         }
@@ -155,6 +201,15 @@ impl Opts {
 pub struct Audio {
     pub path: PathBuf,
     pub duration: Tick,
+}
+
+/// A movie file: its length (zero when it has none, such as a still picture) and whether it has
+/// sound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Movie {
+    pub path: PathBuf,
+    pub duration: Tick,
+    pub audio: bool,
 }
 
 /// The pictures of a character in one expression.
@@ -187,6 +242,21 @@ pub struct Cue {
     pub shapes: Vec<(Tick, Tick, Option<char>)>,
     /// The line has no audio yet; its length is an estimate.
     pub estimated: bool,
+    /// Where the speaker stands: 1 left, 2 centre, 3 right.
+    pub slot: u8,
+    /// A movie shown for the line (a direction), on V1 from the line's start.
+    pub video: Option<Movie>,
+}
+
+impl Cue {
+    /// How long the line's movie is shown: its own length, else the whole line.
+    pub fn video_len(&self, one: Tick) -> Tick {
+        let span = (self.end - self.start).max(one);
+        match &self.video {
+            Some(m) if m.duration > Tick::ZERO => m.duration.min(span).max(one),
+            _ => span,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,17 +265,35 @@ pub struct ScenePlan {
     pub start: Tick,
     pub end: Tick,
     pub background: Option<PathBuf>,
+    /// The scene fades in from black.
+    pub fade: bool,
 }
 
-/// A character on screen for a stretch (consecutive lines in the same picture are one run).
+/// A character on screen for a stretch (consecutive lines in the same picture are one run; at
+/// the left or right of a two-shot, the run goes on while others speak).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpriteRun {
     pub speaker: String,
     pub scene: usize,
+    /// 1 left, 2 centre, 3 right.
+    pub slot: u8,
     pub start: Tick,
     pub end: Tick,
     pub sprite: SpriteRef,
+    /// The stretches in which the character speaks (apart, in order); blinks fall inside them.
+    pub speaking: Vec<(Tick, Tick)>,
     pub blinks: Vec<(Tick, Tick)>,
+}
+
+/// An inset picture over the characters, at its own pixel size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubCg {
+    pub path: PathBuf,
+    pub scene: usize,
+    pub start: Tick,
+    pub end: Tick,
+    /// Where its centre goes, fractions of the frame (None: the middle).
+    pub anchor: Option<(f64, f64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -215,11 +303,12 @@ pub struct BgmRun {
     pub end: Tick,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
     pub scenes: Vec<ScenePlan>,
     pub cues: Vec<Cue>,
     pub runs: Vec<SpriteRun>,
+    pub sub_cgs: Vec<SubCg>,
     pub bgm: Vec<BgmRun>,
     pub end: Tick,
     pub warnings: Vec<String>,
@@ -233,6 +322,8 @@ pub trait PlanEnv {
     /// A sound effect or music file.
     fn audio_file(&mut self, path: &Path) -> Option<Audio>;
     fn image(&mut self, path: &Path) -> bool;
+    /// A movie file (None: missing, not a picture or longer than an hour).
+    fn movie(&mut self, path: &Path) -> Option<Movie>;
     /// Stretches (start, end seconds in the file) where the mouth is open.
     fn mouth(&mut self, audio: &Audio) -> Vec<(f64, f64)>;
 }
@@ -354,7 +445,11 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
     let mut pl = Plan::default();
     let mut t = Tick::ZERO;
     let mut clips = 0usize;
+    // the slot each line asks for, beside `pl.cues` (resolved with the characters on screen below)
+    let mut asked: Vec<Option<u32>> = Vec::new();
     for (si, scene) in script.scenes_in_route().into_iter().enumerate() {
+        // the sub CG on screen (the last of `pl.sub_cgs` while it lasts)
+        let mut cg_open = false;
         let start = t;
         t = snap(add(t, secs(o.scene_gap)));
         let background = scene.background.as_deref().map(|b| env.resolve(b)).and_then(|p| {
@@ -386,14 +481,33 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
             let cue_start = t;
             let spoken = line.is_spoken();
             let voice = if spoken { env.voice(line) } else { None };
-            let sfx = line.sfx.as_deref().and_then(|f| {
-                let p = env.resolve(f);
-                let a = env.audio_file(&p);
-                if a.is_none() {
-                    pl.warnings.push(format!("line {}: sound effect {} is missing, has no audio or is longer than an hour", line.id, p.display()));
+            let video = match line.video.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                Some(f) if line.kind == LineKind::Direction => {
+                    let p = env.resolve(f);
+                    let m = env.movie(&p);
+                    if m.is_none() {
+                        pl.warnings.push(format!("line {}: video {} is missing, is not a picture or is longer than an hour", line.id, p.display()));
+                    }
+                    m
                 }
-                a
-            });
+                _ => None,
+            };
+            let sfx = match line.sfx.as_deref() {
+                // one sound at a time on the effects track: the movie's own wins
+                Some(f) if video.as_ref().is_some_and(|m| m.audio) => {
+                    pl.warnings.push(format!("line {}: sound effect {f} is not played over the video's own sound", line.id));
+                    None
+                }
+                Some(f) => {
+                    let p = env.resolve(f);
+                    let a = env.audio_file(&p);
+                    if a.is_none() {
+                        pl.warnings.push(format!("line {}: sound effect {} is missing, has no audio or is longer than an hour", line.id, p.display()));
+                    }
+                    a
+                }
+                None => None,
+            };
             let mut estimated = false;
             let speech = if spoken {
                 match &voice {
@@ -405,6 +519,9 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
                         secs(chars / o.cps).max(secs(0.8))
                     }
                 }
+            } else if let Some(m) = &video {
+                // a movie lasts as long as itself; one with no length (a still) the direction time
+                if m.duration > Tick::ZERO { m.duration } else { secs(o.direction) }
             } else {
                 sfx.as_ref().map(|a| a.duration).unwrap_or_else(|| secs(o.direction))
             };
@@ -415,7 +532,7 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
             };
             let end = snap(add(add(cue_start, speech), pause)).max(add(cue_start, one));
             // the sprite
-            let sprite = if line.kind == LineKind::Direction {
+            let sprite = if line.kind == LineKind::Direction || scene.hide_characters {
                 None
             } else {
                 script.expression_of(line).and_then(|(name, sp)| {
@@ -431,12 +548,19 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
                         }
                         ok
                     });
-                    let blink = line
-                        .speaker
+                    // the sprite's own `blink`, else the expression `<name>_blink`, else `blink`
+                    let blink = sp
+                        .blink
                         .as_deref()
-                        .and_then(|s| script.characters.get(s))
-                        .and_then(|c| c.expressions.get(&format!("{name}_blink")).or_else(|| c.expressions.get("blink")))
-                        .map(|b| env.resolve(&b.image))
+                        .filter(|b| !b.trim().is_empty())
+                        .or_else(|| {
+                            line.speaker
+                                .as_deref()
+                                .and_then(|s| script.characters.get(s))
+                                .and_then(|c| c.expressions.get(&format!("{name}_blink")).or_else(|| c.expressions.get("blink")))
+                                .map(|b| b.image.as_str())
+                        })
+                        .map(|b| env.resolve(b))
                         .filter(|p| {
                             let ok = env.image(p);
                             if !ok {
@@ -500,6 +624,20 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
                 let tail = secs(0.2).min(pause);
                 captions = spread(&pieces, cue_start, snap(cue_start + speech + tail).min(end).max(cue_start + one), rate);
             }
+            // the sub CG: a movie or a new one ends the last; an empty one only ends it
+            if (video.is_some() || line.sub_cg.is_some()) && std::mem::take(&mut cg_open) {
+                end_sub_cg(&mut pl.sub_cgs, cue_start);
+            }
+            if let Some(f) = line.sub_cg.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+                let p = env.resolve(f);
+                if env.image(&p) {
+                    let anchor = line.sub_cg_anchor.filter(|a| a.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))).map(|[x, y]| (x, y));
+                    pl.sub_cgs.push(SubCg { path: p, scene: si, start: cue_start, end: cue_start, anchor });
+                    cg_open = true;
+                } else {
+                    pl.warnings.push(format!("line {}: sub CG {} is missing", line.id, p.display()));
+                }
+            }
             pl.cues.push(Cue {
                 line: line.id.clone(),
                 scene: si,
@@ -513,7 +651,10 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
                 mouth,
                 shapes,
                 estimated,
+                slot: 2,
+                video,
             });
+            asked.push(line.slot);
             t = end;
         }
         // a scene lasts at least a frame, or its background would sit on the next one's
@@ -526,34 +667,172 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
                 _ => pl.bgm.push(BgmRun { audio: a, start, end: t }),
             }
         }
-        pl.scenes.push(ScenePlan { id: scene.id.clone(), start, end: t, background });
+        if cg_open {
+            end_sub_cg(&mut pl.sub_cgs, t);
+        }
+        pl.scenes.push(ScenePlan { id: scene.id.clone(), start, end: t, background, fade: scene.fades_in() });
         if clips > MAX_CLIPS {
             break;
         }
     }
     pl.end = t;
-    // characters on screen: consecutive lines in the same picture are one clip
-    for c in &pl.cues {
-        let (Some(sp), Some(who)) = (&c.sprite, &c.speaker) else { continue };
-        match pl.runs.last_mut() {
-            Some(r) if &r.speaker == who && r.scene == c.scene && r.sprite.closed == sp.closed && r.end == c.start => r.end = c.end,
-            _ => pl.runs.push(SpriteRun { speaker: who.clone(), scene: c.scene, start: c.start, end: c.end, sprite: sp.clone(), blinks: Vec::new() }),
-        }
-    }
+    place_characters(&mut pl, &asked);
     if o.blink {
         let blink_len = secs(0.12).max(Tick(one.0.saturating_mul(3)));
+        let cues = &pl.cues;
         for r in &mut pl.runs {
             let Some(_) = r.sprite.blink else { continue };
-            let mut seed = (r.start.0 as u64) ^ 0x9e37_79b9_7f4a_7c15;
-            let mut at = r.start + secs(1.2 + jitter(&mut seed));
-            while at + blink_len + secs(0.2) < r.end {
-                let a = snap(at);
-                r.blinks.push((a, a + blink_len));
-                at = a + blink_len + secs(2.6 + 1.8 * jitter(&mut seed));
+            // The blink picture is a whole sprite with the mouth closed, laid over the mouth: a
+            // blink while the mouth is open would shut it mid-word. So a blink waits for the
+            // mouth to close (people blink at the pauses anyway). The open stretches of this
+            // character at this place, in time order and apart.
+            let open: Vec<(Tick, Tick)> = cues
+                .iter()
+                .filter(|c| c.slot == r.slot && c.speaker.as_deref() == Some(r.speaker.as_str()) && c.end > r.start && c.start < r.end)
+                .flat_map(|c| c.mouth.iter().copied())
+                .collect();
+            // only while the character speaks (a listener in a two-shot keeps still)
+            for &(from, to) in &r.speaking {
+                let mut seed = (from.0 as u64) ^ 0x9e37_79b9_7f4a_7c15;
+                let mut at = from + secs(1.2 + jitter(&mut seed));
+                while at + blink_len + secs(0.2) < to {
+                    let mut a = snap(at);
+                    for &(m0, m1) in &open {
+                        if m1 <= a {
+                            continue;
+                        }
+                        if m0 >= a + blink_len {
+                            break;
+                        }
+                        a = snap(m1);
+                        if a < m1 {
+                            a += one;
+                        }
+                    }
+                    if a + blink_len + secs(0.2) >= to {
+                        break;
+                    }
+                    r.blinks.push((a, a + blink_len));
+                    at = a + blink_len + secs(2.6 + 1.8 * jitter(&mut seed));
+                }
             }
         }
     }
     pl
+}
+
+/// The sub CG on screen (the last one) ends at `at`; one that would last no time is dropped.
+fn end_sub_cg(cgs: &mut Vec<SubCg>, at: Tick) {
+    if let Some(g) = cgs.last_mut() {
+        g.end = at.max(g.start);
+        if g.end <= g.start {
+            cgs.pop();
+        }
+    }
+}
+
+/// A run's speaking stretches grow by `[a, b)`, joining the last one when they meet.
+fn speak(r: &mut SpriteRun, a: Tick, b: Tick) {
+    match r.speaking.last_mut() {
+        Some(l) if l.1 == a => l.1 = b,
+        _ => r.speaking.push((a, b)),
+    }
+}
+
+/// Who is on screen where. A line in the centre (slot 2) shows its speaker alone; consecutive
+/// lines in the same picture are one clip. A line at the left or right (1, 3) puts its speaker
+/// there, and they stay, in the picture of their last line, while others speak, until someone
+/// else takes the place, a line in the centre, a movie or the end of the scene. A line that asks
+/// for no slot stays where its speaker stands, else goes to the centre. Sets each cue's slot.
+fn place_characters(pl: &mut Plan, asked: &[Option<u32>]) {
+    let mut side: [Option<usize>; 2] = [None, None];
+    let mut center: Option<usize> = None;
+    let mut scene: Option<usize> = None;
+    for ci in 0..pl.cues.len() {
+        let Some(c) = pl.cues.get(ci) else { break };
+        let (c_scene, c_start, c_end, movie) = (c.scene, c.start, c.end, c.video.is_some());
+        let who_sprite = c.speaker.clone().zip(c.sprite.clone());
+        if scene != Some(c_scene) {
+            // the last scene's two-shot lasts to its end
+            hold_sides(pl, &side, scene);
+            side = [None, None];
+            center = None;
+            scene = Some(c_scene);
+        }
+        if movie {
+            side = [None, None];
+            center = None;
+        }
+        let mut slot = 2u8;
+        if let Some((who, sp)) = who_sprite {
+            let on = |side: &[Option<usize>; 2], runs: &[SpriteRun], k: usize| side[k].and_then(|i| runs.get(i)).is_some_and(|r| r.speaker == who);
+            slot = match asked.get(ci).copied().flatten() {
+                Some(1) => 1,
+                Some(3) => 3,
+                Some(_) => 2,
+                None if on(&side, &pl.runs, 0) => 1,
+                None if on(&side, &pl.runs, 1) => 3,
+                None => 2,
+            };
+            let new_run = |slot: u8| SpriteRun {
+                speaker: who.clone(),
+                scene: c_scene,
+                slot,
+                start: c_start,
+                end: c_end,
+                sprite: sp.clone(),
+                speaking: vec![(c_start, c_end)],
+                blinks: Vec::new(),
+            };
+            if slot == 2 {
+                side = [None, None];
+                match center.and_then(|i| pl.runs.get_mut(i)) {
+                    Some(r) if r.speaker == who && r.sprite.closed == sp.closed && r.end == c_start => {
+                        r.end = c_end;
+                        speak(r, c_start, c_end);
+                    }
+                    _ => {
+                        pl.runs.push(new_run(2));
+                        center = Some(pl.runs.len() - 1);
+                    }
+                }
+            } else {
+                center = None;
+                let k = usize::from(slot == 3);
+                let other = 1 - k;
+                if on(&side, &pl.runs, other) {
+                    side[other] = None;
+                }
+                match side[k].and_then(|i| pl.runs.get_mut(i)) {
+                    Some(r) if r.speaker == who && r.sprite.closed == sp.closed => speak(r, c_start, c_end),
+                    _ => {
+                        pl.runs.push(new_run(slot));
+                        side[k] = Some(pl.runs.len() - 1);
+                    }
+                }
+            }
+        }
+        // whoever stands at the sides stays through this line
+        for i in side.iter().flatten() {
+            if let Some(r) = pl.runs.get_mut(*i) {
+                r.end = r.end.max(c_end);
+            }
+        }
+        if let Some(c) = pl.cues.get_mut(ci) {
+            c.slot = slot;
+        }
+    }
+    hold_sides(pl, &side, scene);
+}
+
+/// The characters still at the sides when scene `scene` ends stay to its end.
+fn hold_sides(pl: &mut Plan, side: &[Option<usize>; 2], scene: Option<usize>) {
+    let Some(end) = scene.and_then(|s| pl.scenes.get(s)).map(|s| s.end) else { return };
+    for i in side.iter().flatten() {
+        if let Some(r) = pl.runs.get_mut(*i) {
+            r.end = r.end.max(end);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -566,6 +845,7 @@ struct SessionEnv<'a> {
     manifest: crate::script_tools::Manifest,
     lip: lip::Options,
     lengths: HashMap<PathBuf, Option<Tick>>,
+    movies: HashMap<PathBuf, Option<Movie>>,
     mouths: HashMap<PathBuf, Vec<(f64, f64)>>,
 }
 
@@ -592,6 +872,21 @@ impl PlanEnv for SessionEnv<'_> {
     fn image(&mut self, path: &Path) -> bool {
         path.is_file()
     }
+    fn movie(&mut self, path: &Path) -> Option<Movie> {
+        let s = self.s;
+        self.movies
+            .entry(path.to_path_buf())
+            .or_insert_with(|| {
+                let src = s.media.open_file(&path.to_string_lossy(), &*s.services).ok()?;
+                let info = src.info();
+                info.video.as_ref()?;
+                // a still has no length of its own: it is shown for the direction time
+                let still = matches!(info.kind, filmcraft_media::MediaKind::Still);
+                let duration = if still { Tick::ZERO } else { info.duration.max(Tick::ZERO) };
+                (duration.seconds() <= MAX_VIDEO_SECONDS).then(|| Movie { path: path.to_path_buf(), duration, audio: !still && info.has_audio() })
+            })
+            .clone()
+    }
     fn mouth(&mut self, audio: &Audio) -> Vec<(f64, f64)> {
         if let Some(m) = self.mouths.get(&audio.path) {
             return m.clone();
@@ -606,7 +901,7 @@ impl PlanEnv for SessionEnv<'_> {
 
 fn session_env<'a>(s: &'a Session, l: &'a Loaded, out: PathBuf) -> SessionEnv<'a> {
     let manifest = read_manifest(&out);
-    SessionEnv { s, l, out, manifest, lip: lip::Options::default(), lengths: HashMap::new(), mouths: HashMap::new() }
+    SessionEnv { s, l, out, manifest, lip: lip::Options::default(), lengths: HashMap::new(), movies: HashMap::new(), mouths: HashMap::new() }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -639,15 +934,141 @@ fn set_scale(ti: &mut TrackItem, percent: f64) {
     }
 }
 
-/// The background pushes in slowly: Scale from its value to `push` percent more.
-fn push_in(ti: &mut TrackItem, push: f64, one: Tick) {
+/// The background pushes in slowly: Scale from its value to `push` percent more over the scene.
+/// A background cut in pieces by movies covers `from..to` (fractions of the scene) of the push,
+/// so the pieces carry on from each other.
+fn push_in(ti: &mut TrackItem, push: f64, one: Tick, from: f64, to: f64) {
     let dur = ti.duration;
     if push <= 0.0 || dur <= Tick(one.0.saturating_mul(2)) {
         return;
     }
     let Some(p) = motion_scale(ti) else { return };
     let base = p.value.as_f64().unwrap_or(100.0);
-    p.keyframes = vec![Keyframe::new(Tick::ZERO, ParamValue::Float(base)), Keyframe::new(dur - one, ParamValue::Float(base * (1.0 + push / 100.0)))];
+    let at = |f: f64| ParamValue::Float(base * (1.0 + push / 100.0 * f.clamp(0.0, 1.0)));
+    p.keyframes = vec![Keyframe::new(Tick::ZERO, at(from)), Keyframe::new(dur - one, at(to))];
+}
+
+/// Where in the scene `t` is, 0..1.
+fn fraction(t: Tick, start: Tick, end: Tick) -> f64 {
+    let span = (end - start).0;
+    if span <= 0 { 0.0 } else { ((t - start).0 as f64 / span as f64).clamp(0.0, 1.0) }
+}
+
+/// Put the clip's centre at `(x, y)` pixels of the frame.
+fn set_position(ti: &mut TrackItem, x: f64, y: f64) {
+    if let Some(p) = ti.effects.iter_mut().find(|e| e.effect == "motion").and_then(|e| e.params.get_mut("position")) {
+        p.value = ParamValue::Vec2(Vec2 { x, y });
+    }
+}
+
+/// The video tracks of a build: V1-V4 always, then the left and right of a two-shot (a
+/// character, its mouth and its blink each) and the sub CG on top, only when the plan has them.
+struct Layout {
+    left: Option<usize>,
+    right: Option<usize>,
+    sub_cg: Option<usize>,
+    names: Vec<&'static str>,
+}
+
+impl Layout {
+    fn of(pl: &Plan) -> Layout {
+        let mut names = vec!["Background", "Character", "Mouth", "Blink"];
+        let mut group = |used: bool, n: [&'static str; 3]| {
+            used.then(|| {
+                let at = names.len();
+                names.extend(n);
+                at
+            })
+        };
+        let left = group(pl.runs.iter().any(|r| r.slot == 1), ["Left", "Left Mouth", "Left Blink"]);
+        let right = group(pl.runs.iter().any(|r| r.slot == 3), ["Right", "Right Mouth", "Right Blink"]);
+        let sub_cg = (!pl.sub_cgs.is_empty()).then(|| {
+            names.push("Sub CG");
+            names.len() - 1
+        });
+        Layout { left, right, sub_cg, names }
+    }
+    /// The (character, mouth, blink) tracks of a slot; the centre's when the slot has none.
+    fn group(&self, slot: u8) -> usize {
+        match slot {
+            1 => self.left.unwrap_or(1),
+            3 => self.right.unwrap_or(1),
+            _ => 1,
+        }
+    }
+}
+
+/// The centre of a character at `slot`, pixels (None: the middle of the frame, as imported).
+fn slot_position(o: &Opts, slot: u8) -> Option<(f64, f64)> {
+    let x = match slot {
+        1 => o.left_x,
+        3 => o.right_x,
+        _ => return None,
+    };
+    Some((o.width as f64 * x, o.height as f64 / 2.0))
+}
+
+/// The pixel size of an imported picture or movie (None: unknown or empty).
+fn media_size(p: &Project, item: ItemId) -> Option<(u32, u32)> {
+    match &p.item(item)?.kind {
+        ItemKind::Media(m) => m.info.video.as_ref().map(|v| (v.width, v.height)).filter(|(w, h)| *w > 0 && *h > 0),
+        _ => None,
+    }
+}
+
+/// Scale a background or movie to the frame: fitted inside it (`scale_to_frame`, the
+/// default), or with `backgroundFit: "fill"` covering it (Scale set to the larger ratio).
+fn fit_to_frame(ti: &mut TrackItem, o: &Opts, size: Option<(u32, u32)>) {
+    match size.filter(|_| o.fill_background) {
+        Some((w, h)) => {
+            ti.scale_to_frame = false;
+            let fill = (o.width as f64 / w as f64).max(o.height as f64 / h as f64) * 100.0;
+            if fill.is_finite() && fill > 0.0 {
+                set_scale(ti, fill);
+            }
+        }
+        None => ti.scale_to_frame = true,
+    }
+}
+
+/// A character's picture (or its mouth or blink, which must land on it exactly): the sprite
+/// scale, the slot's place, and with `spriteAlign: "bottom"` its bottom edge on the frame's.
+fn place_sprite(ti: &mut TrackItem, o: &Opts, slot: u8, size: Option<(u32, u32)>) {
+    if let Some(sc) = o.sprite_scale {
+        set_scale(ti, sc);
+    }
+    let at = slot_position(o, slot);
+    let bottom = size.filter(|_| o.sprite_bottom).map(|(w, h)| {
+        let mut k = motion_scale(ti).and_then(|p| p.value.as_f64()).unwrap_or(100.0) / 100.0;
+        if ti.scale_to_frame {
+            k *= (o.width as f64 / w as f64).min(o.height as f64 / h as f64);
+        }
+        o.height as f64 - h as f64 * k / 2.0
+    });
+    let (x, y) = match (at, bottom) {
+        (None, None) => return,
+        (Some((x, y)), None) => (x, y),
+        (at, Some(y)) => (at.map_or(o.width as f64 / 2.0, |(x, _)| x), y),
+    };
+    if x.is_finite() && y.is_finite() {
+        set_position(ti, x, y);
+    }
+}
+
+/// What a build placed, by kind.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counts {
+    backgrounds: usize,
+    videos: usize,
+    characters: usize,
+    mouths: usize,
+    blinks: usize,
+    sub_cgs: usize,
+    voices: usize,
+    music: usize,
+    effects: usize,
+    video_sounds: usize,
+    fades: usize,
 }
 
 /// Every file the plan puts on the timeline, once each, in order of first use.
@@ -665,6 +1086,9 @@ fn plan_files(pl: &Plan) -> Vec<PathBuf> {
         }
     }
     for c in &pl.cues {
+        if let Some(m) = &c.video {
+            add_file(&m.path);
+        }
         if let Some(a) = &c.voice {
             add_file(&a.path);
         }
@@ -683,6 +1107,9 @@ fn plan_files(pl: &Plan) -> Vec<PathBuf> {
         if let Some(b) = &r.sprite.blink {
             add_file(b);
         }
+    }
+    for g in &pl.sub_cgs {
+        add_file(&g.path);
     }
     for b in &pl.bgm {
         add_file(&b.audio.path);
@@ -776,55 +1203,135 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
         items.insert(f, id);
     }
     let name = unique_sequence_name(s, str_p(p, "name").filter(|n| !n.trim().is_empty()).map(str::to_string).unwrap_or_else(|| title.clone()));
-    let seq = s.execute("file.newSequence", json!({"name": name, "width": o.width, "height": o.height, "fps": o.fps, "video": 4, "audio": 3}))?["sequence"]
+    let layout = Layout::of(pl);
+    let seq = s.execute("file.newSequence", json!({"name": name, "width": o.width, "height": o.height, "fps": o.fps, "video": layout.names.len(), "audio": 3}))?
+        ["sequence"]
         .as_u64()
         .map(ItemId)
         .ok_or_else(|| bad(cmd, "the sequence was not created"))?;
     let one = rate.frame_duration();
     let frame = (o.width, o.height);
     let scaling = s.prefs.media.default_media_scaling.clone();
-    let mut counts = [0usize; 7];
+    let mut counts = Counts::default();
     s.edit(&format!("Build {name}"), |pr, _| {
         let Some((v_ids, a_ids)) =
             pr.sequence(seq).map(|q| (q.video_tracks.iter().map(|t| t.id).collect::<Vec<_>>(), q.audio_tracks.iter().map(|t| t.id).collect::<Vec<_>>()))
         else {
             return Err(EngineError::NoSequence);
         };
-        let mut video: Vec<Vec<TrackItem>> = vec![Vec::new(); 4];
+        let mut video: Vec<Vec<TrackItem>> = vec![Vec::new(); layout.names.len()];
         let mut audio: Vec<Vec<TrackItem>> = vec![Vec::new(); 3];
+        let mut fades: Vec<Transition> = Vec::new();
         let find = |m: &HashMap<PathBuf, ItemId>, path: &Path| m.get(path).copied();
-        // V1: one background per scene
-        for sc in &pl.scenes {
-            let Some(item) = sc.background.as_deref().and_then(|b| find(&items, b)) else { continue };
-            if let Some(mut ti) = make_clip(pr, item, TrackKind::Video, sc.start, sc.end - sc.start, rate, frame, &scaling) {
-                if o.fit_background {
-                    ti.scale_to_frame = true;
+        let push_to = |video: &mut Vec<Vec<TrackItem>>, track: usize, ti: TrackItem| -> bool {
+            match video.get_mut(track) {
+                Some(t) => {
+                    t.push(ti);
+                    true
                 }
-                push_in(&mut ti, o.push, one);
-                video[0].push(ti);
-                counts[0] += 1;
+                None => false,
+            }
+        };
+        // V1: each scene's background, cut where a movie covers it; the movies
+        for (si, sc) in pl.scenes.iter().enumerate() {
+            let bg = sc.background.as_deref().and_then(|b| find(&items, b));
+            let mut v1: Vec<TrackItem> = Vec::new();
+            let background = |pr: &mut Project, from: Tick, to: Tick| -> Option<TrackItem> {
+                let item = bg?;
+                if to - from < one {
+                    return None;
+                }
+                let mut ti = make_clip(pr, item, TrackKind::Video, from, to - from, rate, frame, &scaling)?;
+                if o.fit_background {
+                    fit_to_frame(&mut ti, o, media_size(pr, item));
+                }
+                push_in(&mut ti, o.push, one, fraction(from, sc.start, sc.end), fraction(to, sc.start, sc.end));
+                Some(ti)
+            };
+            let mut at = sc.start;
+            for c in pl.cues.iter().filter(|c| c.scene == si) {
+                let Some(m) = &c.video else { continue };
+                let Some(item) = find(&items, &m.path) else { continue };
+                if let Some(ti) = background(pr, at, c.start) {
+                    v1.push(ti);
+                    counts.backgrounds += 1;
+                }
+                if let Some(mut ti) = make_clip(pr, item, TrackKind::Video, c.start, c.video_len(one), rate, frame, &scaling) {
+                    if o.fit_background {
+                        fit_to_frame(&mut ti, o, media_size(pr, item));
+                    }
+                    at = ti.end().max(c.start);
+                    v1.push(ti);
+                    counts.videos += 1;
+                }
+            }
+            if let Some(ti) = background(pr, at, sc.end) {
+                v1.push(ti);
+                counts.backgrounds += 1;
+            }
+            let first = v1.first().filter(|ti| ti.start == sc.start).map(|ti| (ti.id, ti.duration));
+            // a fade in from black: a dissolve from nothing onto the scene's first clip
+            if sc.fade {
+                let def = filmcraft_project::vtransition::find_transition("cross_dissolve", EffectKind::VideoTransition);
+                match (first, def) {
+                    (Some((id, dur)), Some(def)) => {
+                        let len = rate.snap_nearest(secs(o.transition_seconds)).max(one).min(dur);
+                        fades.push(Transition {
+                            id: TransitionId(pr.alloc_id()),
+                            effect: def.instance(),
+                            start: sc.start,
+                            duration: len,
+                            from: None,
+                            to: Some(id),
+                            align: TransitionAlign::StartAtCut,
+                            reverse: false,
+                        });
+                        counts.fades += 1;
+                    }
+                    _ => warnings.push(format!("scene {}: nothing on the background track at its start to fade in", sc.id)),
+                }
+            }
+            if let Some(t) = video.get_mut(0) {
+                t.extend(v1);
             }
         }
-        // V2-V4: the speaker, its open mouth, its blink
+        // the characters, their open mouths and blinks, at their places
         for r in &pl.runs {
+            let base = layout.group(r.slot);
             let place = |pr: &mut Project, path: &Path, start: Tick, end: Tick| -> Option<TrackItem> {
                 let item = find(&items, path)?;
                 let mut ti = make_clip(pr, item, TrackKind::Video, start, end - start, rate, frame, &scaling)?;
-                if let Some(sc) = o.sprite_scale {
-                    set_scale(&mut ti, sc);
-                }
+                place_sprite(&mut ti, o, r.slot, media_size(pr, item));
                 Some(ti)
             };
-            if let Some(ti) = place(pr, &r.sprite.closed, r.start, r.end) {
-                video[1].push(ti);
-                counts[1] += 1;
+            if let Some(ti) = place(pr, &r.sprite.closed, r.start, r.end)
+                && push_to(&mut video, base, ti)
+            {
+                counts.characters += 1;
             }
             if let Some(blink) = &r.sprite.blink {
                 for (a, b) in &r.blinks {
-                    if let Some(ti) = place(pr, blink, *a, *b) {
-                        video[3].push(ti);
-                        counts[3] += 1;
+                    if let Some(ti) = place(pr, blink, *a, *b)
+                        && push_to(&mut video, base + 2, ti)
+                    {
+                        counts.blinks += 1;
                     }
+                }
+            }
+        }
+        // the sub CGs, over everything, at their own size
+        for g in &pl.sub_cgs {
+            let Some(track) = layout.sub_cg else { break };
+            if let Some(item) = find(&items, &g.path)
+                && let Some(mut ti) = make_clip(pr, item, TrackKind::Video, g.start, g.end - g.start, rate, frame, &scaling)
+            {
+                ti.scale_to_frame = false;
+                set_scale(&mut ti, o.sub_cg_scale);
+                if let Some((x, y)) = g.anchor {
+                    set_position(&mut ti, o.width as f64 * x, o.height as f64 * y);
+                }
+                if push_to(&mut video, track, ti) {
+                    counts.sub_cgs += 1;
                 }
             }
         }
@@ -841,13 +1348,26 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
                         && let Some(item) = find(&items, path)
                         && let Some(mut ti) = make_clip(pr, item, TrackKind::Video, a, b - a, rate, frame, &scaling)
                     {
-                        if let Some(sc) = o.sprite_scale {
-                            set_scale(&mut ti, sc);
+                        place_sprite(&mut ti, o, c.slot, media_size(pr, item));
+                        if push_to(&mut video, layout.group(c.slot) + 1, ti) {
+                            counts.mouths += 1;
                         }
-                        video[2].push(ti);
-                        counts[2] += 1;
                     }
                 }
+            }
+            // A3: a movie's own sound
+            if let Some(m) = c.video.as_ref().filter(|m| m.audio)
+                && let Some(item) = find(&items, &m.path)
+                && let Some(mut ti) = make_clip(pr, item, TrackKind::Audio, c.start, c.video_len(one), rate, frame, &scaling)
+            {
+                ti.gain_db = o.sfx_gain_db;
+                if let Some(prev) = audio[2].last_mut()
+                    && prev.end() > ti.start
+                {
+                    prev.duration = (ti.start - prev.start).max(one);
+                }
+                audio[2].push(ti);
+                counts.video_sounds += 1;
             }
             // A1 voices, A3 sound effects
             if let Some(v) = &c.voice
@@ -855,7 +1375,7 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
                 && let Some(ti) = make_clip(pr, item, TrackKind::Audio, c.start, v.duration.min(c.end - c.start), rate, frame, &scaling)
             {
                 audio[0].push(ti);
-                counts[4] += 1;
+                counts.voices += 1;
             }
             if let Some(f) = &c.sfx
                 && let Some(item) = find(&items, &f.path)
@@ -871,7 +1391,7 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
                     prev.duration = (ti.start - prev.start).max(one);
                 }
                 audio[2].push(ti);
-                counts[6] += 1;
+                counts.effects += 1;
             }
         }
         // A2: music, repeated to fill its scenes. The length of one repeat is snapped to the
@@ -898,16 +1418,22 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
                 if let Some(mut ti) = make_clip(pr, item, TrackKind::Audio, at, dur, rate, frame, &scaling) {
                     ti.gain_db = o.bgm_gain_db;
                     audio[1].push(ti);
-                    counts[5] += 1;
+                    counts.music += 1;
                 }
                 at += dur;
                 n += 1;
             }
         }
         let q = pr.sequence_mut(seq).ok_or(EngineError::NoSequence)?;
-        for (id, items) in v_ids.iter().zip(video) {
+        for (i, (id, mut items)) in v_ids.iter().zip(video).enumerate() {
+            // a track's items are in time order (the renderer and the edits look them up so)
+            items.sort_by_key(|t| t.start);
             if let Some(t) = q.video_tracks.iter_mut().find(|t| t.id == *id) {
                 t.items = items;
+                if i == 0 {
+                    t.transitions = std::mem::take(&mut fades);
+                    t.sort();
+                }
             }
         }
         for (id, items) in a_ids.iter().zip(audio) {
@@ -915,9 +1441,9 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
                 t.items = items;
             }
         }
-        for (id, label) in v_ids.iter().zip(["Background", "Character", "Mouth", "Blink"]) {
+        for (id, label) in v_ids.iter().zip(&layout.names) {
             if let Some(t) = q.video_tracks.iter_mut().find(|t| t.id == *id) {
-                t.name = label.into();
+                t.name = (*label).into();
             }
         }
         for (id, label) in a_ids.iter().zip(["Voice", "Music", "Effects"]) {
@@ -975,14 +1501,18 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
             Ok(n)
         })?;
     }
-    let [backgrounds, characters, mouths, blinks, voices, music, effects] = counts;
+    let c = counts;
     Ok(json!({
         "sequence": seq.0,
         "name": name,
         "seconds": pl.end.seconds(),
         "scenes": pl.scenes.len(),
         "lines": pl.cues.len(),
-        "clips": {"backgrounds": backgrounds, "characters": characters, "mouths": mouths, "blinks": blinks, "voices": voices, "music": music, "effects": effects, "subtitles": captions},
+        "clips": {
+            "backgrounds": c.backgrounds, "videos": c.videos, "characters": c.characters, "mouths": c.mouths, "blinks": c.blinks, "subCgs": c.sub_cgs,
+            "voices": c.voices, "music": c.music, "effects": c.effects, "videoSounds": c.video_sounds, "fades": c.fades, "subtitles": captions,
+        },
+        "tracks": layout.names,
         "leveledVoices": leveled,
         "withoutAudio": pl.cues.iter().filter(|c| c.estimated).map(|c| c.line.clone()).collect::<Vec<_>>(),
         "warnings": warnings,
@@ -1293,7 +1823,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "anime.build",
             "Build Anime Sequence",
-            r#"{"path":str,"out":str?,"name":str?,"width":u32=1920,"height":u32=1080,"fps":f64=24,"pause":f64=0.35,"sceneGap":f64=0.6,"directionSeconds":f64=1,"charsPerSecond":f64=7,"push":f64=5,"kenBurns":bool?,"spriteScale":f64?,"bgmGainDb":f64=-18,"sfxGainDb":f64=0,"captionChars":n=36,"blink":bool=true,"fitBackground":bool=true,"levelVoices":bool=true,"voiceLufs":f?,"three":bool?,"openDb":f?,"halfDb":f?,"minSeconds":f?}"#,
+            r#"{"path":str,"out":str?,"name":str?,"width":u32=1920,"height":u32=1080,"fps":f64=24,"pause":f64=0.35,"sceneGap":f64=0.6,"directionSeconds":f64=1,"charsPerSecond":f64=7,"push":f64=5,"kenBurns":bool?,"spriteScale":f64?,"spriteAlign":str="center","backgroundFit":str="fit","bgmGainDb":f64=-18,"sfxGainDb":f64=0,"captionChars":n=36,"blink":bool=true,"fitBackground":bool=true,"levelVoices":bool=true,"voiceLufs":f?,"transitionSeconds":f64=0.5,"leftX":f64=0.25,"rightX":f64=0.75,"subCgScale":f64=100,"three":bool?,"openDb":f?,"halfDb":f?,"minSeconds":f?}"#,
             build,
             true,
         ),
