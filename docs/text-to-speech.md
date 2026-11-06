@@ -45,10 +45,18 @@ A voice is a reference recording and its transcript:
   Chinese, `Sohee` Korean (`python filmcraft_tts.py --list-speakers` asks the model). `instruct`
   is a free-text direction for a preset voice ("怒った声で", "whispering, tired").
 - Nothing: the preset for the line's language (Ono_Anna for Japanese).
+- `design` (script only, for now): a description of a voice that does not exist ("40代の男性警備員、
+  低く落ち着いた声"), spoken by the VoiceDesign model. There is no Japanese male preset, so this is
+  how a male extra gets a voice. A designed voice drifts a little from line to line, so make it
+  **once** and clone it: speak one calm sentence with `--design`, then give that WAV and its text
+  as the character's `refAudio` / `refText` ("design, then clone"; the Qwen3-TTS README's own
+  recipe). The script stays on the Base model for every other line, and nothing in FilmCraft has
+  to know the voice was made up.
 
 Cloning uses the Base model (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`), presets the CustomVoice model
-(`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `--custom-model`); each loads once, on first use, so a
-batch that mixes both costs two model loads (about 3.4 GB each on disk).
+(`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, `--custom-model`), designed voices the VoiceDesign model
+(`Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`, `--design-model`); each loads once, on first use, so a
+batch that mixes them costs one model load each (about 3.4 GB each on disk).
 
 Emotion follows the reference: a calm reference gives calm lines. For a scene with shouting or
 crying, pick a reference line in that register.

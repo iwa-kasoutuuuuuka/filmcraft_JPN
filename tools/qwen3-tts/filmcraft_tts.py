@@ -21,7 +21,11 @@ Jobs come from a JSON Lines file (`--jobs`), one object per line:
 `refText` left out uses the speaker embedding alone (`x_vector_only_mode`, lower quality). Without
 `refAudio`, `speaker` names one of the CustomVoice model's preset voices (Ono_Anna is the Japanese
 one; `--list-speakers` prints them), and `instruct` is a free-text direction for it ("angry, low");
-neither: the preset for the line's language. `language` defaults to `--language`; "Auto" lets the
+`design` describes a voice that does not exist ("40代の男性、低く落ち着いた声") and the VoiceDesign
+model makes it up; neither: the preset for the line's language. A designed voice differs a little
+from line to line, so for a character speak ONE line with `design`, then use that file as the
+`refAudio` (with its text as `refText`) of every other line: the Base model clones it the same
+way every time ("design, then clone"). `language` defaults to `--language`; "Auto" lets the
 model detect it. Models load once each, on first use; voice prompts are computed once per
 reference and reused across the batch.
 
@@ -29,6 +33,7 @@ reference and reused across the batch.
     python filmcraft_tts.py --list-speakers                      the preset speakers (loads CustomVoice)
     python filmcraft_tts.py --jobs jobs.jsonl [--model …] [--device cuda:0|cpu]
     python filmcraft_tts.py --text "こんにちは" --out hello.wav --ref-audio ref.wav --ref-text "…"
+    python filmcraft_tts.py --text "こちらは警備室です。" --out guard_ref.wav --design "40代の男性警備員、低く落ち着いた声"
 
 Install (CUDA build of torch first if you have a GPU): `pip install -r requirements.txt`.
 """
@@ -51,6 +56,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 MODEL_DEFAULT = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 CUSTOM_MODEL_DEFAULT = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+DESIGN_MODEL_DEFAULT = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 LANGUAGE_DEFAULT = "Japanese"
 # The preset speaker for a language when a line names neither a reference nor a speaker.
 DEFAULT_SPEAKERS = {"japanese": "Ono_Anna", "english": "Ryan", "chinese": "Vivian", "korean": "Sohee"}
@@ -77,7 +83,7 @@ def emit(obj: dict) -> None:
 
 def probe() -> int:
     """Report what is installed without loading a model (fast; the host calls this first)."""
-    out: dict = {"script": os.path.abspath(__file__), "python": sys.version.split()[0], "model": MODEL_DEFAULT, "customModel": CUSTOM_MODEL_DEFAULT}
+    out: dict = {"script": os.path.abspath(__file__), "python": sys.version.split()[0], "model": MODEL_DEFAULT, "customModel": CUSTOM_MODEL_DEFAULT, "designModel": DESIGN_MODEL_DEFAULT}
     try:
         import torch  # noqa: WPS433
 
@@ -136,14 +142,17 @@ def check_job(j: dict, i: int, default_language: str) -> dict | None:
     ref_text = j.get("refText")
     if ref_text is not None and not isinstance(ref_text, str):
         return {"id": jid, "error": "`refText` must be a string"}
-    for k in ("speaker", "instruct"):
+    for k in ("speaker", "instruct", "design"):
         if j.get(k) is not None and not isinstance(j[k], str):
             return {"id": jid, "error": f"`{k}` must be a string"}
+    design = j.get("design") or None
+    if design is not None and len(design) > MAX_TEXT_CHARS:
+        return {"id": jid, "error": f"`design` is longer than {MAX_TEXT_CHARS} characters"}
     lang = j.get("language") or default_language
     speaker = j.get("speaker")
-    if ref is None and not speaker:
+    if ref is None and design is None and not speaker:
         speaker = DEFAULT_SPEAKERS.get(str(lang).lower(), "Ono_Anna")
-    j.update({"id": jid, "text": text, "out": out, "refAudio": ref, "refText": ref_text, "language": lang, "speaker": speaker, "instruct": j.get("instruct") or None})
+    j.update({"id": jid, "text": text, "out": out, "refAudio": ref, "refText": ref_text, "language": lang, "speaker": speaker, "instruct": j.get("instruct") or None, "design": design})
     return None
 
 
@@ -166,10 +175,10 @@ def load_model(model_id: str, device: str | None):
 
 
 class Models:
-    """The Base (clone) and CustomVoice (preset) models, each loaded on first use."""
+    """The Base (clone), CustomVoice (preset) and VoiceDesign models, each loaded on first use."""
 
-    def __init__(self, base_id: str, custom_id: str, device: str | None):
-        self.ids = {"base": base_id, "custom": custom_id}
+    def __init__(self, base_id: str, custom_id: str, device: str | None, design_id: str = DESIGN_MODEL_DEFAULT):
+        self.ids = {"base": base_id, "custom": custom_id, "design": design_id}
         self.device = device
         self.loaded: dict[str, object] = {}
         # a model that failed to load (after its retry) is not tried again for every remaining job
@@ -204,10 +213,10 @@ def list_speakers(custom_id: str, device: str | None) -> int:
     return 0
 
 
-def run_jobs(jobs: list[dict], model_id: str, custom_id: str, device: str | None, default_language: str) -> int:
+def run_jobs(jobs: list[dict], model_id: str, custom_id: str, device: str | None, default_language: str, design_id: str = DESIGN_MODEL_DEFAULT) -> int:
     import soundfile as sf  # noqa: WPS433
 
-    models = Models(model_id, custom_id, device)
+    models = Models(model_id, custom_id, device, design_id)
     prompts: dict[tuple, object] = {}
     ok = failed = 0
     total = max(len(jobs), 1)
@@ -220,7 +229,9 @@ def run_jobs(jobs: list[dict], model_id: str, custom_id: str, device: str | None
         emit({"progress": 0.05 + 0.95 * i / total, "status": f"Synthesising {i + 1}/{len(jobs)}"})
         try:
             key = (j["refAudio"], j["refText"])
-            if j["refAudio"] is None:
+            if j["refAudio"] is None and j["design"] is not None:
+                wavs, sr = models.get("design").generate_voice_design(text=j["text"], language=j["language"], instruct=j["design"])
+            elif j["refAudio"] is None:
                 kwargs = {"text": j["text"], "language": j["language"], "speaker": j["speaker"]}
                 if j["instruct"]:
                     kwargs["instruct"] = j["instruct"]
@@ -258,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--list-speakers", action="store_true", help="print the CustomVoice model's preset speakers and languages as JSON")
     ap.add_argument("--speaker", help="preset speaker for --text without --ref-audio")
     ap.add_argument("--instruct", help="free-text direction for a preset speaker (with --text)")
+    ap.add_argument("--design", help="describe a voice to make up (with --text, no --ref-audio); use the result as --ref-audio for the rest")
+    ap.add_argument("--design-model", default=DESIGN_MODEL_DEFAULT, help=f"VoiceDesign model (default {DESIGN_MODEL_DEFAULT})")
     ap.add_argument("--device", help="cuda:0 / cpu (default: CUDA if available)")
     a = ap.parse_args(argv)
     # the host starts Python with -X utf8; this covers a script started by hand on a code-page console
@@ -276,14 +289,14 @@ def main(argv: list[str] | None = None) -> int:
     elif a.text:
         if not a.out:
             ap.error("--text needs --out")
-        jobs = [{"id": "0", "text": a.text, "out": a.out, "refAudio": a.ref_audio, "refText": a.ref_text, "speaker": a.speaker, "instruct": a.instruct}]
+        jobs = [{"id": "0", "text": a.text, "out": a.out, "refAudio": a.ref_audio, "refText": a.ref_text, "speaker": a.speaker, "instruct": a.instruct, "design": a.design}]
     else:
         ap.error("pass --probe, --jobs or --text")
         return 2
     if not jobs:
         emit({"done": True, "ok": 0, "failed": 0})
         return 0
-    return run_jobs(jobs, a.model, a.custom_model, a.device, a.language)
+    return run_jobs(jobs, a.model, a.custom_model, a.device, a.language, a.design_model)
 
 
 if __name__ == "__main__":

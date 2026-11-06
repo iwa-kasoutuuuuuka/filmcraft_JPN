@@ -42,8 +42,12 @@ project. `refAudio` + `refText` (its transcript) clone that voice from a few sec
 speech; without `refText` only the speaker embedding is used (lower quality). Without `refAudio`,
 `speaker` picks a preset voice of the CustomVoice model (`Ono_Anna` is the Japanese one;
 `--list-speakers` prints them all) and `instruct` directs it ("怒った声で"); with neither, the
-preset for the line's language speaks. Voice prompts are computed once per reference file, and
-each model loads once, on first use.
+preset for the line's language speaks. `design` (a job field, or `--design` on the command line)
+describes a voice that does not exist and the VoiceDesign model makes it up; there is no Japanese
+male preset, so this is how a male extra gets one. Make it once and clone it: speak one sentence
+with `--design`, then use that WAV and its text as the `refAudio` / `refText` of the character
+(a designed voice drifts from line to line; a cloned one does not). Voice prompts are computed
+once per reference file, and each model loads once, on first use.
 
 Where the script and Python are found, in order: the command's `python` / `script` params, the
 `FILMCRAFT_TTS_PYTHON` / `FILMCRAFT_TTS_SCRIPT` environment variables, `tools/qwen3-tts/` next to
@@ -55,6 +59,7 @@ Stand-alone:
 ```bash
 python filmcraft_tts.py --text "こんにちは" --out hello.wav --ref-audio ref.wav --ref-text "参照音声の書き起こし"
 python filmcraft_tts.py --text "こんにちは" --out hello.wav --speaker Ono_Anna --instruct "眠そうに"
+python filmcraft_tts.py --text "こちらは警備室です。" --out guard_ref.wav --design "40代の男性警備員、低く落ち着いた声"
 python filmcraft_tts.py --jobs jobs.jsonl --device cuda:0
 python filmcraft_tts.py --list-speakers
 ```
