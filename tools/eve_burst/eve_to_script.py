@@ -65,6 +65,7 @@ DATE_OPS = {0x8014, 0x801A} | OPS_ASSETLESS  # where a date screen or a day movi
 ROAD_NOVEL_OPS = {0x8035, 0x8043, 0x8036, 0x8008, 0x8046, 0x800D}  # what a walk is for (and flag sets)
 ROAD_EDGES = 6_000  # menu choices one road search may try
 ROAD_LENGTH = 40  # menu choices one road may take
+ROAD_DELTA = 64  # flags a road search follows the changes of (more are the path's)
 
 # -- story time ------------------------------------------------------------------------------------
 # The game shows the day as a date screen (a background ``1203md`` from 02_画像/日付画面) or a day
@@ -222,6 +223,28 @@ class ScenarioStore:
                         self.files.setdefault(f[:-5], os.path.join(dp, f))
         self.cache: dict[str, Scenario | None] = {}
         self.errors: list[str] = []
+        self.moves_to: dict[str, set] | None = None  # scenario -> the scenarios it can move to
+
+    def reachable(self, name: str) -> set:
+        """Every scenario some chain of scenario moves (0x8020, whatever their conditions) leads
+        to from `name`, `name` included: the places a player there could still get to."""
+        if self.moves_to is None:
+            g: dict[str, set] = {}
+            for n in self.files:
+                sc = self.get(n)
+                if sc is None:
+                    continue
+                g[sc.name] = {normalize_scenario(r["scenario"]) for op, r in zip(sc.ops, sc.raw)
+                              if op == 0x8020 and isinstance(r.get("scenario"), str) and r["scenario"]}
+            self.moves_to = g
+        name = normalize_scenario(name)
+        seen, todo = {name}, [name]
+        while todo and len(seen) <= len(self.files) + 1:
+            for m in self.moves_to.get(todo.pop(), ()):
+                if m not in seen:
+                    seen.add(m)
+                    todo.append(m)
+        return seen
 
     def get(self, name: str) -> Scenario | None:
         name = normalize_scenario(name)
@@ -285,6 +308,7 @@ def marker_day(op: int, d: dict) -> int | None:
 
 
 POLICIES = ("days", "explore", "order")
+WAITS = 2  # zapping: how many times the other side waits at one stuck place (and day) for the main side
 
 
 class Pause(Exception):
@@ -367,6 +391,7 @@ class Interp:
         self.road: collections.deque = collections.deque()
         self.road_later = 0  # the day a road to a later day goes to, 0 for this day
         self.road_fail: dict = {}
+        self.road_delta: dict | None = None  # a road search by flags: the flags it has changed so far
         self.walks: list = []
         # zapping (the "days" policy): the other side, played alongside without writing anything
         # (partner), and for that side the main one (main)
@@ -375,6 +400,11 @@ class Interp:
         self.done = False
         self.paused = 0
         self.cancelled = False
+        self.waits: collections.Counter = collections.Counter()  # other side: (place, main day) -> times it waited there
+        self.wait_ver: dict = {}  # other side: (place, main day) -> the main side's flag version at the last wait
+        self.leaving = False  # other side: the main side is moving on to a later day (do not wait)
+        self.joined = ""  # other side: the scenario where both sides meet, reached first
+        self.joins: list = []  # main side: moves to where the other side waits for it
         # report
         self.unknown_ops: collections.Counter = collections.Counter()
         self.unknown_examples: dict = {}
@@ -397,6 +427,8 @@ class Interp:
         k = self.fkey(n)
         if self.flags.get(k, 0) != v:
             self.flag_ver += 1
+            if self.probe and self.road_delta is not None and len(self.road_delta) < ROAD_DELTA:
+                self.road_delta[k] = v
         if v == 0:
             self.flags.pop(k, None)
         else:
@@ -407,6 +439,8 @@ class Interp:
         drop = [k for k in self.flags if isinstance(k, tuple) and k[0] in sides]
         if drop:
             self.flag_ver += 1
+            if self.probe and self.road_delta is not None:
+                self.road_delta["cleared"] = self.flag_ver
         for k in drop:
             del self.flags[k]
 
@@ -439,7 +473,9 @@ class Interp:
         c.depth, c.nested_new, c.nested_returns = 0, 0, False
         c.day, c.day_jump, c.day_back, c.nested_day = self.day, 0, False, 0
         c.probe, c.road, c.road_later, c.road_fail, c.walks = False, collections.deque(), 0, {}, []
+        c.road_delta = dict(self.road_delta) if self.probe and self.road_delta is not None else None
         c.partner, c.main, c.done, c.paused, c.cancelled = None, None, False, 0, False
+        c.waits, c.wait_ver, c.leaving, c.joined, c.joins = collections.Counter(), {}, False, "", []
         c.unknown_ops, c.unknown_examples, c.cosmetic = collections.Counter(), {}, collections.Counter()
         c.trace, c.menu_log, c.notes = [], [], []
         c.end_reason = ""
@@ -457,6 +493,12 @@ class Interp:
                 self.hit_unreadable.add(name)
                 self.notes.append(self.end_reason)
             return False
+        if self.main is not None and sc.name in FINALE and not self.joined:
+            # the side played alongside comes to where both sides meet: it stops there, and the
+            # main side plays the rest (it joins when it has nothing left of its own)
+            self.joined, self.done = sc.name, True
+            self.end_reason = f"reached {sc.name}, where both sides meet"
+            raise Pause()
         pc = 0
         if label is not None:
             if label not in sc.labels:
@@ -756,11 +798,15 @@ class Interp:
                 if dry:
                     return "leaves"
                 why = f"menu exhausted in {sc.name} at {sc.raw[pc].get('off')}: nothing new to choose (supply --choices to steer)"
+                # zapping first: the other side may open something here (a shared flag), or
+                # (on that side) wait here for the main side; then this menu again
+                self.scn, self.pc = sc, pc
+                if self.stuck(True):
+                    return None
                 if self.o.on_stuck == "teleport" and self.teleport(sc.name):
                     return None
-                if self.stuck():
-                    self.scn, self.pc = sc, pc  # the other side changed a shared flag: this menu again
-                    return None
+                if self.main is not None:
+                    self.pause(False)  # the other side: stuck until the main side changes a flag
                 return why
             parent = self.stack[-1]
             parent.child = False
@@ -780,6 +826,14 @@ class Interp:
         (in number order, on the same side of the game) where looking ahead shows something new,
         as if the map had a road there. The scenario starts as it always does, deciding what to
         show from the flags."""
+        p = self.partner
+        if p is not None and p.joined and self.scn is not None and self.scn.name not in FINALE:
+            # the other side waits where both sides meet, and this side has nothing left: join it
+            # (the player switches sides; not a teleport)
+            self.joins.append({"from": here, "to": p.joined, "afterScenarios": len(self.trace)})
+            self.moves += 1
+            self.leave()
+            return self.enter(p.joined)
         if len(self.teleports) >= self.o.max_teleports:
             self.notes.append(f"teleport cap ({self.o.max_teleports}) reached")
             return False
@@ -787,6 +841,12 @@ class Interp:
         names = sorted((n for n in self.store.files if n[:1].lower() == first and n not in FINALE), key=natural_key)
         names += [n for n in FINALE if n in self.store.files]  # where both sides meet, last
         days = self.o.policy == "days"
+        if days:
+            # days: only places a player here could still get to (no way leads off the ship on
+            # the 7th); the others only when nothing at all is left, after the other side
+            near = self.store.reachable(here)
+            far = [n for n in names if n not in near]
+            names = [n for n in names if n in near]
         for _ in range(4):
             r = self.teleport_once(here, names, days)
             if r is not True and r is not False:
@@ -796,6 +856,18 @@ class Interp:
                     continue
                 self.go_teleport(here, r[0], r[1], True)
                 return True
+            if r is False and days and far:
+                # nothing left that a player could get to: the other side plays this day out
+                # (it may come to where both sides meet, or open something here), then the rest.
+                # The side played alongside waits instead: only the main side's path is written
+                if self.main is not None:
+                    return False
+                if self.sync_partner(leaving=True):
+                    if self.partner is not None and self.partner.joined:
+                        return self.teleport(here)
+                    continue
+                names, far = far, []
+                continue
             return r
         return False
 
@@ -844,6 +916,8 @@ class Interp:
         t = {"from": here, "to": name, "new": new, "afterScenarios": len(self.trace)}
         if later_day:
             t["laterDay"] = True
+        if self.o.policy == "days" and name not in self.store.reachable(here):
+            t["unreachable"] = True
         self.teleports.append(t)
         self.moves += 1
         self.leave()
@@ -851,9 +925,11 @@ class Interp:
 
     # -- walking (the "days" policy) ----------------------------------------------------------------
     def state_key(self):
-        # where the path is, not its flags: the flags only come from the shortest way there (with
-        # them every look at a place would be a new state, and the search would not end)
-        return (self.scn.name, self.pc, self.resume, self.side, tuple((f.scn.name, f.pc) for f in self.stack))
+        # where the path is, and the flags the search changed on the way there (a keypad that
+        # counts the keys pressed comes back to the same menu with other flags); the rest of
+        # the flags are the path's
+        return (self.scn.name, self.pc, self.resume, self.side, tuple((f.scn.name, f.pc) for f in self.stack),
+                frozenset(self.road_delta.items()) if self.road_delta else ())
 
     def road_failed(self) -> bool:
         return self.road_fail.get((self.scn.name, self.pc)) == self.flag_ver
@@ -879,9 +955,31 @@ class Interp:
         for the nearest one that shows something new, and return the choices that lead there.
         A road that shows a later day is used only when the whole reachable part of the game
         has been searched and nothing on this day is left. None when there is no road (or the
-        search is over its bounds); the place is then remembered until a flag changes."""
+        search is over its bounds); the place is then remembered until a flag changes.
+
+        The search tells the states it reaches apart by where they are. When that finds nothing
+        on this day it searches again telling them apart by the flags changed on the way too:
+        a keypad (a001_7 on the 6th) counts the keys pressed in flags and comes back to the
+        same menu, so only that search can press six keys in a row."""
+        road = self.search_road(False)
+        if road is not None and not self.road_later:
+            return road
+        first, first_later = road, self.road_later
+        road = self.search_road(True)
+        if road is not None and not self.road_later:
+            return road
+        if first is not None:
+            self.road_later = first_later
+            return first
+        if road is None:
+            self.road_fail[(self.scn.name, self.pc)] = self.flag_ver
+        return road
+
+    def search_road(self, by_flags: bool):
+        """One search of `find_road`: the road, or None. `by_flags`: states also differ by
+        the flags changed on the way."""
         start = self.fork(light=True)
-        start.probe, start.dry_base = True, -1
+        start.probe, start.dry_base, start.road_delta = True, -1, {} if by_flags else None
         queue = collections.deque([(start, [])])
         seen = {start.state_key()}
         later, complete, edges = None, True, 0
@@ -931,7 +1029,6 @@ class Interp:
         if later is not None and complete:
             self.road_later = later[1]
             return later[0]
-        self.road_fail[(self.scn.name, self.pc)] = self.flag_ver
         return None
 
     def follow_road(self, frame: Frame, avail, shown):
@@ -989,13 +1086,27 @@ class Interp:
             if (day or self.day + 1) > self.main.day:
                 self.pause(at_menu)
             return False
-        return self.sync_partner()
+        return self.sync_partner(leaving=True)
 
-    def stuck(self) -> bool:
-        """The path would end here, stuck. True when it should look again: the main side has
-        played the other side and a shared flag changed. The side played alongside stops here
-        instead (the main side may change a flag it waits for)."""
+    def stuck(self, menu: bool = False) -> bool:
+        """The path is stuck here (`menu`: its outermost menu has nothing new and no road
+        leads anywhere new). True when it should look again: on the main side, the other side
+        has played and changed a shared flag. The side played alongside first waits here for
+        the main side, which may set a flag this place waits for (the two terminals on the
+        6th hand flags to each other), unless the main side is leaving the day. A wait counts
+        when the main side has changed a flag since the last one; after `WAITS` of them at
+        one place and day it moves on (False)."""
         if self.main is not None:
+            if not menu:
+                self.pause(False)
+            key = (self.scn.name if self.scn else "", self.pc, self.main.day)
+            if self.leaving:
+                return False
+            if self.wait_ver.get(key) != self.main.flag_ver:
+                if self.waits[key] >= WAITS:
+                    return False
+                self.waits[key] += 1
+                self.wait_ver[key] = self.main.flag_ver
             self.pause(False)
         return self.sync_partner()
 
@@ -1005,9 +1116,10 @@ class Interp:
         self.paused += 1
         raise Pause()
 
-    def sync_partner(self) -> bool:
+    def sync_partner(self, leaving: bool = False) -> bool:
         """Play the other side until it is at the end of the main side's day (or stuck, or at
-        its end). True when it changed a flag."""
+        its end). True when it changed a flag. `leaving`: the main side is about to move on to
+        a later day, so the other side does not wait for it."""
         o = self.o
         if o.policy != "days" or not o.zapping or self.main is not None or self.dry_base is not None:
             return False
@@ -1028,6 +1140,7 @@ class Interp:
         if p.done or p.day > self.day:
             return False
         before = p.flag_ver = p.flag_ver + 1  # the main side may have changed shared flags
+        p.leaving = leaving
         try:
             p.end_reason = p.loop()
             p.done = True
@@ -1047,7 +1160,8 @@ class Interp:
             return None
         return {
             "start": p.start_name, "day": p.day, "lines": p.lines, "steps": p.steps, "pauses": p.paused,
-            "teleports": len(p.teleports), "walks": len(p.walks), "endedBecause": p.end_reason if p.done else None,
+            "teleports": len(p.teleports), "walks": len(p.walks), "waits": sum(p.waits.values()),
+            "joinedAt": p.joined or None, "endedBecause": p.end_reason if p.done else None,
         }
 
     def item_class(self, frame: Frame, i: int, it: dict, depth: int = 0):
@@ -1728,6 +1842,7 @@ def make_report(interp: Interp, b: Builder, script: dict, start: str, assets, st
         "walks": len(interp.walks),
         "walkList": interp.walks[:REPORT_LIMIT],
         "zapping": interp.partner_report(),
+        "joins": interp.joins[:REPORT_LIMIT],
         "counts": dict(b.counts),
         "unknownOps": dict(interp.unknown_ops),
         "unknownOpExamples": interp.unknown_examples,

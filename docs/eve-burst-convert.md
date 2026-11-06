@@ -83,8 +83,7 @@ ahead shows something new, and starts it as the game does (its first instruction
 show from the flags). It is as if the map had a road there; the game itself would keep the player
 at a puzzle until the right trigger is found. The report lists every teleport. `--on-stuck stop`
 ends the path there instead: with the sources as they are the Kojirou route then ends in `a007`
-after 100 scenarios and 2 800 lines with `explore`, and in `a001_7` on 6 December after 593
-scenarios and 19 900 lines with `days`.
+after 100 scenarios and 2 800 lines with `explore`; with `days` neither route teleports at all.
 
 ### The `days` policy (the default)
 
@@ -107,10 +106,18 @@ path run the days in order:
    at most 6 000 choices and 40 in a row) for the nearest one that shows something new on this
    day, and makes them: the path goes there through the places in between (report `walks` and
    `walkList`, menu log `walk`). A road to a later day is taken only when the whole reachable part
-   has nothing on this day. Places are told apart by where the path is, not by its flags (with
-   them every look at a place is a new state and the search does not end), so the flags along a
-   road are those of the shortest way there. Only when there is no road does the path teleport,
-   and then to a place that does not move on to a later day if there is one.
+   has nothing on this day. The search first tells the states it reaches apart by where they are
+   (then the flags along a road are those of the shortest way there); when that finds nothing on
+   this day, it searches again telling them apart by the flags changed on the way too (at most 64
+   of them). Only that second search can work a keypad: `a001_7`'s on the 6th counts the keys
+   pressed in flags (`F1700`–`F1704`, and `F1705`–`F1709` for the right ones) and comes back to
+   the same menu after each key, so the code (2 4 2 B A 3, shown on the terminal before) is six
+   choices at one place. Only when there is no road does the path teleport, and then to a place
+   that does not move on to a later day if there is one, and only to a place some chain of
+   scenario moves leads to from here (`ScenarioStore.reachable`, whatever their conditions): from
+   the ship on the 7th (`a029`…`a035`) nothing leads back to land. A place out of reach is taken
+   only when nothing in reach is left and the other side has played the day out (the teleport is
+   then marked `unreachable`); the side played alongside waits instead.
 4. **Not back in time.** A look-ahead that shows a day movie of this day or an earlier one again
    stops there too: such an entry is taken only when nothing else is left, a road through it is
    no road, and a teleport goes there last. (The ending's look back at every day in `c02` does
@@ -120,10 +127,25 @@ path run the days in order:
 foreign school on the 4th (`a014`) waits for `F14`, which only Marina's `b014` sets. The game is
 played by switching sides. So `days` plays the other side alongside, from its own start (`b01` for
 Kojirou's route, `a01` label 0 for Marina's), with the same flags and writing nothing: before the
-path moves on to a later day, and when it is stuck, the other side plays until it would go past the
-path's day (or is stuck itself, waiting for a flag of this side); when that changed a flag, the
-path looks again. The report's `zapping` gives the other side's day, lines, pauses, walks and
-teleports. `--no-zapping` turns it off; the Kojirou route then has no 5th and 6th (1203, 1204,
+path moves on to a later day, and when it is stuck (before it would teleport), the other side
+plays until it would go past the path's day or is stuck itself; when that changed a flag, the path
+looks again.
+
+- **The other side waits.** Stuck with no road, the other side first waits where it is for the
+  path, which may set a flag that place waits for, instead of teleporting away. The two hacking
+  terminals of the 6th hand flags to each other: Kojirou's first unlock in `a001_6` sets `F6`,
+  which Marina's terminal `b022_4` needs for its unlock, which sets `F7`, which Kojirou's needs
+  for his second (`F8`, on to `a001_7`). Marina's side had looked at everything in `b022_4` and
+  teleported away before Kojirou got there. A wait counts when the path has changed a flag since
+  the last one; after two at one place on one day, or when the path is moving on to a later day,
+  the other side moves on.
+- **Where both sides meet.** The other side stops at the door of `ab01`/`c02` (report
+  `joinedAt`). When the path has nothing left that it can reach, it joins it there (report
+  `joins`, not a teleport), as the player switches sides: on the 7th Kojirou stays on the ship
+  until he joins Marina's side at `ab01`.
+
+The report's `zapping` gives the other side's day, lines, pauses, waits, walks, teleports and
+`joinedAt`. `--no-zapping` turns it off; the Kojirou route then has no 5th and 6th (1203, 1204,
 1207, 1209), and on Marina's the 6th comes after the 7th.
 
 Every run is bounded: instruction, line, move and per-instruction visit caps, and a repeat limit
@@ -203,8 +225,11 @@ as:
 
 | | days (lines) |
 |---|---|
-| Kojirou | 12月3日 5 876, 12月4日 5 801, 12月5日 5 078, 12月6日 4 788, 12月7日 7 520, 12月9日 1 014 |
-| Marina | 12月2日 1 191, 12月3日 4 043, 12月4日 5 451, 12月5日 3 634, 12月6日 4 938, 12月7日 3 509, 12月9日 1 014 |
+| Kojirou | 12月3日 5 876, 12月4日 5 801, 12月5日 5 078, 12月6日 8 907, 12月7日 3 844, 12月9日 1 014 |
+| Marina | 12月2日 1 191, 12月3日 4 043, 12月4日 5 451, 12月5日 3 634, 12月6日 5 804, 12月7日 2 893, 12月9日 1 014 |
+
+Neither path teleports. Kojirou's 6th now holds his terminal, the keypad and what follows on
+land; his 7th is the ship only (before, it went back to land by teleport).
 
 (The 8th has no day movie on either side: the ship runs on to the 9th's 1209 in `ab01`.) With
 `--policy explore` the Kojirou path had only the 3rd (9 616 lines, with the 4th to 6th mixed in by
@@ -212,7 +237,7 @@ teleports), the 7th (8 569) and the 9th, and the Tristan arrival (1207) played f
 Marina's the 6th came after the 7th.
 
 A day is still long: Kojirou's 3rd, 5 876 lines × about 2.65 s, is about 4 h 20 min. For watchable
-episodes cut by length: `--episode-lines 600` gives 58 Kojirou episodes (44 Marina); the first is
+episodes cut by length: `--episode-lines 600` gives 58 Kojirou episodes (43 Marina); the first is
 the prologue in `a01`, 4 scenes and 585 lines (about 26 minutes). The day episodes, both whole
 scripts and the merged order below pass `script.validate` with no errors (the only warnings are the
 usual "no recording and the speaker has no voice").
@@ -253,8 +278,8 @@ python tools/eve_burst/merge_routes.py --a "out/kojirou.ep*.fcscript.json" --b "
 
 With the current paths the merged order is Marina 12月2日 (1 191 lines), then for each of the 3rd to
 the 7th Kojirou's day and Marina's (3rd 5 876 + 4 043, 4th 5 801 + 5 451, 5th 5 078 + 3 634, 6th
-4 788 + 4 938, 7th 7 384 + 3 373), then the meeting part (136 lines on the 7th, 1 014 on the 9th):
-2 728 scenes and 52 707 lines; 63 scenes of Marina's copy of the meeting part are left out.
+8 907 + 5 804, 7th 3 586 + 2 635), then the meeting part (258 lines on the 7th, 1 014 on the 9th):
+2 709 scenes and 53 278 lines; 67 scenes of Marina's copy of the meeting part are left out.
 
 ## A series of episodes
 
@@ -292,14 +317,16 @@ python tools/eve_burst/episode_plan.py --script out/both.fcscript.json --out-dir
 
 Nothing is rewritten by the tool; it only drops by the two rules of step 1.
 
-With the current paths (both sides merged, 52 707 lines): estimated 43.2 hours, 35.0 after trimming
-(9 859 lines shown again, 2 305 dot lines, 697 scenes left empty). 29 episodes of 27 minutes, the
-last of 60, keep about 39 %: episode 1 is Marina's 2 December (25 scenes, 1 095 lines, 59 minutes
-of draft, keep 46 %), then 6 episodes for the 3rd, 7 for the 4th, 5 for the 5th, 5 for the 6th, 4
-for the 7th, and the last (210 scenes, 149 minutes of draft). Drafts run 57 to 87 minutes (keep 31
-to 47 %). All 29 pass `script.validate` with no errors. On the 7th the Kojirou path goes back to
-land scenarios after the ship (see "Open problems"), so episode 28 ends and the last episode starts
-with them.
+With the current paths (both sides merged, 53 278 lines): estimated 43.8 hours, 36.3 after trimming
+(8 760 lines shown again, 2 372 dot lines, 628 scenes left empty). 29 episodes of 27 minutes, the
+last of 60, keep about 37 %: episode 1 is Marina's 2 December (25 scenes, 1 095 lines, 59 minutes
+of draft, keep 46 %), then 6 episodes for the 3rd, 7 for the 4th, 5 for the 5th, 7 for the 6th, 2
+for the 7th, and the last (201 scenes, 160 minutes of draft). Drafts run 58 to 93 minutes (keep 29
+to 46 %). All 29 pass `script.validate` with no errors.
+
+The adapted series below was made from the earlier paths, before the terminals of the 6th and the
+ship of the 7th were fixed (the Kojirou path then teleported 22 times and went back to land on the
+7th); it is not rebuilt from the current ones.
 
 ### Adapting an episode
 
@@ -362,11 +389,11 @@ With the dump as it is now (voices missing would be listed by the report, not lo
 | | Kojirou (`a01`) | Marina (`b01`) |
 |---|---|---|
 | Ends | game clear in `c02` | game clear in `c02` |
-| Scenes | 1 672 | 1 119 |
-| Lines | 30 077 (29 985 spoken) | 23 780 (23 713 spoken) |
-| Lines with a voice in the game | 8 808 (all found) | 6 982 (all found) |
-| Scenarios entered / distinct | 852 / 44 | 612 / 45 |
-| Walks / teleports | 60 / 22 | 25 / 17 |
+| Scenes | 1 670 | 1 106 |
+| Lines | 30 520 (30 428 spoken) | 24 030 (23 961 spoken) |
+| Lines with a voice in the game | 9 011 (all found) | 7 156 (all found) |
+| Scenarios entered / distinct | 836 / 44 | 603 / 45 |
+| Walks / teleports / joins | 66 / 0 / 1 | 32 / 0 / 0 |
 | Unknown instructions | 0 | 0 |
 
 (With `--policy explore`: Kojirou 1 358 scenes, 19 199 lines, 71 teleports; Marina 944 scenes,
@@ -377,10 +404,10 @@ speaker has no voice", which `script.pickVoices` then answers from the game's ow
 
 ## What is lost
 
-- **It is one path, not the game.** About 26 700 of the game's 52 000 text instructions run on the
-  Kojirou path and 21 100 on Marina's (many of the rest are the other half of a branch). The order of scenes follows the policy,
-  not a human player; teleports skip the puzzles a player would have to solve, and place and time
-  can jump (the map position instruction `0x804C` is ignored).
+- **It is one path, not the game.** About 27 900 of the game's 52 000 text instructions run on the
+  Kojirou path and 21 700 on Marina's (many of the rest are the other half of a branch). The order
+  of scenes follows the policy, not a human player, and the map position instruction `0x804C` is
+  ignored.
 - **Pictures:** one background per scene (no fades, no black screens), no positions, one character at a
   time (the speaker's sprite; a speaker who is not on screen shows their first expression),
   sub-CGs and movies are not placed by default.
@@ -393,32 +420,27 @@ speaker has no voice", which `script.pickVoices` then answers from the game's ow
 
 ## Open problems
 
-- **Teleports are left** (22 on the Kojirou path, 17 on Marina's), where no road is found: often
-  late on the 6th and on the ship. A teleport skips what a player would do there, and the place it
-  lands in decides by its flags what to show. The road search ignores flags when it tells places
-  apart, so a road that needs a flag set on the way (talk to A, then go to B) can be missed; a
-  scenario entry with nothing to show (`0x8000`) and a road back in time are dead ends for it.
+- **No teleport is left on either path**, but the machinery stays for other starts (`--start`)
+  and for changed data. The road search tells states apart by their flags only when telling them
+  apart by place finds nothing (searching by flags every time changed the 5th of the Kojirou path
+  and skipped the 6th's day movie); a scenario entry with nothing to show (`0x8000`) and a road
+  back in time are dead ends for it.
 - **The other side is played by the same policy**, so what it sets, and when, is that policy's
   guess at a player's order. It can get ahead of the path by part of a day: it stops before a day
   change it chooses, but not before a day movie a scenario plays as it starts. Each route is
   written on its own, so each side is played twice (for its own script and alongside the other),
-  and the two playings need not agree.
-- **The 7th goes back to land.** On the Kojirou path, after the long ship stretch of the 7th
-  (`a034`, 458 lines) the path returns to land scenarios (`a008_2`, `a026`, `a011_2`, `a012`,
-  `a013`, `a017`, `a005`, `a006`, `a020_2`…, partly by teleport: `a009`→`a011_2`→`a012`→`a013`→`a017`)
-  before the ship again and `ab01`. Whether a player sees them there is not checked.
-  `episode_plan.py` keeps the path's order, so episodes 28 and 29 carry it; whoever adapts them
-  should know.
-- **Days are long** (up to 7 520 lines): cut with `--episode-lines`, or plan a series with
-  `episode_plan.py`. The ship on the 7th still goes
-  back and forth between its rooms (`a030` ↔ `a033`, `a029` ↔ `a035`, about 120 short moves), as
-  the game's own corridors do.
+  and the two playings need not agree: alongside Marina's path, Kojirou's side still teleports 4
+  times between the ship's rooms (on its own path, never). How long the other side waits (two
+  flag changes of the path at one place and day) is a guess that fits the terminals of the 6th.
+- **Days are long** (up to 8 907 lines, Kojirou's 6th): cut with `--episode-lines`, or plan a
+  series with `episode_plan.py`. The ship on the 7th still goes back and forth between its rooms
+  (`a030` ↔ `a033`, `a029` ↔ `a035`), as the game's own corridors do.
 
 - Menu semantics are inferred from the data, not from the engine: *cancel* as the way out of a
   submenu, "jump drops all open menus", the instruction after a menu never running. If a route
   looks wrong at a menu, steer it with `--choices`.
 - The wait unit is assumed to be 60 per second (the values 30, 60, 120 suggest it); `--fps` changes it.
-- Teleporting is a convenience, not the game. `--on-stuck stop` gives the honest but short path.
+- Teleporting is a convenience, not the game. `--on-stuck stop` ends the path where it would teleport.
 - `pul` and `pur` are treated as one person; `kat` is 鈴木 in Marina's story and 桂木 in
   Kojirou's (the table calls it a guess); the two 孔 voices (`dep`, `kou`) are separate characters.
 - Unvoiced lines and the narrator are left to the synthesizer; onomatopoeia lines keep the game's
@@ -435,8 +457,10 @@ instructions, hostile files, caps and loops, the command line, story time from d
 movies, the requirement where the sides meet, episodes by day and by line cap and their files; the
 `days` policy: a later day taken last, the road search and a road to a later day, walking where
 `explore` teleports, no teleport back in time, the other side's shared flag, the other side
-stopping at the end of the path's day, a missing other side), and, when the dump is present, both
-real routes (ending reached, no unknown instructions, every day movie once and in order, story time
+stopping at the end of the path's day, a missing other side, the other side waiting for a flag of
+the path, joining where the sides meet, teleports only within reach, a keypad code found by the
+search by flags), and, when the dump is present, both real routes (ending reached, no unknown
+instructions, every day movie once and in order, no teleport, Kojirou joining at `ab01`, story time
 in order, valid by a hand check of the format and by the repo's own `script.validate` if
 `target/debug/filmcraft-cli` exists).
 

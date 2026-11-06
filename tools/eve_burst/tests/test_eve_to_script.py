@@ -736,6 +736,111 @@ class DaysPolicy(Base):
         self.assertEqual(self.texts(s), ["a1", "look"])
         self.assertIn("not available", rep["zapping"]["endedBecause"])
 
+    @staticmethod
+    def exchange():
+        """The two terminals of the 6th: Kojirou's a01 waits for F7, which Marina's b01 sets
+        only after Kojirou's F6, which he sets elsewhere (a03) after Marina's side has looked
+        at everything in b01. Marina's b02 (in reach, behind a flag) has something new too, and
+        no way back."""
+        a = Sc("a01").label().bg("b1").say("小次郎", "a1").menu(("見る", [], "l"), ("解除", [(7, 1)], "u"), ("奥", [(99, 1)], "o"))
+        a.mark("l").say("小次郎", "look").back()
+        a.mark("u").say("小次郎", "unlocked").clear_game()
+        a.mark("o").move("a03")
+        c = Sc("a03").label().bg("b3").say("小次郎", "f6").flag(6).move("a01")
+        b = Sc("b01").label().bg("b8").say("まりな", "b1").menu(("見る", [], "l"), ("解除", [(6, 1)], "u"), ("外", [(98, 1)], "o"))
+        b.mark("l").say("まりな", "b-look").back()
+        b.mark("u").say("まりな", "b-unlocked").flag(7).back()
+        b.mark("o").move("b02")
+        d = Sc("b02").label().bg("b9").say("まりな", "elsewhere").end()
+        return a, c, b, d
+
+    def test_the_other_side_waits_for_the_main_side(self):
+        s, rep = self.convert(*self.exchange())
+        self.assertEqual(self.texts(s), ["a1", "look", "f6", "a1", "unlocked"])
+        self.assertEqual(rep["endedBecause"], "game clear (the ending was reached)")
+        self.assertGreaterEqual(rep["zapping"]["waits"], 1)
+        self.assertEqual(rep["zapping"]["teleports"], 0)  # it stayed at its terminal
+        old = E.WAITS
+        E.WAITS = 0  # never waiting: Marina's side moves on to b02, and comes back by teleport
+        try:
+            s, rep = self.convert(*self.exchange())
+        finally:
+            E.WAITS = old
+        self.assertGreaterEqual(rep["zapping"]["teleports"], 1)
+
+    def test_the_main_side_joins_where_the_other_side_waits(self):
+        # Kojirou has nothing left (a02 has, but nothing leads there); Marina's side comes to
+        # ab01, where both sides meet: Kojirou joins it instead of teleporting
+        a = Sc("a01").label().bg("b1").say("小次郎", "a1").menu(("見る", [], "l"))
+        a.mark("l").say("小次郎", "look").back()
+        b = Sc("a02").label().bg("b2").say("小次郎", "land").end()
+        m = Sc("b01").label().bg("b8").say("まりな", "b1").move("ab01")
+        j = Sc("ab01").label().bg("b7").say("小次郎", "together").clear_game()
+        s, rep = self.convert(a, b, m, j)
+        self.assertEqual(self.texts(s), ["a1", "look", "together"])
+        self.assertEqual(rep["teleports"], 0)
+        self.assertEqual([(x["from"], x["to"]) for x in rep["joins"]], [("a01", "ab01")])
+        self.assertEqual(rep["zapping"]["joinedAt"], "ab01")
+        self.assertEqual(rep["zapping"]["lines"], 1)  # Marina's side stopped at ab01's door
+
+    def test_a_teleport_goes_where_a_player_could_get_to(self):
+        # on the ship (a02) nothing leads back to land (a03); the deck (a04) is behind a flag
+        a = Sc("a01").label().bg("b1").menu(("船へ", [], "s"))
+        a.mark("s").move("a02")
+        b = Sc("a02").label().bg("b2").say("小次郎", "ship").menu(("見る", [], "l"), ("甲板", [(99, 1)], "d"))
+        b.mark("l").say("小次郎", "look").back()
+        b.mark("d").move("a04")
+        c = Sc("a03").label().bg("b3").say("小次郎", "land").end()
+        d = Sc("a04").label().bg("b4").say("小次郎", "deck").clear_game()
+        s, rep = self.convert(a, b, c, d, opts=E.Options(policy="explore"))
+        self.assertEqual(rep["teleportList"][0]["to"], "a03")  # number order
+        s, rep = self.convert(a, b, c, d)
+        self.assertEqual(self.texts(s), ["ship", "look", "deck"])
+        self.assertEqual([(t["from"], t["to"]) for t in rep["teleportList"]], [("a02", "a04")])
+        self.assertNotIn("unreachable", rep["teleportList"][0])
+        store = E.ScenarioStore(E.find_scenario_folder(self.root))
+        self.assertEqual(store.reachable("a02"), {"a02", "a04"})
+        self.assertEqual(store.reachable("a01"), {"a01", "a02", "a04"})
+        self.assertEqual(store.reachable("nowhere"), {"nowhere"})
+
+    @staticmethod
+    def keypad():
+        """a01's terminal: a keypad with A and B whose code is B A B. The keys pressed so far are
+        flags (F400, F401), and so is which were right (F410, F411); every key comes back to
+        the keypad."""
+        a = Sc("a01").label().bg("b1").menu(("押す", [], "pad"))
+        a.mark("pad").menu(("Ａ", [], "ka"), ("Ｂ", [], "kb"))
+        a.mark("ka").iff([(401, 1)], "a2").flag(400, 0).flag(401, 0).flag(410, 0).flag(411, 0).endif()
+        a.mark("a2").iff([(400, 1), (410, 1)], "a3").flag(401, 1).flag(411, 1).endif()
+        a.mark("a3").iff([(400, 1)], "a4").flag(401, 1).endif()
+        a.mark("a4").iff([(0, 0)], "aend").flag(400, 1).endif()
+        a.mark("aend").back()
+        a.mark("kb").iff([(401, 1), (411, 1)], "b2").say("小次郎", "open").flag(420).endif()
+        a.mark("b2").iff([(401, 1)], "b3").flag(400, 0).flag(401, 0).flag(410, 0).flag(411, 0).endif()
+        a.mark("b3").iff([(400, 1)], "b4").flag(401, 1).endif()
+        a.mark("b4").iff([(0, 0)], "bend").flag(400, 1).flag(410, 1).endif()
+        a.mark("bend").back()
+        return a
+
+    def test_the_road_search_presses_a_code(self):
+        write_scenarios(self.root, self.keypad())
+        store = E.ScenarioStore(E.find_scenario_folder(self.root))
+        it = E.Interp(store, E.Options())
+        sc = store.get("a01")
+        for k in range(sc.n):
+            if sc.ops[k] != 0x8035:
+                it.visits[("a01", k)] = 1  # everything has run but the door opening
+        it.start_name = "a01"
+        self.assertTrue(it.enter("a01"))
+        menus = [k for k in range(sc.n) if sc.ops[k] == 0x8002]
+        it.pc = menus[0]
+        it.stack = [E.Frame(sc, it.pc)]
+        self.assertIsNone(it.search_road(False))  # by places only, the keypad is one state
+        road = it.find_road()
+        self.assertEqual(road, [("a01", menus[0], 0), ("a01", menus[1], 1), ("a01", menus[1], 0), ("a01", menus[1], 1)])
+        self.assertFalse(it.road_failed())
+        self.assertEqual(it.flags, {})  # the search does not touch the path's flags
+
 
 class Episodes(unittest.TestCase):
     @staticmethod
@@ -893,6 +998,11 @@ class RealData(unittest.TestCase):
         # the days come in the game's order, each day movie once
         self.assert_days_in_order(rep, ["1203", "1204", "1205", "1206", "1207", "1209"])
         self.assertEqual(rep["zapping"]["start"], "b01")
+        # no teleport: the terminals of the 6th hand flags to each other, the keypad is pressed,
+        # and on the 7th Kojirou stays on the ship and joins Marina's side at ab01
+        self.assertEqual(rep["teleportList"], [])
+        self.assertEqual([j["to"] for j in rep["joins"]], ["ab01"])
+        self.assertEqual(rep["zapping"]["teleports"], 0)
         eps = E.split_episodes(script, 600)
         self.assertEqual(sum(e["lines"] for e in eps), rep["lines"])
         for e in eps:
@@ -907,6 +1017,7 @@ class RealData(unittest.TestCase):
         self.assertEqual(script["scenes"][0]["pov"], "mar")
         self.assertEqual(rep["unknownOps"], {})
         self.assert_days_in_order(rep, ["1202", "1203", "1204", "1205", "1206", "1207", "1209"])
+        self.assertEqual(rep["teleportList"], [])
         whens = [sc["when"] for sc in script["scenes"]]
         self.assertEqual(whens, sorted(whens))
 
