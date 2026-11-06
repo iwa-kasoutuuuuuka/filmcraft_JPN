@@ -116,6 +116,10 @@ W0 コミット（fork の成果）
 7. **小次郎の参照（2026-11-06、仮完成 mp4 を観て）**: `koj0003` は問いかけで語尾が上がり、心の声が高く明るくなった（148 → 150〜187 Hz）。
    `koj0268` と `koj0157` をつないだ 11.9 秒の参照（`E:/filmcraft_JPN/eve_out/voices/kojtest/koj_joined.wav`、103〜115 Hz）に替える。
    台詞・心の声・語りのすべてに使う。全話の台本（`eve_out/voiced/`）も同じ参照に差し替える。
+8. **口パク・瞬きの差分画像（2026-11-06）**: Gemini（Antigravity）の出力は規約に合わなかったため、**別表情からの切り貼り**
+   （`tools/eve_burst/mouth_cutouts.py`、出力 `E:/filmcraft_JPN/eve_sprites_cut/`）を主にし、作れないもの（瞬き、手で口が隠れる
+   表情、姿勢の違う表情、小次郎）は Gemini 版（`E:/filmcraft_JPN/eve_sprites/`）で補う。`sprite_variants.py` を切り貼り → Gemini の順に
+   2 回流し込む（設定済みは上書きされない）。第 1 話 v3 は切り貼りのみ、v4 は両方。
 
 ## 7. 男性エキストラの声（決定 2 の検討）
 
@@ -145,3 +149,12 @@ W0 コミット（fork の成果）
 （台本側は `refAudio` / `refText` のままなので Rust の変更は不要）。サンプルはスクラッチパッドの
 作業用の一時フォルダ（リポジトリ外）。
 
+### 7.2 読み（音訓）とイントネーション（2026-11-06、第 1 話 v4 の評価を受けて）
+
+詳細は [eve-burst-tts-quality.md](eve-burst-tts-quality.md)。第 1 話の合成 296 行のうち誤読のある行は 34（音読みの熟語が 6 割強:
+絵画→えいが、紛失→ふんしち、物騒→むっそう など）。設定（参照の長さ・x-vector・温度・instruct）では誤読語の 6〜8 割が残り、
+テキストで直すとほぼ 0 になる。推奨は **ASR 検品つきの選択的ルビ**（`tools/eve_burst/tts_readings.py` の check → apply →
+`script.synthesize` を 2 周、第 1 話で 34 → 5 → 1 行、GPU 約 15 分）。小次郎の参照 `koj_joined.wav` の refText には録音にない
+「傷が付いている。」が入っているので除く。イントネーションは利用者が `eve_out/tts_quality/listen/index.html` で聴いて決める
+（全文かなが崩れなければそれでもよい）。アクセントの本格対策は Style-Bert-VITS2 JP-Extra（AGPL、外部プロセス）の試作、
+Qwen3-TTS の追加学習は見送り。
