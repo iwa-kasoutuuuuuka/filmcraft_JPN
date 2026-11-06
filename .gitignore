@@ -8,3 +8,6 @@ plan/
 
 __pycache__/
 *.pyc
+
+# local outputs of the pipeline tools (scripts, projects, reports made from user material; never committed)
+/out/
