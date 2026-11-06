@@ -779,9 +779,7 @@ pub fn commands() -> Vec<CommandSpec> {
                     new_text_layer(&text, pos, size)
                 };
                 layer.params.insert("ligatures".into(), filmcraft_project::Param::new(ParamValue::Bool(gp.ligatures)));
-                if !gp.default_font.trim().is_empty() {
-                    layer.params.insert("font".into(), filmcraft_project::Param::new(ParamValue::Text(gp.default_font.trim().into())));
-                }
+                layer.params.insert("font".into(), filmcraft_project::Param::new(ParamValue::Text(s.default_text_font())));
                 for (k, id) in [("font", "font"), ("fontStyle", "font_style")] {
                     if let Some(v) = str_p(p, k) {
                         layer.params.insert(id.into(), filmcraft_project::Param::new(ParamValue::Text(v.into())));

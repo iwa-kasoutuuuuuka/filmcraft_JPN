@@ -132,6 +132,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("app.settings.mediaAnalysis", "Media Analysis & Transcription…", ["Edit", "Preferences"], None),
     uic!("app.settings.mediaCache", "Media Cache…", ["Edit", "Preferences"], None),
     uic!("app.settings.memory", "Memory…", ["Edit", "Preferences"], None),
+    uic!("app.settings.narration", "Narration…", ["Edit", "Preferences"], None),
     uic!("app.settings.playback", "Playback…", ["Edit", "Preferences"], None),
     uic!("app.settings.plugins", "Plugins…", ["Edit", "Preferences"], None),
     uic!("app.settings.timeline", "Timeline…", ["Edit", "Preferences"], None),
@@ -193,6 +194,12 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, params: Val
         return r;
     }
     if let Some(r) = crate::panels::chart_editor::route(app, id, &params) {
+        if let Err(e) = &r {
+            app.ui.status = e.clone();
+        }
+        return r;
+    }
+    if let Some(r) = crate::panels::narration::route(app, id, &params) {
         if let Err(e) = &r {
             app.ui.status = e.clone();
         }
@@ -448,7 +455,7 @@ pub fn menu_items_for(session: &filmcraft_engine::Session) -> Vec<MenuItem> {
         }
         // Edit ▸ Label items carry the names from Settings ▸ Labels
         let label = match c.id.strip_prefix("edit.label.").and_then(filmcraft_project::Label::from_name) {
-            Some(l) => session.prefs.labels.name(l),
+            Some(l) => crate::i18n::label_name(&session.prefs.labels.name(l)).into_owned(),
             None => c.label.into(),
         };
         out.push(MenuItem {

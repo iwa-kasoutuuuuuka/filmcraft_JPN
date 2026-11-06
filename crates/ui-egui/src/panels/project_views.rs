@@ -622,7 +622,13 @@ fn list_bin(app: &mut FilmcraftApp, ui: &mut egui::Ui, bin: &Bin, depth: usize, 
             let p = ui.painter().with_clip_rect(cr.shrink2(vec2(2.0, 0.0)).intersect(ui.clip_rect()));
             if c.name == "Label" {
                 p.rect_filled(Rect::from_center_size(pos2(cr.min.x + 12.0, cr.center().y), vec2(10.0, 10.0)), 2.0, label_color(app, it.label));
-                p.text(pos2(cr.min.x + 22.0, cr.center().y), Align2::LEFT_CENTER, it.label.name(), Tokens::ui(lc.font - 0.5), t.text_dim);
+                p.text(
+                    pos2(cr.min.x + 22.0, cr.center().y),
+                    Align2::LEFT_CENTER,
+                    crate::i18n::label_name(it.label.name()),
+                    Tokens::ui(lc.font - 0.5),
+                    t.text_dim,
+                );
             } else {
                 let (text, _) = pp::cell(&app.session.project, &it, &c.name);
                 p.text(pos2(cr.min.x + 6.0, cr.center().y), Align2::LEFT_CENTER, text, Tokens::ui(lc.font - 0.5), t.text_dim);

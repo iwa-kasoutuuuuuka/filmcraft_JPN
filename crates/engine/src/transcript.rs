@@ -535,9 +535,11 @@ pub(crate) fn captions_from_words(s: &mut Session, words: &[SeqWord], p: &Value)
     let format = str_p(p, "format").and_then(CaptionFormat::from_name).unwrap_or_default();
     let name = str_p(p, "name").unwrap_or("Transcript").to_string();
     let n = blocks.len();
+    let font = s.default_text_font();
     let tid = s.edit_sequence("Create Captions", |q, ctx, st| {
         let tid = TrackId(ctx.alloc());
         let mut t = CaptionTrack::new(tid, name, format);
+        t.style.font = font;
         t.captions = tx::blocks_to_captions(&blocks, ctx);
         q.caption_tracks.insert(0, t);
         st.caption_selection.clear();

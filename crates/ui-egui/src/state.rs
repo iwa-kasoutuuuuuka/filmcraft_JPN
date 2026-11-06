@@ -484,6 +484,9 @@ pub struct UiState {
     /// The Animated Chart editor (open when Some). See `panels::chart_editor`.
     #[serde(default)]
     pub chart_editor: Option<ChartEditorDraft>,
+    /// Generate Narration (open when Some). See `panels::narration`.
+    #[serde(default)]
+    pub narration: Option<crate::panels::narration::NarrationDraft>,
     /// M3.11 menu items: their dialog, Dynamic Audio Waveforms, the Media Browser selection. See
     /// `panels::menu_dialogs`.
     #[serde(default)]
@@ -830,6 +833,7 @@ impl Default for UiState {
             guide_dialog: None,
             clip_dialog: None,
             chart_editor: None,
+            narration: None,
             extras: Default::default(),
             gfx_templates: Default::default(),
             panels: Default::default(),

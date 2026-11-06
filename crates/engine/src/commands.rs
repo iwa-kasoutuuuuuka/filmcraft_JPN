@@ -985,6 +985,25 @@ fn build() -> Vec<CommandSpec> {
             }
             Ok(json!({"discarded": n}))
         }),
+        cmd!("file.snoozeRecovery", "Not Now (Recover Unsaved Changes)", [], None, r#"{"id":str?,"all":bool?}"#, has_recovery, |s, p| {
+            // "Not Now": keep the unsaved changes (File ▸ Recover Unsaved Changes… still offers
+            // them) but stop asking at every launch; a later crash prompts again
+            let all = bool_p(p, "all").unwrap_or(false);
+            let id = str_p(p, "id").map(str::to_string);
+            let Some(per) = s.persistence.as_mut() else { return Ok(json!({"snoozed": 0})) };
+            let mut n = 0;
+            for (i, c) in per.candidates.iter_mut().enumerate() {
+                if all || id.as_deref().map_or(i == 0, |want| want == c.id) {
+                    crate::autosave::snooze_candidate(c).map_err(|e| EngineError::Other(e.to_string()))?;
+                    c.snoozed = true;
+                    n += 1;
+                }
+            }
+            if n == 0 {
+                return Err(bad("file.snoozeRecovery", "no such recovery session"));
+            }
+            Ok(json!({"snoozed": n}))
+        }),
         query!("file.recoveryList", "List Recoverable Sessions", "{}", |s, _| {
             Ok(s.persistence.as_ref().map(|p| p.candidates_json()).unwrap_or_else(|| json!([])))
         }),
@@ -1047,7 +1066,7 @@ fn build() -> Vec<CommandSpec> {
             "Media…",
             ["File", "Export"],
             None,
-            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|flac"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"maxBitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"keyframeDistance":u32?,"sdr":bool?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudnessLufs":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"alpha":bool=false,"dnxProfile":"lb|sq|hq|hqx"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false,"saveProject":bool?,"projectPath":str?}"#,
+            r#"{"path":str,"preset":str?,"settings":ExportSettings?,"format":"h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff|flac"?,"width":u32?,"height":u32?,"fps":f64?,"bitrateKbps":u32?,"maxBitrateKbps":u32?,"bitrateMode":"cbr|vbr1Pass|vbr2Pass"?,"keyframeDistance":u32?,"sdr":bool?,"scale":f32=1,"audio":bool=true,"quality":0..100,"burnCaptions":bool=false,"captionSidecar":"srt|vtt"?,"loudness":"streaming|podcast|ebuR128|atscA85|aribTrB32"|lufs|false?,"loudnessLufs":f64?,"truePeakDbtp":f64?,"proresProfile":"proxy|lt|standard|hq|4444|4444xq"?,"alpha":bool=false,"dnxProfile":"lb|sq|hq|hqx"?,"mxfVideoCodec":"dnxhr|proRes|h264"?,"sequence":id?,"range":"entire|inOut|workArea|custom"?,"startSeconds":f64?,"endSeconds":f64?,"wait":bool=false,"saveProject":bool?,"projectPath":str?}"#,
             has_seq,
             crate::export_tools::export_media
         ),
@@ -2416,6 +2435,8 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::scopes::commands());
     v.extend(crate::remix::commands());
     v.extend(crate::voiceover::commands());
+    v.extend(crate::narration::commands());
+    v.extend(crate::narration_credits::commands());
     v.extend(crate::keyboard::commands());
     v.extend(crate::project_panel::commands());
     v.extend(crate::media_browser::commands());

@@ -10,6 +10,9 @@
 //!   [`ExportSettings`] JSON object in camelCase, merged over the preset) and a few flat
 //!   overrides (`format`, `width`/`height`, `fps`, `bitrateKbps`, …), plus `path`, `sequence` and
 //!   `range` (`entire` | `inOut` | `workArea` | `custom` with `start…` / `end…` times).
+//!   Loudness Normalization: `loudness` (a delivery target from `export.loudnessTargets`, such as
+//!   `streaming` = −14 LUFS / −1 dBTP or `ebuR128` = −23 LUFS / −1 dBTP; a LUFS number; or
+//!   `false`), `loudnessLufs` and `truePeakDbtp`.
 //! - **Queue** (session state, not saved with the project). `export.queue.add` snapshots the
 //!   project and resolves the settings; `export.queue.start` encodes the ready items one after
 //!   another as ordinary background jobs ([`crate::Job`], visible in `jobs.list`); the frontend's
@@ -18,6 +21,7 @@
 //!   initially Match Source – Adaptive High Bitrate) to a default path next to the project.
 //!
 //! Commands: `export.presets.{list,get,save,delete,favorite,import,export}`, `export.formats`,
+//! `export.loudnessTargets`,
 //! `export.resolve`, `export.queue.{add,list,start,stop,cancel,retry,remove,move,clear}`,
 //! `export.quick`; `file.exportMedia` uses the same settings builder.
 
@@ -26,7 +30,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use filmcraft_export::presets::{DEFAULT_PRESET, preset_key};
-use filmcraft_export::{ExportPreset, ExportSettings, Format};
+use filmcraft_export::{ExportPreset, ExportSettings, Format, LOUDNESS_TARGETS, LoudnessNormalization, LoudnessTarget};
 use filmcraft_project::{ItemId, Project};
 use filmcraft_time::{FrameRate, Tick, TimeRange};
 use serde::{Deserialize, Serialize};
@@ -227,10 +231,40 @@ pub fn settings_from_params(s: &Session, p: &Value, cmd: &str) -> Result<(Option
     if let Some(v) = str_p(p, "captionSidecar") {
         settings.caption_sidecar = (!v.is_empty() && v != "none").then(|| v.to_ascii_lowercase());
     }
+    // Loudness Normalization: `loudness` = a delivery target ("streaming", "podcast", "ebuR128",
+    // "atscA85", "aribTrB32"; also "youtube", "broadcast", …), a LUFS number, or false / "off";
+    // `loudnessLufs` / `truePeakDbtp` set the numbers (and turn it on)
+    match p.get("loudness") {
+        None | Some(Value::Null) => {}
+        Some(Value::Bool(on)) => settings.effects.loudness.enabled = *on,
+        Some(Value::Number(n)) => {
+            settings.effects.loudness.enabled = true;
+            settings.effects.loudness.target_lufs = n.as_f64().unwrap_or(settings.effects.loudness.target_lufs);
+        }
+        Some(Value::String(t)) if matches!(t.to_ascii_lowercase().as_str(), "off" | "none" | "") => settings.effects.loudness.enabled = false,
+        Some(Value::String(t)) => {
+            let target = LoudnessTarget::find(t).ok_or_else(|| {
+                bad(
+                    cmd,
+                    format!("loudness `{t}`: one of {} (or a LUFS number, or \"off\")", LOUDNESS_TARGETS.iter().map(|x| x.id).collect::<Vec<_>>().join(", ")),
+                )
+            })?;
+            settings.effects.loudness = LoudnessNormalization::at(target);
+        }
+        Some(other) => return Err(bad(cmd, format!("loudness: a target name, a LUFS number or false, not {other}"))),
+    }
     if let Some(v) = f64_p(p, "loudnessLufs") {
         settings.effects.loudness.enabled = true;
         settings.effects.loudness.target_lufs = v;
     }
+    if let Some(v) = f64_p(p, "truePeakDbtp") {
+        settings.effects.loudness.enabled = true;
+        settings.effects.loudness.true_peak_dbtp = v;
+    }
+    // hostile numbers: the meter's range, and a ceiling the limiter can hold
+    let ln = &mut settings.effects.loudness;
+    ln.target_lufs = if ln.target_lufs.is_finite() { ln.target_lufs.clamp(-60.0, 0.0) } else { -23.0 };
+    ln.true_peak_dbtp = if ln.true_peak_dbtp.is_finite() { ln.true_peak_dbtp.clamp(-24.0, 0.0) } else { -1.0 };
     settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
     Ok((preset, settings))
 }
@@ -1011,6 +1045,11 @@ fn presets_export(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "presets": list.len()}))
 }
 
+/// Export ▸ Effects ▸ Loudness Normalization targets (the `loudness` parameter).
+fn loudness_targets(_: &mut Session, _: &Value) -> Result<Value> {
+    Ok(Value::Array(LOUDNESS_TARGETS.iter().map(|t| json!({"id": t.id, "label": t.label, "targetLufs": t.lufs, "truePeakDbtp": t.true_peak_dbtp})).collect()))
+}
+
 fn formats(_: &mut Session, _: &Value) -> Result<Value> {
     Ok(Value::Array(
         Format::ALL
@@ -1054,6 +1093,7 @@ pub(crate) fn commands() -> Vec<CommandSpec> {
         spec("export.presets.import", "Import Export Presets", r#"{"path":str}"#, always, presets_import, true),
         spec("export.presets.export", "Export Export Presets", r#"{"path":str,"names":[str]?}"#, always, presets_export, false),
         spec("export.formats", "List Export Formats", "{}", always, formats, false),
+        spec("export.loudnessTargets", "List Loudness Targets", "{}", always, loudness_targets, false),
         spec("export.resolve", "Resolve Export Settings", "{…settings params, \"path\":str?}", has_seq, resolve, false),
         spec(
             "export.queue.add",

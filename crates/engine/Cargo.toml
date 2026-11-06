@@ -15,6 +15,8 @@ default = []
 whisper = ["filmcraft-speech/whisper"]
 # Speech-model downloads over HTTPS.
 speech-download = ["filmcraft-speech/download"]
+# Narration (text-to-speech) through a local AivisSpeech / VOICEVOX engine over HTTP.
+tts = ["filmcraft-speech/tts"]
 
 [dependencies]
 filmcraft-time = { workspace = true }
@@ -42,5 +44,7 @@ log = { workspace = true }
 web-time = "1"
 
 [dev-dependencies]
+# the narration tests talk to a fake engine over HTTP
+filmcraft-speech = { workspace = true, features = ["tts"] }
 filmcraft-testkit = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }

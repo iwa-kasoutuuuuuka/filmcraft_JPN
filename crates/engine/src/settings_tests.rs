@@ -35,6 +35,7 @@ fn import_png(s: &mut Session, dir: &Path, name: &str, w: u32, h: u32) -> ItemId
 }
 
 #[test]
+/// (Narration is FilmCraft's own page, in alphabetical place.)
 fn categories_follow_premiere_order() {
     let ids: Vec<&str> = settings::categories().iter().map(|c| c.id).collect();
     assert_eq!(
@@ -52,6 +53,7 @@ fn categories_follow_premiere_order() {
             "mediaAnalysis",
             "mediaCache",
             "memory",
+            "narration",
             "playback",
             "plugins",
             "timeline",
@@ -685,4 +687,47 @@ fn every_inactive_setting_says_why() {
     let get = |k: &str| fields.iter().find(|f| f["key"] == k).unwrap()["unavailable"].clone();
     assert_eq!(get("playback.enableTransmit"), "notApplicable");
     assert_eq!(get("playback.pauseEncoderQueue"), Value::Null);
+}
+
+/// Settings ▸ Graphics ▸ default font on Automatic (the new default): new text, caption tracks and
+/// charts use the bundled Japanese face in a Japanese interface, so Latin and kana match (before,
+/// Latin was Inter and kana fell back to the Japanese face); Inter otherwise; a chosen font wins.
+/// A v3 file's stored "Inter" (the old default) becomes Automatic; another font stays.
+#[test]
+fn automatic_default_font_is_japanese_in_a_japanese_interface() {
+    let jp = filmcraft_text::fonts::JAPANESE_FAMILY;
+    let mut s = demo();
+    assert_eq!(s.prefs.graphics.default_font, "", "Automatic by default");
+    let font = |s: &Session| {
+        let c = s.state.selection[0];
+        let it = s.active_sequence().unwrap().find_item(c).unwrap().1.clone();
+        it.effects.iter().rev().find(|e| e.effect.contains("text")).map(|e| e.params["font"].value.clone()).unwrap()
+    };
+    let caption_font = |s: &mut Session| {
+        let t = s.execute("captions.newTrack", json!({})).unwrap()["track"].as_u64().unwrap();
+        s.active_sequence().unwrap().caption_tracks.iter().find(|c| c.id.0 == t).map(|c| c.style.font.clone()).unwrap()
+    };
+    let chart_font = |s: &mut Session| {
+        s.execute("graphics.newChart", json!({})).unwrap();
+        s.execute("graphics.chart", json!({})).unwrap()["chart"]["font"].as_str().unwrap().to_string()
+    };
+    // English interface (the engine's default, as in the CLI): Inter
+    s.execute("graphics.newText", json!({"text": "Tokyo 東京", "newClip": true})).unwrap();
+    assert_eq!(font(&s), ParamValue::Text("Inter".into()));
+    assert_eq!(caption_font(&mut s), "Inter");
+    // Japanese interface: the Japanese face everywhere new
+    s.japanese_text = true;
+    s.execute("graphics.newText", json!({"text": "Tokyo 東京", "newClip": true})).unwrap();
+    assert_eq!(font(&s), ParamValue::Text(jp.into()));
+    assert_eq!(caption_font(&mut s), jp);
+    assert_eq!(chart_font(&mut s), jp);
+    // a chosen font wins
+    set(&mut s, "graphics.defaultFont", json!("Noto Serif"));
+    s.execute("graphics.newText", json!({"text": "x", "newClip": true})).unwrap();
+    assert_eq!(font(&s), ParamValue::Text("Noto Serif".into()));
+    // migration: the old default becomes Automatic, a chosen font stays
+    let p = Preferences::from_value(json!({"version": 3, "graphics": {"defaultFont": "Inter"}}));
+    assert_eq!(p.graphics.default_font, "");
+    let p = Preferences::from_value(json!({"version": 3, "graphics": {"defaultFont": "Noto Serif"}}));
+    assert_eq!(p.graphics.default_font, "Noto Serif");
 }

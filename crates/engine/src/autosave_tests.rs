@@ -135,6 +135,44 @@ fn quitting_with_unsaved_changes_keeps_them_for_next_launch() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// "Not Now" keeps the unsaved changes but stops the launch prompt for good: the next launch
+/// still lists them (File ▸ Recover Unsaved Changes…) and can recover them, but doesn't ask.
+/// A later session left with unsaved changes asks again. Before, "Not Now" asked at every launch.
+#[test]
+fn not_now_keeps_the_changes_without_asking_at_every_launch() {
+    let d = temp_dir("snooze");
+    let mut a = demo();
+    start(&mut a, &d);
+    a.execute("sequence.addEdit", json!({"seconds": 1.0})).unwrap();
+    a.shutdown();
+    let mut b = Session::default();
+    start(&mut b, &d);
+    assert!(b.recovery_prompt_due(), "a fresh candidate asks");
+    assert_eq!(b.execute("file.snoozeRecovery", json!({"all": true})).unwrap()["snoozed"], 1);
+    assert!(!b.recovery_prompt_due());
+    b.shutdown();
+    let mut c = Session::default();
+    start(&mut c, &d);
+    assert_eq!(c.recovery_candidates().len(), 1, "kept");
+    assert!(c.recovery_candidates()[0].snoozed);
+    assert_eq!(c.execute("file.recoveryList", json!({})).unwrap()[0]["snoozed"], true);
+    assert!(!c.recovery_prompt_due(), "no prompt at the next launch");
+    // a new session with unsaved changes prompts again; the snoozed one is still there
+    c.execute("file.openDemoProject", json!({})).unwrap();
+    c.execute("sequence.addEdit", json!({"seconds": 2.0})).unwrap();
+    let _ = journaled(&mut c);
+    c.shutdown();
+    let mut e = Session::default();
+    start(&mut e, &d);
+    assert_eq!(e.recovery_candidates().len(), 2);
+    assert!(e.recovery_prompt_due());
+    // recover still works on a snoozed one
+    let snoozed = e.recovery_candidates().iter().find(|c| c.snoozed).map(|c| c.id.clone()).unwrap();
+    e.execute("file.recover", json!({"id": snoozed})).unwrap();
+    e.shutdown();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn auto_save_ring_rotates_and_can_save_the_project() {
     let d = temp_dir("ring");

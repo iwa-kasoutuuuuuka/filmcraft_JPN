@@ -117,9 +117,14 @@ fn missing(id: &str) -> String {
 
 /// Resolve a point from `{id}` (element centre, or `fx`,`fy` fractions of its rect) or `{x, y}`.
 /// `waited`: laid-out frames the request has waited so far.
-fn point(app: &FilmcraftApp, p: &Value, waited: u64) -> Result<egui::Pos2, PointError> {
+fn point(app: &FilmcraftApp, ctx: &egui::Context, p: &Value, waited: u64) -> Result<egui::Pos2, PointError> {
     if let Some(id) = p.get("id").and_then(Value::as_str) {
         let rect = element_rect(app, id, waited)?;
+        // input aimed at a control under an open dialog would land on the dialog's backdrop and
+        // do nothing, yet report success: say so instead
+        if behind_modal(ctx, rect) {
+            return Err(PointError::Invalid(format!("element \"{id}\" is behind an open dialog (close it first; see ui.elements for the dialog's controls)")));
+        }
         let f = |k: &str| p.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(0.5) as f32;
         return Ok(egui::pos2(rect[0] + rect[2] * f("fx"), rect[1] + rect[3] * f("fy")));
     }
@@ -127,6 +132,19 @@ fn point(app: &FilmcraftApp, p: &Value, waited: u64) -> Result<egui::Pos2, Point
     let x = coord("x").ok_or_else(|| PointError::Invalid("need `id` or `x`,`y`".into()))?;
     let y = coord("y").ok_or_else(|| PointError::Invalid("need `y`".into()))?;
     Ok(egui::pos2(x as f32, y as f32))
+}
+
+/// Is the element drawn on a layer below the top modal (a dialog that blocks everything behind
+/// it)? Matched through egui's own widget rects of the last pass; an element egui has no widget
+/// for (a painted region) is not judged.
+fn behind_modal(ctx: &egui::Context, rect: [f32; 4]) -> bool {
+    let r = egui::Rect::from_min_size(egui::pos2(rect[0], rect[1]), egui::vec2(rect[2], rect[3]));
+    let near = |a: egui::Rect| (a.min - r.min).length() < 0.5 && (a.max - r.max).length() < 0.5;
+    let layers: Vec<egui::LayerId> = ctx.viewport(|v| {
+        let w = &v.prev_pass.widgets;
+        w.layer_ids().flat_map(|l| w.get_layer(l)).filter(|w| near(w.rect) || near(w.interact_rect)).map(|w| w.layer_id).collect()
+    });
+    !layers.is_empty() && ctx.memory(|m| layers.iter().all(|l| !m.is_above_modal_layer(*l)))
 }
 
 /// The rect of an on-screen element once it has settled (see [`APPEAR_FRAMES`], [`SETTLE_FRAMES`]).
@@ -303,6 +321,16 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest,
                     return err(format!("`{k}`: {e}"));
                 }
             }
+            // the open Generate Narration dialog (`panels::narration`), merged
+            if let Some(patch) = p.get("narration") {
+                let Some(d) = app.ui.narration.as_ref() else { return err("the Generate Narration dialog is not open") };
+                let mut cur = serde_json::to_value(d).unwrap_or_default();
+                merge(&mut cur, patch);
+                match serde_json::from_value(cur) {
+                    Ok(v) => app.ui.narration = Some(v),
+                    Err(e) => return err(format!("`narration`: {e}")),
+                }
+            }
             // Essential Graphics ▸ Browse and the template / font dialogs (`panels::graphics_templates`), merged
             if let Some(patch) = p.get("gfxTemplates") {
                 let mut cur = serde_json::to_value(&app.ui.gfx_templates).unwrap_or_default();
@@ -345,7 +373,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest,
             ok(Value::Null)
         }
         "ui.click" | "ui.move" => {
-            let pos = match point(app, p, waited) {
+            let pos = match point(app, ctx, p, waited) {
                 Ok(p) => p,
                 Err(e) => return e.outcome(),
             };
@@ -368,7 +396,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest,
         }
         "ui.drag" => {
             let (Some(from), Some(to)) = (p.get("from"), p.get("to")) else { return err("need `from` and `to`") };
-            let (a, b) = match (point(app, from, waited), point(app, to, waited)) {
+            let (a, b) = match (point(app, ctx, from, waited), point(app, ctx, to, waited)) {
                 (Ok(a), Ok(b)) => (a, b),
                 (Err(e), _) | (_, Err(e)) => return e.outcome(),
             };
@@ -385,7 +413,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest,
             Outcome::AfterInput
         }
         "ui.scroll" => {
-            let pos = match point(app, p, waited) {
+            let pos = match point(app, ctx, p, waited) {
                 Ok(p) => p,
                 Err(e) => return e.outcome(),
             };
@@ -422,7 +450,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest,
             Outcome::AfterInput
         }
         "ui.timeline.hit" => {
-            let pos = match point(app, p, waited) {
+            let pos = match point(app, ctx, p, waited) {
                 Ok(p) => p,
                 Err(e) => return e.outcome(),
             };

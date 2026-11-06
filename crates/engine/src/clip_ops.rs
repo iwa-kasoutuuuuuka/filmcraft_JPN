@@ -518,9 +518,10 @@ fn items_p(s: &Session, p: &Value) -> Vec<ItemId> {
 }
 
 /// Fold the undo steps pushed since the history had `n0` entries into one step named `label`.
+/// Inside a command the history is not trimmed (see `Session::execute`), so `n0` taken earlier in
+/// the same command still points at its first step, however long the history is.
 pub(crate) fn collapse_history(s: &mut Session, n0: usize, label: &str) {
-    if s.history.undo.len() > n0 {
-        let first = s.history.undo[n0].1.clone();
+    if let Some(first) = s.history.undo.get(n0).map(|u| u.1.clone()) {
         s.history.undo.truncate(n0);
         s.history.undo.push((label.to_string(), first));
     }

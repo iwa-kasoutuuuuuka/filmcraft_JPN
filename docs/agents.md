@@ -61,6 +61,16 @@ resolve on your setup, point `command` at the absolute path of `target/release/f
 Typical loop: `project_inspect` / `sequence_inspect` → get ids → `command_run` → `render_frame` or
 `ui_screenshot` → look at the result → `edit.undo` if it's wrong.
 
+**Narration (text-to-speech).** For voice-over from a script use `tts.synthesize` (the user's
+local AivisSpeech or VOICEVOX app), not the operating system's speech (Windows SAPI and similar
+sound robotic). `tts.engines` says which engine runs, `tts.voices {engine}` lists voices, and one
+`tts.synthesize {engine, lines: [{text, voice}]}` places every line (each with its own voice) on an
+audio track with matching captions, as one undo step. Give the user the returned `creditText`
+(VOICEVOX voices require a credit such as `VOICEVOX:ずんだもん`; AivisSpeech models have their own
+licences) and point them to `tts.voiceTerms`. The narration is auto-leveled (Dialogue, loudness
+match) and the music under it ducked by default (`mix` in the result; `autoLevel` / `duck` turn
+that off); export with `loudness: "streaming"` (−14 LUFS / −1 dBTP) or another target from
+`export.loudnessTargets`. See [narration.md](narration.md).
 ### Project file with every export
 
 An agent's video should stay editable. In a headless session (`filmcraft-cli` subcommands, `run`

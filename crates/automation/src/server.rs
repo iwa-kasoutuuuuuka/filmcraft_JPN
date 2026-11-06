@@ -359,7 +359,7 @@ impl FilmcraftMcp {
 #[tool_handler(
     router = self.tool_router,
     name = "filmcraft",
-    instructions = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable). `project_inspect`/`sequence_inspect` return ids you can pass to commands; `render_frame` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). Headless exports also save a FilmCraft project file beside the video (result field `project`), so the user can open the edit in the app."
+    instructions = "FilmCraft video editor (Premiere Pro-class). Every edit is an engine command: `command_list` to discover ids/params, `command_run` to execute (undoable). `project_inspect`/`sequence_inspect` return ids you can pass to commands; `render_frame` shows the result. In bridge mode the `ui_*` tools drive the live app: `ui_elements` lists clickable ids, `ui_click`/`ui_drag`/`ui_key` operate it, `ui_screenshot` shows it. Time is in ticks: 254016000000 per second (commands also accept `seconds`, `frame` or `timecode`). Narration from text: `tts.synthesize` (the local AivisSpeech / VOICEVOX app; `tts.engines`, `tts.voices`), never the operating system's speech; show the user its `creditText`. Headless exports also save a FilmCraft project file beside the video (result field `project`), so the user can open the edit in the app."
 )]
 impl ServerHandler for FilmcraftMcp {}
 

@@ -29,6 +29,7 @@ pub mod mixer;
 pub mod monitor;
 pub mod monitor_view;
 pub mod multicam;
+pub mod narration;
 pub mod panel_state;
 pub mod presets;
 pub mod project;

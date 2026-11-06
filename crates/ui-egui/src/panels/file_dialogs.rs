@@ -109,10 +109,23 @@ pub fn show_recovery(app: &mut FilmcraftApp, ctx: &egui::Context) -> bool {
                         }
                     }
                     if button(app, ui, "recovery.later", crate::i18n::t("Not Now", "後で"), false) {
+                        // keep everything, stop asking at launch (a later crash asks again)
+                        if let Err(e) = app.session.execute("file.snoozeRecovery", json!({ "all": true })) {
+                            app.ui.status = e.to_string();
+                        }
                         open = false;
                     }
                 });
             });
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(crate::i18n::t(
+                    "“Not Now” keeps the changes without asking again at launch; recover them any time with File > Recover Unsaved Changes….",
+                    "「後で」を選ぶと変更は残したまま、次回からは起動時に確認しません。メニューの「ファイル」>「未保存の変更を復元…」からいつでも復元できます。",
+                ))
+                .size(11.5)
+                .color(t.text_dim),
+            );
         });
     });
     app.file_dialogs.recovery_choice = choice;

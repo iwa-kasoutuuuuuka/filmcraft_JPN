@@ -1038,6 +1038,10 @@ Time is in ticks (1 second = 254,016,000,000), but commands also accept `seconds
   ```json
   { "command": "media.createProxies", "params": { "preset": "prores_proxy_half" } }
   ```
+- **ナレーションの生成(2 人の掛け合い)**:
+  ```json
+  { "command": "tts.synthesize", "params": { "engine": "voicevox", "lines": [ { "text": "こんにちは、ずんだもんなのだ。", "voice": "ずんだもん" }, { "text": "四国めたんよ。", "voice": "四国めたん/ノーマル" } ] } }
+  ```
 
 MCP を介さずスクリプトから直接叩く場合は、制御チャネル（`filmcraft --control 9876`、1 行 1 JSON）に `{"id": 1, "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}` を送ります。詳細は [docs/control-protocol.md](docs/control-protocol.md) と [docs/agents.md](docs/agents.md) を参照してください。
 
@@ -1061,6 +1065,10 @@ From an agent you just ask something like "run `sequence.removeSilence`", but un
 - **Create proxies**:
   ```json
   { "command": "media.createProxies", "params": { "preset": "prores_proxy_half" } }
+  ```
+- **Generate narration (two voices)**:
+  ```json
+  { "command": "tts.synthesize", "params": { "engine": "voicevox", "lines": [ { "text": "こんにちは、ずんだもんなのだ。", "voice": "ずんだもん" }, { "text": "四国めたんよ。", "voice": "四国めたん/ノーマル" } ] } }
   ```
 
 To call it directly from a script without MCP, send `{"id": 1, "method": "engine.execute", "params": {"command": "sequence.addEdit", "params": {"seconds": 3}}}` to the control channel (`filmcraft --control 9876`, one JSON object per line). See [docs/control-protocol.md](docs/control-protocol.md) and [docs/agents.md](docs/agents.md) for details.
@@ -1130,6 +1138,7 @@ filmcraft-cli --demo --no-project export out.mp4   # the video only
 | **E-AC-3(ドルビーデジタルプラス)** | ファイル ➔ 読み込み | `file.import` | E-AC-3 音声を含む MP4・MKV・MPEG-TS の音声を再生・編集できます。 |
 | **動く GIF・APNG・WebP** | ファイル ➔ 読み込み | `file.import` | アニメーション GIF・APNG・アニメーション WebP を、透明部分を残したまま動画クリップとして読み込みます。 |
 | **アニメーションチャート** | グラフィックとタイトル ➔ 新規レイヤー ➔ アニメーションチャート… | `graphics.newChart` / `graphics.setChart` | 表のデータから、棒グラフレース・横棒・縦棒・折れ線・面・円・ドーナツのグラフを作り、クリップの長さに合わせて動かします。項目ごとに国旗やロゴの画像を付けられます。 |
+| **ナレーション(読み上げ)** | グラフィックとタイトル ➔ ナレーションを生成… | `tts.synthesize` / `tts.voices` / `tts.voiceTerms` | 無料の AivisSpeech / VOICEVOX アプリ(別途インストールして起動)で台本を自然な日本語音声にし、1 行ずつ別の声で音声トラックに並べ、セリフどおりのキャプションも付けます。使った声のクレジット(「VOICEVOX:ずんだもん」など)を一覧表示します。 |
 
 - **無音カット**: 既定は −40 dB 未満が 0.5 秒以上続く区間が対象で、音の前後に 0.1 秒を残します。`{"action": "detect"}` で削除せずに検出だけできます。
 - **範囲を隠す**: 実行すると画面中央に範囲が出るので、プログラムモニター上で動かしてから「選択したマスクをトラック」で追従させます。コマンドでは `{"center": [x, y], "size": [w, h], "track": "both"}` で位置指定と追従を一度に行えます。マスク付きのモザイク・ぼかしも GPU で処理されます。
@@ -1147,6 +1156,7 @@ filmcraft-cli --demo --no-project export out.mp4   # the video only
 - **PSD**: 保存時に「互換性を優先」をオンにしたファイルが対象です(オフだと合成画像が入っていないので、理由を表示します)。グレースケール・RGB・CMYK・Lab・インデックスカラー・モノクロ 2 階調・ダブルトーン(グレースケールとして)・マルチチャンネル(1 つ目のチャンネル)の 8 / 16 / 32 ビット(モードにより異なります)、RLE と ZIP 圧縮、PSB(大きいドキュメント形式)に対応します。CMYK と Lab は埋め込みの ICC プロファイルを使わずに変換します。レイヤーを個別には読みません。
 - **動く画像**: 1 コマだけのファイルは今まで通り静止画になります。各コマの表示時間はファイルのとおりで、繰り返し回数の設定は使わず 1 回分の長さのクリップになります。
 - **アニメーションチャート**: 左でグラフの種類、中央でプレビュー(再生できます)とデータ、右でテーマ(ライト / ダーク)・カラーパレット・フォント・表示する要素・アニメーションの時間を選びます。データは表の各欄を直接編集するか、表計算ソフトや CSV からコピーした表を貼り付けて読み込みます(1 行目は左上のセルのあとに年などのステップ名、2 行目以降は項目名と値)。最初の 1 秒で伸びて現れ、ステップをクリップ全体で均等に再生し、最後の 1 秒は最終ステップのまま止まります。棒グラフレースでは値の大きい順に棒が滑らかに入れ替わります。作ったチャートはタイムラインのクリップを右クリック ➔ 「チャートを編集…」で開き直せます。位置・大きさ・不透明度は通常のクリップと同じく調整できます。「データ」タブの各行で、国旗やロゴの画像を選べます(ファイルから、またはプロジェクト内の素材から。円形か角丸で表示)。棒グラフでは棒の先、縦棒グラフでは棒の上、折れ線・面・円・ドーナツでは凡例に表示します。動画を選んだ場合は最初のコマを使います。
+- **ナレーション**: AivisSpeech(http://127.0.0.1:10101)または VOICEVOX(http://127.0.0.1:50021)のアプリを起動しておくと使えます。FilmCraft はこのコンピューター上のアプリと HTTP で通信するだけで、エンジンを同梱・起動しません。ダイアログでは行ごとに声・セリフ・話速を選び、「話者: セリフ」形式の台本を貼り付けて行を作れます。「生成」はバックグラウンドで音声を作り、再生ヘッドから行を間(既定 0.3 秒)を空けて並べ、1 回の「元に戻す」で取り消せます。音声は保存したプロジェクトの隣の `Narration` フォルダーに `Narration_001_ずんだもん-ノーマル.wav` のような名前で保存します(既存のファイルは上書きしません)。**声ごとに利用規約があります**: VOICEVOX の声は「VOICEVOX:キャラクター名」のクレジット表記が必要で、AivisSpeech の音声モデルはモデルごとのライセンスに従います。生成後に表示されるクレジットをコピーして動画や概要欄に記載し、「規約」ボタン(`tts.voiceTerms`)で各声の規約を確認してください。AI エージェントには OS の読み上げ(SAPI)ではなく `tts.synthesize` を使わせてください。詳しくは [docs/narration.md](docs/narration.md)。
 - **カメラ RAW(DNG)**: 非圧縮・ロスレス JPEG・Deflate・非可逆 JPEG の DNG に対応し、ベイヤー配列のデモザイク、ホワイトバランス(撮影時の設定)、カラーマトリクス、露出補正、切り抜き、向きを反映して sRGB で表示します。X-Trans など 2×2 でない配列や浮動小数点の DNG は読めず、入っていれば埋め込みのプレビュー画像を使います。トーンカーブやレンズ補正は適用しないので、Lightroom などより平坦な見た目になります。他社の RAW(CR3・NEF・ARW など)は DNG に変換してから読み込んでください。
 - **E-AC-3**: 独立サブストリーム(5.1 チャンネルまで)を再生します。7.1 のファイルは 5.1 として再生します。AHT と拡張カップリングを使ったストリームは読めません。
 - **話者に合わせて自動切り替え**: 再生ヘッド位置のマルチカメラクリップについて、各カメラ自身のマイクの音量(50 ms ごと、0.3 秒で平滑化)を比べ、一番大きい人のカメラを映します。カットが落ち着くように、今のカメラより 6 dB 以上大きく、0.4 秒以上続いたときだけ切り替え、1 カットは 2 秒以上にします(`minShotSeconds`、`marginDb` で変更可)。引きのカメラを指定すると(`wideCamera`、1 から数える)、全員が黙っている間や 2 人が同時に話している間はそのカメラにします。引きのカメラのマイクは全員の声を拾うので、判定には使いません。各カメラが自分の音声トラックを持っている必要があります。「マルチカメラのオーディオをビデオに追従」がオンなら音声も一緒に切り替わります。解析はバックグラウンドで行うので、長い収録でも画面は止まりません(進み具合はジョブ一覧に表示され、途中で中止すると何も変更しません。解析中にそのクリップを編集した場合は、古い解析結果で上書きせずにお知らせします)。`{"action": "detect"}` で変更せずにカット位置だけを返し、`{"wait": true}` で終わるまで待って結果を返します。文字起こしや AI モデルは使いません。
@@ -1180,6 +1190,7 @@ Every feature is available both from the menus and by command ID (CLI / agents),
 | **E-AC-3 (Dolby Digital Plus)** | File ➔ Import | `file.import` | Plays and edits E-AC-3 audio in MP4, MKV and MPEG-TS files. |
 | **Animated GIF, APNG and WebP** | File ➔ Import | `file.import` | Imports animated GIF, APNG and animated WebP as video clips, keeping transparency. |
 | **Animated charts** | Graphics and Titles ➔ New Layer ➔ Animated Chart… | `graphics.newChart` / `graphics.setChart` | Turns a data table into a bar chart race, bar, column, line, area, pie or donut chart that animates over the clip. Each category can carry a flag or logo picture. |
+| **Narration (text-to-speech)** | Graphics and Titles ➔ Generate Narration… | `tts.synthesize` / `tts.voices` / `tts.voiceTerms` | Turns a script into natural Japanese speech with the free AivisSpeech / VOICEVOX app (installed and started separately), each line in its own voice, placed on an audio track with matching captions. Lists the credits of the voices used (such as `VOICEVOX:ずんだもん`). |
 
 - **Remove silence**: By default it targets stretches below −40 dB lasting 0.5 s or more, and keeps 0.1 s before and after the sound. `{"action": "detect"}` only detects without deleting.
 - **Censor region**: Running it places a region in the center of the frame; move it in the Program Monitor, then use "Track Selected Mask" to make it follow the subject. From the command, `{"center": [x, y], "size": [w, h], "track": "both"}` sets the position and tracks in one go. Masked mosaic and blur are also processed on the GPU.
@@ -1197,6 +1208,7 @@ Every feature is available both from the menus and by command ID (CLI / agents),
 - **PSD**: Files must be saved with "Maximize Compatibility" on (otherwise they hold no composite image, and the reason is shown). Grayscale, RGB, CMYK, Lab, indexed, bitmap, duotone (as grayscale) and multichannel (first channel) at 8 / 16 / 32 bits (depending on the mode), RLE and ZIP compression, and PSB (large document format) are supported. CMYK and Lab are converted without the embedded ICC profile. Layers aren't read individually.
 - **Animated images**: Single-frame files still import as stills. Each frame keeps the duration the file gives it; the loop count is ignored, so the clip is one pass long.
 - **Animated charts**: Pick the chart type on the left, preview it (playable) or edit its data in the middle, and choose the theme (light / dark), colour palette, font, what to show and the animation timing on the right. Edit the table cell by cell, or paste a table copied from a spreadsheet or CSV (the first row is a corner cell and then the step names such as years; each further row is a category name and its values). The chart grows in over the first second, plays the steps evenly across the clip and holds the last step for the final second; in a bar chart race the bars reorder smoothly by value. Reopen a chart with right-click ➔ "Edit Chart…" on its timeline clip. Position, scale and opacity work as on any clip. Each row of the Data tab can carry a flag or logo picture (from a file or a project item, shown as a circle or rounded square): past the bar's end in bar charts, on top of the column in column charts, and in the legend for line, area, pie and donut. A movie uses its first frame.
+- **Narration**: Start the AivisSpeech (http://127.0.0.1:10101) or VOICEVOX (http://127.0.0.1:50021) app first. FilmCraft only talks to the app over HTTP on this computer; it never bundles or starts the engines. In the dialog each line has a voice, text and speed, and a pasted "Speaker: line" script becomes lines. Generate renders in the background, places the lines from the playhead with a pause between them (0.3 s by default), and is one Undo. The audio is saved in a `Narration` folder next to the saved project, named like `Narration_001_ずんだもん-ノーマル.wav` (existing files are never overwritten). **Every voice has its own terms**: VOICEVOX voices require a credit such as `VOICEVOX:ずんだもん`, and AivisSpeech voice models follow each model's licence. Copy the credits shown after generating into the video or its description, and check each voice's terms with the Terms button (`tts.voiceTerms`). Have AI agents use `tts.synthesize` rather than the operating system's speech (SAPI). See [docs/narration.md](docs/narration.md).
 - **Camera raw (DNG)**: Uncompressed, lossless JPEG, Deflate and lossy JPEG DNGs are supported, with Bayer demosaicing, as-shot white balance, colour matrices, baseline exposure, crop and orientation, shown in sRGB. X-Trans and other non-2×2 layouts and floating-point DNGs can't be developed; their embedded preview is used if there is one. Tone curves and lens corrections aren't applied, so pictures look flatter than in Lightroom and similar apps. Convert other raw formats (CR3, NEF, ARW…) to DNG first.
 - **E-AC-3**: The independent substream (up to 5.1) plays; 7.1 files play as 5.1. Streams using AHT or enhanced coupling can't be decoded.
 - **Auto-switch to speaker**: For the multi-camera clip at the playhead, compares the level of each camera's own microphone (every 50 ms, smoothed over 0.3 s) and shows the camera of the loudest person. To keep cuts steady, it only switches when the new camera is at least 6 dB louder for at least 0.4 s, and each shot lasts at least 2 seconds (changeable with `minShotSeconds` and `marginDb`). If you specify a wide camera (`wideCamera`, counted from 1), that camera is used while everyone is silent or two people talk at once. The wide camera's mic picks up everyone, so it isn't used for detection. Each camera must have its own audio track. With "Multi-Camera Audio Follows Video" on, the audio switches too. Analysis runs in the background, so the UI doesn't freeze even on long recordings (progress shows in the job list; cancelling midway changes nothing; if you edit the clip during analysis, you're notified instead of having it overwritten with stale results). `{"action": "detect"}` returns only the cut points without changing anything, and `{"wait": true}` waits until it finishes and returns the result. No transcription or AI model is used.
@@ -1233,6 +1245,11 @@ Every feature is available both from the menus and by command ID (CLI / agents),
 - AI エージェント向け: ID を指定したクリック・ドラッグ・スクロールなどは、開いた直後のダイアログのように部品がまだ表示されていなければ少し待ってから操作し、見つからなければエラーを返します(以前は何もせずに成功を返していました)。
 - 環境設定で効果のなかった項目のうち 10 項目(挿入・上書き後にタイムラインを選択、マッチフレームでイン点を設定、開いていたシーケンスの復元、マウスホイールのスクロール方向、タブ名の「プロジェクト:」表示、タイムコードの生成、ハードウェアデコード、ヒンディー数字、ソースモニターでのモノラル化、再生中の書き出しキュー一時停止)が働くようになりました。まだ働かない項目は灰色で表示し、理由をツールチップに出します(一覧は [`docs/preferences.md`](docs/preferences.md))。
 - AV1 のデコードを高速化しました(4K で約 30 → 40 fps、出力は変わりません)。
+- 「未保存の変更を復元」で「後で」を選ぶと、変更は残したまま次回からは起動時に確認しません(ファイル ➔ 未保存の変更を復元… からいつでも復元できます。新しく異常終了したときはまた確認します)。
+- 画面が日本語のとき、新しく作るテキスト・字幕・チャートの既定フォントを同梱の BIZ UDPゴシックにしました。英数字とかな・漢字が同じフォントでそろいます(環境設定 ➔ グラフィック ➔ 既定のフォントが空欄=自動のとき。作成済みのテキストは変わりません)。
+- 書き出しプリセットの説明文と、ラベルの色の名前(アイリス・マンゴーなど)を日本語で表示するようにしました(自分で付けたラベル名はそのまま)。
+- 環境設定で FilmCraft が使わない項目の横に「FilmCraft にない機能」「未対応」と表示し、ポインタを重ねなくても理由が分かるようにしました。
+- AI エージェント向け: 開いているダイアログに隠れた部品を ID でクリックすると、何もせずに成功を返すのではなく、エラーを返します。
 - 5.1 チャンネルの素材をステレオトラックに置いたとき、先頭の 2 チャンネル(L・R)だけが使われ、センター(多くの場合セリフ)とサラウンドが聞こえなかった問題を直しました。チャンネルを指定していなければ BS.775 でステレオにまとめます。あわせて、5.1 の AAC でセンターと左右が入れ替わっていた問題も直しました。
 
 <details>
@@ -1266,6 +1283,11 @@ Every feature is available both from the menus and by command ID (CLI / agents),
 - For AI agents: clicks, drags, scrolls and the like by ID wait briefly for a control that isn't on screen yet (such as in a dialog that has just opened) and return an error if it never appears (they used to report success and do nothing).
 - Ten preferences that had no effect now work (focus the Timeline after Insert/Overwrite, Match Frame sets the In point, restore open sequences, mouse-wheel scrolling direction, "Project:" in tab names, generated timecode, hardware decoding, Hindi digits, summing to mono in the Source Monitor, pausing the export queue during playback). The ones that still don't are greyed out with the reason in a tooltip (full list in [`docs/preferences.md`](docs/preferences.md)).
 - AV1 decoding is faster (about 30 → 40 fps at 4K, identical output).
+- "Not Now" in Recover Unsaved Changes keeps the changes and stops asking at every launch (File ➔ Recover Unsaved Changes… still recovers them; a new crash asks again).
+- With the interface in Japanese, new text, captions and charts default to the bundled BIZ UDPGothic, so Latin and Japanese characters match (when Settings ➔ Graphics ➔ default font is empty, i.e. Automatic; existing text is unchanged).
+- Built-in export preset descriptions and the label colour names (Iris, Mango…) are shown in Japanese in the Japanese interface (label names you typed stay as typed).
+- Settings FilmCraft doesn't act on now say "Not in FilmCraft" or "Not yet" beside them, so the reason shows without hovering.
+- For AI agents: clicking by ID a control hidden behind an open dialog returns an error instead of reporting success and doing nothing.
 - A 5.1 clip on a stereo track used only its first two channels (L and R), so the centre (usually the dialogue) and the surrounds were silent. With no channels picked it is now folded down to stereo with BS.775. 5.1 AAC also had its centre and left/right swapped; fixed.
 
 </details>

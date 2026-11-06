@@ -487,3 +487,27 @@ fn exports_default_to_the_video_folder() {
     assert_eq!(crate::export_tools::video_dir(&home), home.join("Movies"));
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[test]
+fn loudness_targets_by_name_number_and_off() {
+    let mut s = demo();
+    let ln = |s: &mut Session, p: Value| s.execute("export.resolve", p).unwrap()["settings"]["effects"]["loudness"].clone();
+    let l = ln(&mut s, json!({"preset": "YouTube 1080p Full HD", "loudness": "youtube"}));
+    assert_eq!((l["enabled"].as_bool(), l["target_lufs"].as_f64(), l["true_peak_dbtp"].as_f64()), (Some(true), Some(-14.0), Some(-1.0)));
+    for (name, lufs, tp) in [("ebuR128", -23.0, -1.0), ("broadcast", -23.0, -1.0), ("ATSC", -24.0, -2.0), ("arib", -24.0, -1.0), ("podcast", -16.0, -1.0)] {
+        let l = ln(&mut s, json!({"loudness": name}));
+        assert_eq!((l["target_lufs"].as_f64(), l["true_peak_dbtp"].as_f64()), (Some(lufs), Some(tp)), "{name}");
+    }
+    let l = ln(&mut s, json!({"loudness": -18, "truePeakDbtp": -1.5}));
+    assert_eq!((l["enabled"].as_bool(), l["target_lufs"].as_f64(), l["true_peak_dbtp"].as_f64()), (Some(true), Some(-18.0), Some(-1.5)));
+    let l = ln(&mut s, json!({"preset": "TikTok 1080×1920", "loudness": "off"}));
+    assert_eq!(l["enabled"], false);
+    // hostile numbers are clamped; unknown names are errors
+    let l = ln(&mut s, json!({"loudnessLufs": 1e300, "truePeakDbtp": -1e300}));
+    assert_eq!((l["target_lufs"].as_f64(), l["true_peak_dbtp"].as_f64()), (Some(0.0), Some(-24.0)));
+    assert!(s.execute("export.resolve", json!({"loudness": "loud"})).is_err());
+    assert!(s.execute("export.resolve", json!({"loudness": [1]})).is_err());
+    let t = s.execute("export.loudnessTargets", json!({})).unwrap();
+    assert_eq!(t[0]["id"], "streaming");
+    assert!(t.as_array().unwrap().iter().any(|x| x["id"] == "aribTrB32" && x["targetLufs"] == -24.0));
+}

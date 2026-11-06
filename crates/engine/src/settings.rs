@@ -27,7 +27,7 @@ use crate::{EngineError, Result, Session};
 /// Essential Sound presets. v2: every Settings category. v3: Timeline Mouse Scrolling takes effect
 /// (v2 files said `vertical`, the old default, while the wheel scrolled horizontally; they are
 /// migrated to `horizontal` so nothing changes for them).
-pub const PREFS_VERSION: u32 = 3;
+pub const PREFS_VERSION: u32 = 4;
 
 // ------------------------------------------------------------------ category values
 
@@ -195,7 +195,8 @@ impl Default for GraphicsPrefs {
             text_miter_limit: 2.5,
             text_line_cap: "butt".into(),
             background_fill: "allLines".into(),
-            default_font: "Inter".into(),
+            // empty = Automatic: the Japanese face when the interface is Japanese, else Inter
+            default_font: String::new(),
             missing_font_replacement: "Inter".into(),
             emoji_font: String::new(),
             shape_line_join: "miter".into(),
@@ -724,6 +725,8 @@ const LANGUAGES: &[(&str, &str)] = &[
 ];
 const MODELS: &[(&str, &str)] =
     &[("whisper-tiny", "Whisper tiny (fastest)"), ("whisper-base", "Whisper base (balanced)"), ("whisper-small", "Whisper small (most accurate)")];
+/// Product names read the same in every language.
+const TTS_ENGINES: &[(&str, &str)] = &[("aivisspeech", "AivisSpeech"), ("voicevox", "VOICEVOX")];
 const CACHE_MGMT: &[(&str, &str)] = &[
     ("never", "Do not delete cache files automatically"),
     ("olderThan", "Automatically delete cache files older than"),
@@ -1021,6 +1024,28 @@ static CATEGORIES: &[Category] = &[
             f("memory.frameCacheMb", "Frame cache for monitors and thumbnails", int(64.0, 65_536.0, "MB"), true),
         ],
     },
+    // FilmCraft's own: Graphics and Titles ▸ Generate Narration… (`tts.*`)
+    Category {
+        id: "narration",
+        title: "Narration",
+        rows: &[
+            f("narration.engine", "Default engine", Kind::Choice(TTS_ENGINES), true),
+            f("narration.aivisspeechUrl", "AivisSpeech address", Kind::Text, true),
+            f("narration.voicevoxUrl", "VOICEVOX address", Kind::Text, true),
+            f("narration.defaultVoice", "Default voice (Speaker/Style)", Kind::Text, true),
+            f("narration.folder", "Folder for narration audio", Kind::Path, true),
+            f("narration.pauseSeconds", "Pause after each line", float(0.0, 30.0, 2, "seconds"), true),
+            b("narration.captions", "Make captions from the lines", true),
+            f("narration.captionMaxChars", "Split captions longer than", int(0.0, 10_000.0, "characters"), true),
+            b("narration.autoLevel", "Auto-level narration (Dialogue type, loudness match)", true),
+            b("narration.duck", "Duck other audio under the narration", true),
+            f("narration.duckReduceDb", "Duck other audio by", float(-40.0, 0.0, 1, "dB"), true),
+            b("narration.creditRoll", "Add a credit roll of the voices at the end", true),
+            Row::Note(
+                "Narration uses the free AivisSpeech or VOICEVOX app, installed and started separately; FilmCraft talks to it on this computer. Every voice has its own terms: credit the voices you use (Generate Narration lists the credits).",
+            ),
+        ],
+    },
     Category {
         id: "playback",
         title: "Playback",
@@ -1212,6 +1237,16 @@ pub fn migrate(v: &mut Value) {
             t.insert("mouseScrolling".into(), json!("horizontal"));
         }
         m.insert("version".into(), json!(3));
+    }
+    if ver < 4 {
+        // v3 stored the old default font "Inter"; v4's default is Automatic (empty), which picks
+        // the Japanese face for a Japanese interface. A font the user chose stays.
+        if let Some(g) = m.get_mut("graphics").and_then(Value::as_object_mut)
+            && g.get("defaultFont").and_then(Value::as_str) == Some("Inter")
+        {
+            g.insert("defaultFont".into(), json!(""));
+        }
+        m.insert("version".into(), json!(4));
     }
 }
 

@@ -235,10 +235,12 @@ pub fn commands() -> Vec<CommandSpec> {
                 let name = str_p(p, "name").map(str::to_string).unwrap_or_else(|| format.label().to_string());
                 let lang = str_p(p, "language").unwrap_or("en").to_string();
                 let seq = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+                let font = s.default_text_font();
                 let id = s.edit("Add Caption Track", |pr, _| {
                     let id = TrackId(pr.alloc_id());
                     let mut t = CaptionTrack::new(id, name, format);
                     t.language = lang;
+                    t.style.font = font;
                     if format == CaptionFormat::Cea608 {
                         t.style.background_color = [0, 0, 0, 255];
                     }
@@ -303,12 +305,13 @@ pub fn commands() -> Vec<CommandSpec> {
             |s, p| {
                 let tid = track_param(s, p).ok_or_else(|| bad("captions.setStyle", "no such caption track"))?;
                 let p = p.clone();
+                let font = s.default_text_font();
                 s.edit("Caption Style", |pr, st| {
                     let seq = st.active_sequence.ok_or(EngineError::NoSequence)?;
                     let t = pr.sequence_mut(seq).and_then(|q| q.caption_track_mut(tid)).ok_or(EngineError::NoSequence)?;
                     let y = &mut t.style;
                     if bool_p(&p, "reset").unwrap_or(false) {
-                        *y = CaptionStyle::default();
+                        *y = CaptionStyle { font: font.clone(), ..CaptionStyle::default() };
                     }
                     if let Some(v) = str_p(&p, "font") {
                         y.font = v.to_string();

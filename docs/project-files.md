@@ -19,6 +19,9 @@ writing them is `crates/format` (`filmcraft-format`); the engine's `file.*` comm
 - `project` is the serialized `filmcraft_project::Project` (bins, media clips, sequences, tracks,
   clips, effects, keyframes, markers). Media is referenced by path, never embedded.
 - Files are written compact (no indentation). A 2,000-clip project is about 1.4 MB.
+- Item metadata (`ProjectItem::metadata`) is a free-form string map. Features may keep their own
+  fields there without a schema change: Generate Narration records each WAV item's voice in
+  `Narration Credit` and `Narration Voice` (see [narration.md](narration.md#credits-in-the-video-and-the-description)).
 
 ### Schema history
 
@@ -143,6 +146,10 @@ Premiere's auto-save can lose up to one interval of work. FilmCraft also keeps a
   Recover unsaved changes from 2026-10-01 00:02:09?"*, with the buttons **Recover**, **Not Now** and
   **Discard**. Stale directories without a snapshot are removed. Journals of running sessions are
   never touched.
+- **Not Now** keeps the snapshot and marks it snoozed (a `snoozed` file next to it,
+  `file.snoozeRecovery`): later launches don't ask about it again, File ▸ Recover Unsaved Changes…
+  still offers it (`file.recoveryList` reports `snoozed: true`), and a session that later leaves
+  unsaved changes behind asks again (`Session::recovery_prompt_due`).
 - Recovering loads the snapshot as an **unsaved** project with its original path, so Save writes
   over the original file. The recovered state goes into the new session's own journal before the old
   journal is deleted.

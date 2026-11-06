@@ -245,6 +245,9 @@ fn tr_ja(s: &str) -> &str {
         "Black Video…" => "ブラックビデオ…",
         "Color Matte…" => "カラーマット…",
         "Animated Chart…" => "アニメーションチャート…",
+        "Generate Narration…" => "ナレーションを生成…",
+        "Add Narration Credit Roll" => "ナレーションのエンドロールを追加",
+        "Export Narration Credits" => "ナレーションのクレジットを書き出し",
         "Edit Chart…" => "チャートを編集…",
         "Chart" => "チャート",
         "Universal Counting Leader…" => "万国規格カウントダウンリーダー…",
@@ -516,6 +519,7 @@ fn tr_ja(s: &str) -> &str {
         "Media Analysis & Transcription" => "メディア分析と文字起こし",
         "Media Cache" => "メディアキャッシュ",
         "Memory" => "メモリ",
+        "Narration" => "ナレーション",
         "Playback" => "再生",
         "Plugins" => "プラグイン",
         "Trim" => "トリム",
@@ -887,6 +891,7 @@ fn tr_ja(s: &str) -> &str {
         "Media Analysis & Transcription…" => "メディア分析と文字起こし…",
         "Media Cache…" => "メディアキャッシュ…",
         "Memory…" => "メモリ…",
+        "Narration…" => "ナレーション…",
         "Playback…" => "再生…",
         "Plugins…" => "プラグイン…",
         "Timeline…" => "タイムライン…",
@@ -1547,6 +1552,23 @@ fn tr_settings_ja(s: &str) -> &str {
         "Russian" => "ロシア語",
         "Hindi" => "ヒンディー語",
         "Speech model" => "音声モデル",
+        // --- Narration ---
+        "Default engine" => "既定のエンジン",
+        "AivisSpeech address" => "AivisSpeech のアドレス",
+        "VOICEVOX address" => "VOICEVOX のアドレス",
+        "Default voice (Speaker/Style)" => "既定の声(話者/スタイル)",
+        "Folder for narration audio" => "ナレーション音声の保存先",
+        "Pause after each line" => "各行のあとの間",
+        "Make captions from the lines" => "セリフからキャプションを作成",
+        "Split captions longer than" => "この文字数を超えるキャプションを分割",
+        "Auto-level narration (Dialogue type, loudness match)" => "ナレーションの音量を自動調整(会話タイプ、ラウドネスを一致)",
+        "Duck other audio under the narration" => "ナレーション中はほかの音声を下げる(ダッキング)",
+        "Duck other audio by" => "ほかの音声を下げる量",
+        "Add a credit roll of the voices at the end" => "最後に声のクレジット(エンドロール)を追加",
+        "characters" => "文字",
+        "Narration uses the free AivisSpeech or VOICEVOX app, installed and started separately; FilmCraft talks to it on this computer. Every voice has its own terms: credit the voices you use (Generate Narration lists the credits)." => {
+            "ナレーションには、別途インストールして起動した無料の AivisSpeech または VOICEVOX アプリを使います(FilmCraft はこのコンピューター上のアプリと通信します)。声ごとに利用規約があります。使った声のクレジットを表記してください(「ナレーションを生成」がクレジットを一覧表示します)。"
+        }
         "Whisper tiny (fastest)" => "Whisper tiny(最速)",
         "Whisper base (balanced)" => "Whisper base(バランス)",
         "Whisper small (most accurate)" => "Whisper small(最高精度)",
@@ -1665,6 +1687,12 @@ fn tr_export_ja(s: &str) -> &str {
         "Sample Size" => "サンプルサイズ",
         "Size / Opacity" => "サイズ / 不透明度",
         "Target Loudness" => "ターゲットラウドネス",
+        "Delivery Target" => "配信先の基準",
+        "Streaming (YouTube, Spotify): -14 LUFS, -1 dBTP" => "ストリーミング(YouTube、Spotify):-14 LUFS、-1 dBTP",
+        "Podcast: -16 LUFS, -1 dBTP" => "ポッドキャスト:-16 LUFS、-1 dBTP",
+        "Broadcast EBU R 128: -23 LUFS, -1 dBTP" => "放送 EBU R 128:-23 LUFS、-1 dBTP",
+        "Broadcast ATSC A/85: -24 LKFS, -2 dBTP" => "放送 ATSC A/85:-24 LKFS、-2 dBTP",
+        "Broadcast ARIB TR-B32 (Japan): -24 LKFS, -1 dBTP" => "放送 ARIB TR-B32(日本):-24 LKFS、-1 dBTP",
         "True Peak Limit" => "トゥルーピーク制限",
         "Progressive" => "プログレッシブ",
         "Upper First" => "上位フィールド優先",
@@ -1692,6 +1720,97 @@ fn tr_export_ja(s: &str) -> &str {
         "FLAC (lossless)" => "FLAC（ロスレス）",
         _ => tr(s),
     }
+}
+
+/// A label colour's name as shown: the built-in English names (Iris, Mango…) in Japanese when the
+/// interface is Japanese; a name the user typed in Settings ▸ Labels is shown as typed.
+pub fn label_name(name: &str) -> std::borrow::Cow<'_, str> {
+    if !is_japanese() {
+        return name.into();
+    }
+    let Some(ja) = label_name_ja(name) else { return name.into() };
+    remember(name, ja);
+    ja.into()
+}
+
+/// The Japanese name of a built-in label colour name (`None` for any other text).
+fn label_name_ja(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Violet" => "バイオレット",
+        "Iris" => "アイリス",
+        "Caribbean" => "カリビアン",
+        "Lavender" => "ラベンダー",
+        "Cerulean" => "セルリアン",
+        "Forest" => "フォレスト",
+        "Rose" => "ローズ",
+        "Mango" => "マンゴー",
+        "Purple" => "パープル",
+        "Blue" => "ブルー",
+        "Teal" => "ティール",
+        "Magenta" => "マゼンタ",
+        "Tan" => "タン",
+        "Green" => "グリーン",
+        "Brown" => "ブラウン",
+        "Yellow" => "イエロー",
+        _ => return None,
+    })
+}
+
+/// A built-in export preset's description in Japanese (user presets keep the text the user wrote).
+/// The descriptions are short comma-separated specs ("H.264 1920×1080, VBR 1 pass, 20 Mbps
+/// target, AAC 320 kbps"), translated phrase by phrase.
+pub fn preset_description(d: &str) -> std::borrow::Cow<'_, str> {
+    if !is_japanese() {
+        return d.into();
+    }
+    preset_description_ja(d).into()
+}
+
+fn preset_description_ja(d: &str) -> String {
+    let whole = match d {
+        "Avid-style OP-Atom: DNxHR HQ picture file plus one 24-bit 48 kHz PCM file per channel (_A1, _A2…)" => {
+            Some("Avid 形式の OP-Atom: DNxHR HQ の映像ファイルと、チャンネルごとの 24 ビット 48 kHz PCM ファイル(_A1、_A2…)")
+        }
+        "Numbered PNG stills at the sequence's frame size" => Some("連番の PNG 静止画(シーケンスと同じフレームサイズ)"),
+        "Numbered TIFF stills (RGB, 8-bit)" => Some("連番の TIFF 静止画(RGB、8 ビット)"),
+        "Numbered BMP stills (24-bit)" => Some("連番の BMP 静止画(24 ビット)"),
+        "Looping GIF, 640×360 at 15 fps" => Some("ループする GIF、640×360・15 fps"),
+        _ => None,
+    };
+    if let Some(ja) = whole {
+        return ja.to_string();
+    }
+    // longest phrases first, so a short one doesn't eat part of a longer one
+    const PHRASES: &[(&str, &str)] = &[
+        ("at the sequence's frame size and rate", "(シーケンスと同じフレームサイズとフレームレート)"),
+        ("bitrate adapts to the frame size", "ビットレートはフレームサイズに合わせて変化"),
+        ("9:16 portrait for short-form social video", "9:16 縦型(ショート動画向け)"),
+        ("1:1 square feed post", "1:1 正方形(フィード投稿)"),
+        ("4:5 portrait feed post", "4:5 縦型(フィード投稿)"),
+        ("4:5 portrait feed video", "4:5 縦型(フィード動画)"),
+        ("for video sharing sites", "(動画共有サイト向け)"),
+        ("loudness normalized to", "音量をそろえる:"),
+        ("fast software encode", "高速ソフトウェアエンコード"),
+        ("with alpha channel", "アルファチャンネル付き"),
+        ("scaled to fill", "画面いっぱいに拡大"),
+        ("start timecode", "開始タイムコード付き"),
+        ("bits per pixel", "ビット/ピクセル"),
+        ("9:16 portrait", "9:16 縦型"),
+        ("16:9 landscape", "16:9 横型"),
+        ("long GOP", "ロング GOP"),
+        ("(lossless)", "(ロスレス)"),
+        ("Mbps target", "Mbps(目標)"),
+        ("Mbps average", "Mbps(平均)"),
+        ("1 pass", "1 パス"),
+        ("2 pass", "2 パス"),
+        ("stereo", "ステレオ"),
+        ("-bit", " ビット"),
+    ];
+    let mut out = d.to_string();
+    for (en, ja) in PHRASES {
+        out = out.replace(en, ja);
+    }
+    out.replace("; ", "、").replace(", ", "、").replace(" (", "(")
 }
 
 /// Text drawn by the panels' own helpers (rows, sections, switches, sliders, dialog fields). The
@@ -2284,6 +2403,29 @@ mod tests {
     }
 
     #[test]
+    fn label_names_and_preset_descriptions_in_japanese() {
+        assert_eq!(label_name_ja("Iris"), Some("アイリス"));
+        assert_eq!(label_name_ja("Mango"), Some("マンゴー"));
+        assert_eq!(label_name_ja("My Label"), None, "a name the user typed stays");
+        for l in filmcraft_project::Label::ALL {
+            assert!(label_name_ja(l.name()).is_some(), "{} has a Japanese name", l.name());
+        }
+        assert_eq!(
+            preset_description_ja("H.264 9:16 portrait, scaled to fill, VBR 1 pass, 10 Mbps, loudness normalized to −14 LUFS"),
+            "H.264 9:16 縦型、画面いっぱいに拡大、VBR 1 パス、10 Mbps、音量をそろえる: −14 LUFS"
+        );
+        assert_eq!(preset_description_ja("WAV, stereo 48 kHz 24-bit PCM"), "WAV、ステレオ 48 kHz 24 ビット PCM");
+        assert_eq!(preset_description_ja("Numbered BMP stills (24-bit)"), "連番の BMP 静止画(24 ビット)");
+        // every built-in description loses its English phrases
+        for p in filmcraft_engine::export::builtin_presets() {
+            let ja = preset_description_ja(&p.description);
+            for en in ["portrait", "scaled to fill", "pass,", "bits per pixel", "stereo", "-bit", "loudness"] {
+                assert!(!ja.contains(en), "{:?} → {ja:?} still has {en:?}", p.description);
+            }
+        }
+    }
+
+    #[test]
     fn language_of_a_preference() {
         assert_eq!(Language::from_pref("en", None), Language::English);
         assert_eq!(Language::from_pref("ja", Some("en-US")), Language::Japanese);
@@ -2326,6 +2468,7 @@ mod tests {
                 || s.ends_with(" fps")
                 || s.contains("% HLG")
                 || ["+ Cmd", "+ Opt", "Dynamic Link", "Whisper"].iter().any(|k| s.starts_with(k))
+                || ["AivisSpeech", "VOICEVOX"].contains(&s)
         };
         let mut missing: Vec<&str> = words.into_iter().filter(|w| !kept(w) && tr_settings_ja(w).is_ascii()).collect();
         missing.sort_unstable();

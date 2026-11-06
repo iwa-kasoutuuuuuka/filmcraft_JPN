@@ -156,6 +156,10 @@ fn new_chart(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "graphics.newChart";
     let kind = str_p(p, "kind").and_then(ChartKind::from_id).unwrap_or_default();
     let mut spec = apply_params(cmd, ChartSpec::sample(kind), p)?;
+    if spec.font.trim().is_empty() {
+        // the default font (Japanese for a Japanese interface), so Latin and kana match
+        spec.font = s.default_text_font();
+    }
     resolve_images(s, &mut spec, cmd)?;
     let seconds = f64_p(p, "seconds").filter(|v| v.is_finite()).unwrap_or(8.0).clamp(0.1, 3600.0);
     let name = if spec.title.trim().is_empty() { "Chart".to_string() } else { spec.title.chars().take(60).collect() };

@@ -122,7 +122,9 @@ pub fn route(app: &mut FilmcraftApp, id: &str, params: &Value) -> Option<Result<
                 return Some(Err(crate::i18n::t("Open a sequence first", "先にシーケンスを開いてください").into()));
             }
             // mid-race, so the preview shows the chart before Play is pressed
-            ChartEditorDraft { clip: None, chart: ChartSpec::sample(ChartKind::BarRace), seconds: 8.0, time: 4.0, ..ChartEditorDraft::default() }
+            // in the default font (Japanese for a Japanese interface), as Add to Timeline makes it
+            let chart = ChartSpec { font: s.default_text_font(), ..ChartSpec::sample(ChartKind::BarRace) };
+            ChartEditorDraft { clip: None, chart, seconds: 8.0, time: 4.0, ..ChartEditorDraft::default() }
         }
         "graphics.setChart" => {
             let clip = filmcraft_engine::graphics::target_clip(s, &Value::Null)?;

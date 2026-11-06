@@ -962,6 +962,15 @@ fn effects_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: 
     if audio {
         check(ui, reg, "export.effects.loudness", &mut fx.loudness.enabled, "Loudness Normalization");
         if fx.loudness.enabled {
+            row(ui, t, "Delivery Target", |ui| {
+                let targets = filmcraft_engine::export::LOUDNESS_TARGETS;
+                let cur = fx.loudness.target().map_or("Custom", |x| x.label);
+                let mut labels: Vec<(String, bool)> = targets.iter().map(|x| (x.label.to_string(), true)).collect();
+                labels.push(("Custom".to_string(), true));
+                if let Some(x) = combo(ui, reg, "export.effects.loudness.preset", cur, &labels, 300.0).and_then(|i| targets.get(i)) {
+                    fx.loudness = filmcraft_engine::export::LoudnessNormalization::at(x);
+                }
+            });
             row(ui, t, "Target Loudness", |ui| {
                 drag(ui, reg, "export.effects.loudness.target", &mut fx.loudness.target_lufs, -40.0..=-5.0, 0.1, " LUFS", 1);
             });
@@ -1208,7 +1217,8 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
                         if r.double_clicked() {
                             apply = Some(p.name.clone());
                         }
-                        let r = r.on_hover_text(&p.description);
+                        let desc = if p.builtin { crate::i18n::preset_description(&p.description) } else { p.description.as_str().into() };
+                        let r = r.on_hover_text(desc.as_ref());
                         let _ = r;
                         ui.label(egui::RichText::new(p.settings.format.label()).color(t.text_dim).size(11.0));
                         if !p.builtin {
@@ -1220,7 +1230,8 @@ fn preset_manager(app: &mut FilmcraftApp, ctx: &egui::Context) {
             ui.separator();
             let sel = all.iter().find(|p| preset_key(&p.name) == preset_key(&m.selected)).cloned();
             if let Some(p) = &sel {
-                ui.label(egui::RichText::new(&p.description).color(t.text_dim).size(11.5));
+                let desc = if p.builtin { crate::i18n::preset_description(&p.description) } else { p.description.as_str().into() };
+                ui.label(egui::RichText::new(desc.as_ref()).color(t.text_dim).size(11.5));
             }
             ui.horizontal(|ui| {
                 ui.label(crate::i18n::t("Save current settings as:", "現在の設定を次の名前で保存:"));

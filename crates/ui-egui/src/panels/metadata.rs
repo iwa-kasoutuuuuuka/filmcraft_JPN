@@ -65,14 +65,16 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 if f.name == "Label" {
                     let cur = Label::from_name(&f.value).unwrap_or(Label::Violet);
                     let mut sel = cur;
-                    let r =
-                        egui::ComboBox::from_id_salt(("md-label", item.0)).selected_text(cur.name()).width(ui.available_width().min(200.0)).show_ui(ui, |ui| {
+                    let r = egui::ComboBox::from_id_salt(("md-label", item.0))
+                        .selected_text(crate::i18n::label_name(cur.name()))
+                        .width(ui.available_width().min(200.0))
+                        .show_ui(ui, |ui| {
                             for l in Label::ALL {
                                 let c = l.rgb();
                                 let rr = ui.horizontal(|ui| {
                                     let (sw, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
                                     ui.painter().rect_filled(sw, 2.0, egui::Color32::from_rgb(c[0], c[1], c[2]));
-                                    ui.selectable_value(&mut sel, l, l.name())
+                                    ui.selectable_value(&mut sel, l, crate::i18n::label_name(l.name()))
                                 });
                                 elems.push((format!("metadata.label.{}", l.name()), rr.inner.rect, l.name().to_string()));
                             }

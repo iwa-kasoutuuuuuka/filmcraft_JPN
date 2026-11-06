@@ -97,6 +97,8 @@ impl Backend {
             return Backend::Bridge(BridgeClient::new(addr).unwrap_or_else(|e| usage(e)));
         }
         let mut s = Session::default();
+        // Settings ▸ Appearance ▸ Language "Auto" (the narration credit heading) follows the OS
+        s.system_language = filmcraft_platform::locale::system_language();
         // agents and scripts get the edit as a project beside every video they export
         // (`<video>.fcproj`, or the --project file); --save-as names the project file itself
         s.save_project_on_export = !a.flag("--no-project") && a.opt("--save-as").is_none();
