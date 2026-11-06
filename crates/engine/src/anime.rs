@@ -766,9 +766,23 @@ fn place_all(s: &mut Session, p: &Value, l: &Loaded, o: &Opts, pl: &Plan, rate: 
             Err(e) => warnings.push(format!("{ps}: {e}")),
         }
     }
+    // lines spoken by a local engine carry their voice's credit (script.synthesize's manifest):
+    // their items remember it as tts.synthesize's do, so tts.credits and the credit roll see them
+    let credits: HashMap<PathBuf, Value> = match out_dir(s, l, p) {
+        Ok(out) => read_manifest(&out).lines.values().filter_map(|e| e.credit.clone().map(|c| (out.join(&e.file), c))).collect(),
+        Err(_) => HashMap::new(),
+    };
     let ids = s.edit(&format!("Import {title}"), |pr, _| {
         let bin = pr.add_bin(&title, None);
-        Ok(prepared.iter().map(|(_, name, label, clip, _)| pr.add_item(name, *label, ItemKind::Media(clip.clone()), Some(bin))).collect::<Vec<ItemId>>())
+        let mut ids = Vec::with_capacity(prepared.len());
+        for (f, name, label, clip, _) in &prepared {
+            let id = pr.add_item(name, *label, ItemKind::Media(clip.clone()), Some(bin));
+            if let Some(c) = credits.get(f) {
+                crate::narration_credits::mark_item(pr, id, c);
+            }
+            ids.push(id);
+        }
+        Ok(ids)
     })?;
     let mut items: HashMap<PathBuf, ItemId> = HashMap::new();
     for ((f, _, _, _, src), id) in prepared.into_iter().zip(ids) {
@@ -1307,7 +1321,7 @@ pub fn commands() -> Vec<CommandSpec> {
         spec(
             "anime.run",
             "Run Anime Pipeline",
-            r#"{"path":str,"pickVoices":bool=false,"synthesize":bool=true,"check":bool=true,"export":str?,"preset":str?,"out":str?,"name":str?,"language":str?,"python":str?,"script":str?,"device":str?,"…build options":any?}"#,
+            r#"{"path":str,"engine":"qwen3|aivisspeech|voicevox"="qwen3","url":str?,"pickVoices":bool=false,"synthesize":bool=true,"check":bool=true,"export":str?,"preset":str?,"out":str?,"name":str?,"language":str?,"python":str?,"script":str?,"device":str?,"…build options":any?}"#,
             run_all,
             true,
         ),

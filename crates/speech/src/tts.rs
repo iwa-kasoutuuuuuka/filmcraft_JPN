@@ -25,6 +25,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::synth::{Line as SynthLine, Outcome as SynthOutcome, Spoken, Synthesizer, Voice as SynthVoice};
+use crate::{ProgressFn, SpeechError};
+
 /// Largest JSON answer read (speaker lists with many models, AudioQueries of long texts).
 pub const MAX_JSON_BYTES: u64 = 10 << 20;
 /// Largest `/speaker_info` answer read: it embeds the portrait and every style's icon and voice
@@ -389,6 +392,142 @@ pub fn split_caption(text: &str, query: Option<&Value>, duration: f64, max_chars
     }
     out.retain(|(t, _, _)| !t.is_empty());
     if out.is_empty() { whole() } else { out }
+}
+
+// ------------------------------------------------------------------------------------- voices
+
+/// A voice of an engine, resolved from a reference ([`resolve_voice`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ResolvedVoice {
+    pub engine: TtsEngine,
+    pub speaker: String,
+    pub style: String,
+    /// The style id (`speaker` in the engine API).
+    pub id: i64,
+    pub uuid: String,
+}
+
+impl ResolvedVoice {
+    /// `Speaker/Style`.
+    pub fn label(&self) -> String {
+        format!("{}/{}", self.speaker, self.style)
+    }
+}
+
+fn norm(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace() && !matches!(c, '・' | '_' | '-')).flat_map(char::to_lowercase).collect()
+}
+
+fn voice_of(engine: TtsEngine, sp: &Speaker, st: &Style) -> ResolvedVoice {
+    ResolvedVoice { engine, speaker: sp.name.clone(), style: st.name.clone(), id: st.id, uuid: sp.uuid.clone() }
+}
+
+/// Find a speaker by name: exact, then ignoring case / spaces, then the only one containing it.
+fn find_speaker<'a>(speakers: &'a [Speaker], name: &str) -> Option<&'a Speaker> {
+    let n = norm(name);
+    if n.is_empty() {
+        return None;
+    }
+    speakers.iter().find(|s| s.name == name).or_else(|| speakers.iter().find(|s| norm(&s.name) == n)).or_else(|| {
+        let mut it = speakers.iter().filter(|s| norm(&s.name).contains(&n));
+        match (it.next(), it.next()) {
+            (Some(s), None) => Some(s),
+            _ => None,
+        }
+    })
+}
+
+/// A voice reference: a style id (number or digits), `"Speaker/Style"`, `"Speaker"` (its first
+/// style), or `{id}` / `{speaker, style}`; Null is the engine's first voice.
+pub fn resolve_voice(engine: TtsEngine, speakers: &[Speaker], v: &Value) -> Result<ResolvedVoice, String> {
+    let by_id = |id: i64| {
+        speakers
+            .iter()
+            .find_map(|sp| sp.styles.iter().find(|st| st.id == id).map(|st| voice_of(engine, sp, st)))
+            .ok_or_else(|| format!("{} has no voice with style id {id}", engine.name()))
+    };
+    let by_names = |speaker: &str, style: Option<&str>| -> Result<ResolvedVoice, String> {
+        let sp = find_speaker(speakers, speaker).ok_or_else(|| format!("{} has no voice named `{speaker}` (tts.voices lists them)", engine.name()))?;
+        let st = match style.map(str::trim).filter(|s| !s.is_empty()) {
+            None => sp.styles.first(),
+            Some(st) => sp.styles.iter().find(|x| x.name == st).or_else(|| sp.styles.iter().find(|x| norm(&x.name) == norm(st))),
+        };
+        let st = st.ok_or_else(|| format!("{}'s voice `{}` has no style `{}`", engine.name(), sp.name, style.unwrap_or_default()))?;
+        Ok(voice_of(engine, sp, st))
+    };
+    match v {
+        Value::Null => speakers
+            .iter()
+            .find_map(|sp| sp.styles.first().map(|st| voice_of(engine, sp, st)))
+            .ok_or_else(|| format!("{} has no voices installed", engine.name())),
+        Value::Number(n) => n.as_i64().ok_or_else(|| format!("bad style id {n}")).and_then(by_id),
+        Value::String(s) => {
+            let s = s.trim();
+            if let Ok(id) = s.parse::<i64>() {
+                return by_id(id);
+            }
+            match s.split_once(['/', '／']) {
+                Some((a, b)) => by_names(a.trim(), Some(b)),
+                None => by_names(s, None),
+            }
+        }
+        Value::Object(m) => {
+            if let Some(id) = m.get("id").or(m.get("styleId")).and_then(Value::as_i64) {
+                return by_id(id);
+            }
+            if let Some(id) = m.get("speaker").and_then(Value::as_i64) {
+                return by_id(id);
+            }
+            let sp = m.get("speaker").or(m.get("name")).and_then(Value::as_str).ok_or("a voice object needs `id` or `speaker`")?;
+            by_names(sp, m.get("style").and_then(Value::as_str))
+        }
+        other => Err(format!("bad voice {other}")),
+    }
+}
+
+// ------------------------------------------------------------------------------------- credits
+
+/// The credit of a voice, with where its terms are: VOICEVOX characters require `VOICEVOX:<name>`
+/// wherever the audio is published; an AivisSpeech voice carries its model's licence (from
+/// `models`, [`Client::aivm_models`]). Every narration item remembers this (`Narration Voice`).
+pub fn credit(engine: TtsEngine, v: &ResolvedVoice, models: &[AivmModel]) -> Value {
+    match engine {
+        TtsEngine::Voicevox => json!({
+            "engine": engine.id(),
+            "speaker": v.speaker,
+            "uuid": v.uuid,
+            "credit": format!("VOICEVOX:{}", v.speaker),
+            "required": true,
+            "termsUrl": engine.terms_url(),
+            "note": "VOICEVOX requires this credit wherever the audio is published (video, description). Each character has its own terms: run tts.voiceTerms or see the character's page.",
+            "termsCommand": {"command": "tts.voiceTerms", "params": {"engine": engine.id(), "speaker_uuid": v.uuid}},
+        }),
+        TtsEngine::AivisSpeech => {
+            let model = models.iter().find(|m| !v.uuid.is_empty() && m.speakers.contains(&v.uuid));
+            let license = model.and_then(|m| m.license.clone());
+            let note = match &license {
+                Some(l) => {
+                    format!("Model licence: {}. Check what it requires (credit, commercial use) before publishing.", l.lines().next().unwrap_or_default())
+                }
+                None => "Check the model's licence before publishing (tts.voiceTerms, or the model's page on AivisHub).".to_string(),
+            };
+            json!({
+                "engine": engine.id(),
+                "speaker": v.speaker,
+                "uuid": v.uuid,
+                "credit": format!("AivisSpeech:{}", v.speaker),
+                "required": false,
+                "checkLicense": true,
+                "model": model.map(|m| m.name.clone()),
+                "modelUuid": model.map(|m| m.uuid.clone()),
+                "license": license,
+                "modelUrl": model.map(AivmModel::hub_url),
+                "termsUrl": engine.terms_url(),
+                "note": note,
+                "termsCommand": {"command": "tts.voiceTerms", "params": {"engine": engine.id(), "speaker_uuid": v.uuid}},
+            })
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------- client
@@ -804,6 +943,147 @@ mod http {
     }
 }
 
+// ------------------------------------------------------------------------------------- synthesizer
+
+/// A local engine behind the [`Synthesizer`] trait, so scripts (`script.synthesize`), the anime
+/// pipeline and `speech.synthesize` can speak through AivisSpeech / VOICEVOX as well as through
+/// Qwen3-TTS. A line's [`SynthVoice::speaker`] is a voice reference as `tts.synthesize` takes it
+/// (`"Speaker/Style"`, `"Speaker"` or a style id; [`resolve_voice`]); without one, the
+/// [`EngineSynthesizer::default_voice`] (Settings ▸ Narration ▸ Default voice) when this engine
+/// has it, else the engine's first voice. `refAudio`, `refText` and `instruct` do not apply to
+/// these engines and are ignored, as is the line's language (both engines speak Japanese).
+///
+/// Every spoken line carries its voice's [`credit`] in [`Spoken::credit`].
+pub struct EngineSynthesizer {
+    pub client: Client,
+    /// The voice of lines without a speaker ("" = the engine's first voice).
+    pub default_voice: String,
+    /// Prosody applied to every line (None fields: the engine's).
+    pub prosody: Prosody,
+    speakers: std::sync::Mutex<Option<Vec<Speaker>>>,
+    models: std::sync::Mutex<Option<Vec<AivmModel>>>,
+}
+
+impl EngineSynthesizer {
+    pub fn new(client: Client, default_voice: impl Into<String>) -> Self {
+        Self { client, default_voice: default_voice.into(), prosody: Prosody::default(), speakers: Default::default(), models: Default::default() }
+    }
+
+    /// The engine's voice list, asked once per synthesizer.
+    pub fn speakers(&self) -> Result<Vec<Speaker>, TtsError> {
+        let mut g = self.speakers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(v) = g.as_ref() {
+            return Ok(v.clone());
+        }
+        let v = self.client.speakers()?;
+        *g = Some(v.clone());
+        Ok(v)
+    }
+
+    /// The installed AivisSpeech models (for licences), asked once; empty when unknown.
+    fn models(&self) -> Vec<AivmModel> {
+        let mut g = self.models.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.get_or_insert_with(|| self.client.aivm_models().unwrap_or_default()).clone()
+    }
+
+    /// The voice a line would be spoken in.
+    pub fn resolve(&self, speakers: &[Speaker], v: &SynthVoice) -> Result<ResolvedVoice, String> {
+        let engine = self.client.engine;
+        if let Some(sp) = v.speaker.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return resolve_voice(engine, speakers, &Value::String(sp.to_string()));
+        }
+        // a default voice of the other engine (or one since removed) falls back to the first voice
+        let d = self.default_voice.trim();
+        if !d.is_empty()
+            && let Ok(r) = resolve_voice(engine, speakers, &Value::String(d.to_string()))
+        {
+            return Ok(r);
+        }
+        resolve_voice(engine, speakers, &Value::Null)
+    }
+}
+
+/// Write `bytes` to `path`, making its folder.
+fn write_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, bytes)
+}
+
+impl Synthesizer for EngineSynthesizer {
+    fn id(&self) -> String {
+        self.client.engine.id().to_string()
+    }
+
+    /// `engine:uuid:style id:model version:prosody` of the voice a line would get, so a cache made
+    /// with one voice model is not reused after the model (or the voice behind a name, or the
+    /// speed / pitch) changed. None while the engine does not answer.
+    fn voice_identity(&self, voice: &SynthVoice) -> Option<String> {
+        let speakers = self.speakers().ok()?;
+        let r = self.resolve(&speakers, voice).ok()?;
+        let version = speakers.iter().find(|s| s.uuid == r.uuid && s.name == r.speaker).map(|s| s.version.as_str()).unwrap_or_default();
+        let prosody = serde_json::to_string(&self.prosody).unwrap_or_default();
+        Some(format!("{}:{}:{}:{version}:{prosody}", self.client.engine.id(), r.uuid, r.id))
+    }
+
+    fn synthesize(&self, lines: &[SynthLine], progress: ProgressFn) -> Result<SynthOutcome, SpeechError> {
+        crate::synth::check_lines(lines)?;
+        let speakers = self.speakers().map_err(|e| SpeechError::Io(e.to_string()))?;
+        let mut out = SynthOutcome::default();
+        let mut models: Option<Vec<AivmModel>> = None;
+        for (i, l) in lines.iter().enumerate() {
+            if !progress(i as f32 / lines.len() as f32, "Synthesising") {
+                return Err(SpeechError::Cancelled);
+            }
+            let voice = match self.resolve(&speakers, &l.voice) {
+                Ok(v) => v,
+                Err(e) => {
+                    out.failed.push((l.id.clone(), e));
+                    continue;
+                }
+            };
+            let spoken = self.client.audio_query(&l.text, voice.id).and_then(|mut q| {
+                apply_prosody(&mut q, &self.prosody, self.client.engine);
+                self.client.synthesis(&q, voice.id)
+            });
+            let (wav, info) = match spoken {
+                Ok(x) => x,
+                // the engine went away: the lines spoken so far are kept, the rest fail with why
+                Err(e @ TtsError::NotRunning { .. }) => {
+                    if out.spoken.is_empty() {
+                        return Err(SpeechError::Io(e.to_string()));
+                    }
+                    for rest in lines.iter().skip(i) {
+                        out.failed.push((rest.id.clone(), e.to_string()));
+                    }
+                    break;
+                }
+                Err(e) => {
+                    out.failed.push((l.id.clone(), e.to_string()));
+                    continue;
+                }
+            };
+            if let Err(e) = write_file(&l.out, &wav) {
+                out.failed.push((l.id.clone(), format!("{}: {e}", l.out.display())));
+                continue;
+            }
+            let models = models.get_or_insert_with(|| self.models());
+            out.spoken.push(Spoken {
+                id: l.id.clone(),
+                path: l.out.clone(),
+                sample_rate: info.sample_rate,
+                duration: info.duration(),
+                credit: Some(credit(self.client.engine, &voice, models)),
+            });
+        }
+        progress(1.0, "Done");
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +1105,49 @@ mod tests {
         v.extend_from_slice(&(data as u32).to_le_bytes());
         v.resize(44 + data, 0);
         v
+    }
+
+    #[test]
+    fn engine_synthesizer_takes_the_speaker_then_the_default_then_the_first_voice() {
+        let sp = |name: &str, uuid: &str, id: i64| Speaker {
+            name: name.into(),
+            uuid: uuid.into(),
+            styles: vec![Style { name: "ノーマル".into(), id, kind: None }],
+            version: "1".into(),
+        };
+        let speakers = vec![sp("ずんだもん", "u1", 3), sp("四国めたん", "u2", 2)];
+        let client = || Client::new(TtsEngine::Voicevox, "").unwrap();
+        let named = |s: &str| SynthVoice { speaker: Some(s.into()), ..Default::default() };
+        let e = EngineSynthesizer::new(client(), "四国めたん");
+        assert_eq!(e.id(), "voicevox");
+        assert_eq!(e.resolve(&speakers, &SynthVoice::default()).unwrap().id, 2);
+        assert_eq!(e.resolve(&speakers, &named("ずんだもん/ノーマル")).unwrap().id, 3);
+        assert_eq!(e.resolve(&speakers, &named("3")).unwrap().label(), "ずんだもん/ノーマル");
+        assert!(e.resolve(&speakers, &named("だれか")).unwrap_err().contains("no voice named"));
+        // a default voice of the other engine falls back to the first voice
+        let e = EngineSynthesizer::new(client(), "まお/ノーマル");
+        assert_eq!(e.resolve(&speakers, &named("  ")).unwrap().id, 3);
+        assert!(e.resolve(&[], &SynthVoice::default()).unwrap_err().contains("no voices installed"));
+        // the credit is the one tts.synthesize records
+        let v = e.resolve(&speakers, &SynthVoice::default()).unwrap();
+        assert_eq!(credit(TtsEngine::Voicevox, &v, &[])["credit"], "VOICEVOX:ずんだもん");
+    }
+
+    #[test]
+    fn engine_synthesizer_reports_an_engine_that_is_not_running() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        drop(l);
+        let e = EngineSynthesizer::new(Client::new(TtsEngine::AivisSpeech, &url).unwrap(), "");
+        let dir = std::env::temp_dir().join(format!("filmcraft-tts-down-{}", std::process::id()));
+        let line = SynthLine { id: "1".into(), text: "テスト".into(), voice: SynthVoice::default(), language: None, out: dir.join("1.wav") };
+        assert_eq!(e.voice_identity(&line.voice), None);
+        let err = e.synthesize(&[line], &mut |_, _| true).unwrap_err().to_string();
+        if cfg!(feature = "tts") {
+            assert_eq!(err, format!("AivisSpeech is not running at {url} — start the AivisSpeech app"));
+        } else {
+            assert!(err.contains("not available in this build"), "{err}");
+        }
     }
 
     #[test]

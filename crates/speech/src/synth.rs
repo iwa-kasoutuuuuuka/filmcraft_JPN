@@ -63,6 +63,10 @@ pub struct Spoken {
     pub path: PathBuf,
     pub sample_rate: u32,
     pub duration: Tick,
+    /// The credit the voice asks for (a local engine's voice: `VOICEVOX:<name>`, the model
+    /// licence), as `tts.synthesize` records it on narration items. None: no credit to give.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit: Option<Value>,
 }
 
 /// What a synthesis produced: the lines spoken and the ones that failed (id, reason).
@@ -79,6 +83,13 @@ pub trait Synthesizer: Send + Sync {
     /// Speak `lines`, writing each to its `out` path. A line that fails is reported in
     /// [`Outcome::failed`]; the whole call fails only when nothing could run.
     fn synthesize(&self, lines: &[Line], progress: ProgressFn) -> Result<Outcome, SpeechError>;
+    /// What identifies the model that would speak `voice`, beyond the voice's own fields and
+    /// [`Synthesizer::id`] (a local engine: the voice's uuid, style id and model version), so
+    /// caches of spoken lines notice a changed model. None: nothing more (the default), or not
+    /// known right now (the engine does not answer).
+    fn voice_identity(&self, _voice: &Voice) -> Option<String> {
+        None
+    }
 }
 
 /// Check the lines a caller passed (count, text length, paths).
@@ -166,7 +177,9 @@ impl Synthesizer for FixedSynthesizer {
             let n = (secs * rate as f64) as usize;
             let samples: Vec<f32> = (0..n).map(|k| (k as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.3).collect();
             match write_wav16(&l.out, &samples, rate) {
-                Ok(()) => out.spoken.push(Spoken { id: l.id.clone(), path: l.out.clone(), sample_rate: rate, duration: Tick::from_seconds_f64(secs) }),
+                Ok(()) => {
+                    out.spoken.push(Spoken { id: l.id.clone(), path: l.out.clone(), sample_rate: rate, duration: Tick::from_seconds_f64(secs), credit: None })
+                }
                 Err(e) => out.failed.push((l.id.clone(), e.to_string())),
             }
         }
@@ -476,7 +489,7 @@ impl ExternalSynthesizer {
                 }
                 Some(Event::Spoken { id, out: path, sample_rate, seconds }) => {
                     if lines.iter().any(|l| l.id == id) {
-                        out.spoken.push(Spoken { id, path, sample_rate, duration: Tick::from_seconds_f64(seconds) });
+                        out.spoken.push(Spoken { id, path, sample_rate, duration: Tick::from_seconds_f64(seconds), credit: None });
                     } else {
                         out.failed.push((id, "the script reported a line that was not asked for".into()));
                     }

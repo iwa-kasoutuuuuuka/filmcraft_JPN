@@ -7,23 +7,24 @@
 //! |---|---|
 //! | `script.validate` | Check the script (ids, speakers, route, prerequisites, story time) and count what there is to do: lines, recorded, to synthesize. |
 //! | `script.pickVoices` | Choose each character's reference recording from the lines that have a recording of the game's own (clean length, calm, text known), optionally writing it into the script. |
-//! | `script.synthesize` | Speak every line that has no recording, in its character's voice, into `<out>/<id>.wav`. Lines whose text, voice and model did not change since the last run are not spoken again. |
+//! | `script.synthesize` | Speak every line that has no recording, in its character's voice, into `<out>/<id>.wav`. Lines whose text, voice and model did not change since the last run are not spoken again. A character's `voice.engine` picks Qwen3-TTS or a local AivisSpeech / VOICEVOX app per character (else the call's `engine`, default `qwen3`); local-engine lines carry their voice's credit into the manifest, and `anime.build` puts it on the imported items. |
 //! | `script.lipsync` | Mouth shapes for every line that has audio, written to `<out>/lipsync.json`. |
 //! | `lipsync.analyze` | Mouth shapes for one audio file. |
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use filmcraft_audio_dsp::lipsync as lip;
 use filmcraft_project::script::{LineKind, Problem, Scene, Script, ScriptLine, Severity, VoiceRef};
-use filmcraft_speech::synth::{Line, Voice};
+use filmcraft_speech::synth::{Line, Synthesizer, Voice};
 use filmcraft_time::Tick;
 
 use crate::commands::{CommandSpec, always, bad, bool_p, f64_p, str_p};
-use crate::speech_synth::{file_stem, synthesizer, tts_dir};
+use crate::speech_synth::{Route, file_stem, route_p, synthesizer_for, tts_dir};
 use crate::{EngineError, Result, Session};
 
 type Run = fn(&mut Session, &Value) -> Result<Value>;
@@ -248,6 +249,15 @@ fn pick_voices(s: &mut Session, p: &Value) -> Result<Value> {
                 *v = json!({});
             }
             if let Some(o) = v.as_object_mut() {
+                // a recording is a voice to clone: a local engine's voice (which cannot) gives way
+                let local = o
+                    .get("engine")
+                    .and_then(Value::as_str)
+                    .is_some_and(|e| VoiceRef { engine: Some(e.to_string()), ..Default::default() }.local_engine().is_some());
+                if local {
+                    o.remove("engine");
+                    o.remove("speaker");
+                }
                 o.insert("refAudio".into(), json!(pk.ref_audio));
                 o.insert("refText".into(), json!(pk.ref_text));
             }
@@ -273,6 +283,13 @@ pub(crate) struct Entry {
     pub(crate) hash: String,
     pub(crate) file: String,
     pub(crate) seconds: f64,
+    /// A local engine's line: the hash without the voice model's identity, which decides while
+    /// the engine is not running (the line is kept rather than failing to speak it again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) base: Option<String>,
+    /// The voice's credit (local engines), for the items `anime.build` makes from the line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) credit: Option<Value>,
 }
 
 const MANIFEST: &str = "manifest.json";
@@ -303,12 +320,26 @@ fn line_hash(parts: &[&str]) -> String {
     format!("{h:016x}")
 }
 
+/// The route of a line: its character's `voice.engine` when it names one, else the call's.
+fn line_route(voice: Option<&VoiceRef>, default: Route) -> Route {
+    voice.and_then(|v| v.engine.as_deref()).and_then(Route::from_id).unwrap_or(default)
+}
+
+/// A line waiting to be spoken: the line, its route, its hash and (local engines) its base hash.
+struct Todo {
+    line: Line,
+    route: Route,
+    hash: String,
+    base: Option<String>,
+}
+
 fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
-    let l = load(s, p, "script.synthesize")?;
+    const CMD: &str = "script.synthesize";
+    let l = load(s, p, CMD)?;
     let problems = l.script.validate();
     if let Some(e) = problems.iter().find(|x| x.severity == Severity::Error) {
         return Err(bad(
-            "script.synthesize",
+            CMD,
             format!("the script has errors (run script.validate): {}{}", e.line.as_deref().map(|i| format!("line {i}: ")).unwrap_or_default(), e.message),
         ));
     }
@@ -318,12 +349,14 @@ fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
     let only: Option<HashSet<String>> = p.get("ids").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect());
     let language = str_p(p, "language").unwrap_or(&l.script.language).to_string();
     let model = str_p(p, "model").unwrap_or("").to_string();
-    let synth = synthesizer(s, p);
-    let synth_id = synth.id();
+    let default_route = route_p(p, CMD)?;
+    // one synthesizer per route the script uses (a local one asks its engine for voices once)
+    let mut synths: BTreeMap<Route, Arc<dyn Synthesizer>> = BTreeMap::new();
+    synths.insert(default_route, synthesizer_for(s, p, default_route, CMD)?);
     let mut manifest = read_manifest(&out);
     manifest.version = 1;
 
-    let mut todo: Vec<(Line, String)> = Vec::new();
+    let mut todo: Vec<Todo> = Vec::new();
     let mut cached = Vec::new();
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut recorded = 0usize;
@@ -336,84 +369,139 @@ fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let voice = line.speaker.as_deref().and_then(|sp| l.script.characters.get(sp)).and_then(|c| c.voice.as_ref());
-        let ref_audio = voice.filter(|v| !v.ref_audio.trim().is_empty()).map(|v| l.resolve(&v.ref_audio));
-        // a re-recorded reference of the same length is another voice: size and modified time
-        let ref_size = ref_audio
-            .as_ref()
-            .and_then(|a| std::fs::metadata(a).ok())
-            .map(|m| {
-                let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
-                format!("{}@{mtime}", m.len())
-            })
-            .unwrap_or_default();
-        let ref_text = voice.and_then(|v| v.ref_text.clone());
+        let route = line_route(voice, default_route);
+        let synth = match synths.get(&route) {
+            Some(x) => x.clone(),
+            None => {
+                let x = synthesizer_for(s, p, route, CMD)?;
+                synths.insert(route, x.clone());
+                x
+            }
+        };
+        let local = matches!(route, Route::Local(_));
         let speaker = voice.and_then(|v| v.speaker.clone()).filter(|x| !x.trim().is_empty());
-        // a line's own direction wins over the character's standing one
-        let instruct = line.instruct.clone().or_else(|| voice.and_then(|v| v.instruct.clone())).filter(|x| !x.trim().is_empty());
         let text = line_speech(line);
-        let hash = line_hash(&[
+        let (voice_used, ref_size) = if local {
+            // a local engine speaks a named voice: no recording to clone, no direction
+            (Voice { speaker: speaker.clone(), ..Default::default() }, String::new())
+        } else {
+            let ref_audio = voice.filter(|v| !v.ref_audio.trim().is_empty()).map(|v| l.resolve(&v.ref_audio));
+            // a re-recorded reference of the same length is another voice: size and modified time
+            let ref_size = ref_audio
+                .as_ref()
+                .and_then(|a| std::fs::metadata(a).ok())
+                .map(|m| {
+                    let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+                    format!("{}@{mtime}", m.len())
+                })
+                .unwrap_or_default();
+            let ref_text = voice.and_then(|v| v.ref_text.clone());
+            // a line's own direction wins over the character's standing one
+            let instruct = line.instruct.clone().or_else(|| voice.and_then(|v| v.instruct.clone())).filter(|x| !x.trim().is_empty());
+            (Voice { ref_audio, ref_text, speaker: speaker.clone(), instruct }, ref_size)
+        };
+        let synth_id = synth.id();
+        let ref_audio_s = voice_used.ref_audio.as_ref().map(|a| a.to_string_lossy().to_string()).unwrap_or_default();
+        let parts: [&str; 9] = [
             &text,
             &language,
             &model,
             &synth_id,
-            &ref_audio.as_ref().map(|a| a.to_string_lossy().to_string()).unwrap_or_default(),
+            &ref_audio_s,
             &ref_size,
-            ref_text.as_deref().unwrap_or(""),
+            voice_used.ref_text.as_deref().unwrap_or(""),
             speaker.as_deref().unwrap_or(""),
-            instruct.as_deref().unwrap_or(""),
-        ]);
+            voice_used.instruct.as_deref().unwrap_or(""),
+        ];
+        let base = line_hash(&parts);
+        // the voice model behind the name (a local engine's uuid, style and model version): a
+        // changed model speaks the line again. Qwen3-TTS has none, so its hashes stay as they were.
+        let identity = synth.voice_identity(&voice_used);
+        let hash = match &identity {
+            Some(id) => {
+                let mut v: Vec<&str> = parts.to_vec();
+                v.push(id);
+                line_hash(&v)
+            }
+            None => base.clone(),
+        };
         let out_path = out.join(format!("{}.wav", file_stem(&line.id, 0)));
         // Windows and macOS file systems ignore case: `A1` and `a1` are one file there
         if !seen_paths.insert(PathBuf::from(out_path.to_string_lossy().to_lowercase())) {
-            return Err(bad(
-                "script.synthesize",
-                format!("line {} would write {} again (ids that differ only in unusual characters)", line.id, out_path.display()),
-            ));
+            return Err(bad(CMD, format!("line {} would write {} again (ids that differ only in unusual characters)", line.id, out_path.display())));
         }
         if !force
             && let Some(e) = manifest.lines.get(&line.id)
-            && e.hash == hash
+            && (e.hash == hash || (local && identity.is_none() && e.base.as_deref() == Some(base.as_str())))
             && out.join(&e.file).is_file()
         {
-            cached.push(json!({"id": line.id, "path": out.join(&e.file).to_string_lossy(), "seconds": e.seconds, "status": "cached"}));
+            let mut c = json!({"id": line.id, "engine": route.id(), "path": out.join(&e.file).to_string_lossy(), "seconds": e.seconds, "status": "cached"});
+            if let Some(cr) = &e.credit {
+                c["credit"] = cr.clone();
+            }
+            cached.push(c);
             continue;
         }
-        todo.push((
-            Line { id: line.id.clone(), text, voice: Voice { ref_audio, ref_text, speaker, instruct }, language: Some(language.clone()), out: out_path },
+        todo.push(Todo {
+            line: Line { id: line.id.clone(), text, voice: voice_used, language: Some(language.clone()), out: out_path },
+            route,
             hash,
-        ));
+            base: local.then_some(base),
+        });
     }
 
     let mut spoken = Vec::new();
     let mut failed: Vec<Value> = Vec::new();
-    // Chunks of SYNTH_CHUNK lines, the manifest saved after each: a run that dies (a GPU crash, a
-    // kill) loses at most one chunk, and the next run goes on from the lines already recorded.
+    // Each route's lines in chunks of SYNTH_CHUNK, the manifest saved after each: a run that dies
+    // (a GPU crash, a kill, an engine closed) loses at most one chunk, and the next run goes on
+    // from the lines already recorded.
     let mut stopped: Option<EngineError> = None;
-    for chunk in todo.chunks(SYNTH_CHUNK) {
-        let lines: Vec<Line> = chunk.iter().map(|(l, _)| l.clone()).collect();
-        let outcome = match synth.synthesize(&lines, &mut |_, _| true) {
-            Ok(o) => o,
-            Err(e) => {
-                stopped = Some(EngineError::Other(format!("{e} ({} lines were spoken and recorded before this; run it again to go on)", spoken.len())));
-                break;
+    'routes: for (route, synth) in &synths {
+        let mine: Vec<&Todo> = todo.iter().filter(|t| t.route == *route).collect();
+        for chunk in mine.chunks(SYNTH_CHUNK) {
+            let lines: Vec<Line> = chunk.iter().map(|t| t.line.clone()).collect();
+            let outcome = match synth.synthesize(&lines, &mut |_, _| true) {
+                Ok(o) => o,
+                Err(e) => {
+                    stopped = Some(EngineError::Other(format!("{e} ({} lines were spoken and recorded before this; run it again to go on)", spoken.len())));
+                    break 'routes;
+                }
+            };
+            for sp in &outcome.spoken {
+                let t = chunk.iter().find(|t| t.line.id == sp.id);
+                let file = sp.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                manifest.lines.insert(
+                    sp.id.clone(),
+                    Entry {
+                        hash: t.map(|t| t.hash.clone()).unwrap_or_default(),
+                        file,
+                        seconds: sp.duration.seconds(),
+                        base: t.and_then(|t| t.base.clone()),
+                        credit: sp.credit.clone(),
+                    },
+                );
+                let mut r =
+                    json!({"id": sp.id, "engine": route.id(), "path": sp.path.to_string_lossy(), "seconds": sp.duration.seconds(), "status": "synthesized"});
+                if let Some(c) = &sp.credit {
+                    r["credit"] = c.clone();
+                }
+                spoken.push(r);
             }
-        };
-        for sp in &outcome.spoken {
-            let hash = chunk.iter().find(|(l, _)| l.id == sp.id).map(|(_, h)| h.clone()).unwrap_or_default();
-            let file = sp.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            manifest.lines.insert(sp.id.clone(), Entry { hash, file, seconds: sp.duration.seconds() });
-            spoken.push(json!({"id": sp.id, "path": sp.path.to_string_lossy(), "seconds": sp.duration.seconds(), "status": "synthesized"}));
+            failed.extend(outcome.failed.iter().map(|(id, e)| json!({"id": id, "error": e})));
+            write_manifest(&out, &manifest)?;
         }
-        failed.extend(outcome.failed.iter().map(|(id, e)| json!({"id": id, "error": e})));
-        write_manifest(&out, &manifest)?;
     }
     if let Some(e) = stopped {
         return Err(e);
     }
     let mut lines_out = cached.clone();
     lines_out.extend(spoken.iter().cloned());
+    let credits = crate::narration_credits::distinct(lines_out.iter().map(|l| &l["credit"]));
+    let used: HashSet<Route> = todo.iter().map(|t| t.route).collect();
     Ok(json!({
-        "synthesizer": synth_id,
+        "engine": default_route.id(),
+        "synthesizer": synths.get(&default_route).map(|x| x.id()),
+        "synthesizers": synths.iter().filter(|(r, _)| used.contains(r)).map(|(r, x)| json!({"engine": r.id(), "id": x.id()})).collect::<Vec<_>>(),
         "out": out.to_string_lossy(),
         "manifest": out.join(MANIFEST).to_string_lossy(),
         "synthesized": spoken.len(),
@@ -421,6 +509,8 @@ fn synthesize(s: &mut Session, p: &Value) -> Result<Value> {
         "recorded": recorded,
         "failed": failed,
         "lines": lines_out,
+        "creditText": crate::narration_credits::credit_text(&credits),
+        "credits": credits,
     }))
 }
 
@@ -515,7 +605,7 @@ pub fn commands() -> Vec<CommandSpec> {
         query(
             "script.synthesize",
             "Synthesize Script Lines",
-            r#"{"path":str,"out":str?,"ids":[str]?,"force":bool?,"all":bool?,"language":str?,"model":str?,"device":str?,"python":str?,"script":str?}"#,
+            r#"{"path":str,"engine":"qwen3|aivisspeech|voicevox"="qwen3","url":str?,"out":str?,"ids":[str]?,"force":bool?,"all":bool?,"language":str?,"model":str?,"device":str?,"python":str?,"script":str?,"speed":f64?,"pitch":f64?,"intonation":f64?}"#,
             synthesize,
         ),
         query("script.lipsync", "Lip Sync Script", r#"{"path":str,"out":str?,"three":bool?,"openDb":f?,"halfDb":f?,"minSeconds":f?}"#, script_lipsync),

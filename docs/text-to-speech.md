@@ -12,12 +12,30 @@ The use it was built for is the novel / game-script-to-anime pipeline in
 [novel-to-anime.md](novel-to-anime.md): lines that have no recording are spoken in the voice of
 the lines that do.
 
+## Which route
+
+The same commands also speak through a local **AivisSpeech** or **VOICEVOX** app (the engines
+[narration](narration.md) uses), picked with `engine`:
+
+| | Qwen3-TTS (`engine: "qwen3"`, the default) | AivisSpeech / VOICEVOX (`engine: "aivisspeech"` / `"voicevox"`) |
+|---|---|---|
+| Voice | a clone of a reference recording (`refAudio` + `refText`), or a preset `speaker` with an `instruct` direction | an installed voice by name: `speaker` = `"Speaker/Style"` (or a style id); none: Settings ▸ Narration ▸ Default voice, else the engine's first voice |
+| What runs | the helper script in an external Python (`tools/qwen3-tts/`; a GPU helps) | the app's own engine over HTTP on this machine (start the app first) |
+| Address | `python` / `script` params | `url`, else Settings ▸ Narration (`narration.aivisspeechUrl`, `narration.voicevoxUrl`; 127.0.0.1:10101 / :50021) |
+| Languages | ten, Japanese and English among them | Japanese |
+| Credits | none recorded (the model's licence asks for none; a cloned voice needs its speaker's consent) | every item made remembers its voice's credit (`Narration Credit` / `Narration Voice`), so `tts.credits`, `tts.addCreditRoll` and `tts.exportCredits` cover it ([voice-terms.md](voice-terms.md)) |
+| Commands | `speech.synthesize`, `script.synthesize`, `anime.run` | the same with `engine`, plus `tts.synthesize` (narration placed on the timeline with captions, levels and ducking; [narration.md](narration.md)) |
+
+In a [script](script.md) each character's `voice` can name its own `engine`, so one story can mix
+a cloned voice with an AivisSpeech or VOICEVOX character; characters without one (and the
+narrator) use the command's `engine`.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `speech.synthesize` | Speak `lines` (`[{id?, text, refAudio?, refText?, speaker?, instruct?, language?}]`) or one `text`. Each line becomes `<out>/<id>.wav` (`out` defaults to `<data dir>/tts`; ids are reduced to file-name-safe characters) and, unless `import: false`, a media item (in `bin`). `refAudio` / `refText` / `speaker` / `instruct` / `language` on the call are the defaults for every line. `model`, `device` (`cuda:0`, `cpu`), `python`, `script` pick the model and the interpreter. Returns `lines` (`id`, `path`, `seconds`, `sampleRate`, `item`) and `failed` (`id`, `error`); one undo step. The call blocks until the script is done, like `transcript.generate`. |
-| `speech.synthesizer` | What would speak: `installed` (a host-provided synthesizer), else the `python` and `script` found, `scriptFound`, `out`, and the script's `--probe` report (`torch`, `cuda`, `gpu`, `qwenTts`, `error`), summarised as `ok`. |
+| `speech.synthesize` | `engine` (`qwen3` default, `aivisspeech`, `voicevox`) and `url` pick the route (above). Speak `lines` (`[{id?, text, refAudio?, refText?, speaker?, instruct?, language?}]`) or one `text`. Each line becomes `<out>/<id>.wav` (`out` defaults to `<data dir>/tts`; ids are reduced to file-name-safe characters) and, unless `import: false`, a media item (in `bin`). `refAudio` / `refText` / `speaker` / `instruct` / `language` on the call are the defaults for every line. `model`, `device` (`cuda:0`, `cpu`), `python`, `script` pick the model and the interpreter. With a local engine, `speaker` (or `voice`) is `"Speaker/Style"`, and `speed` / `pitch` / `intonation` / `volume` shape every line. Returns `engine`, `lines` (`id`, `path`, `seconds`, `sampleRate`, `item`, and a local engine's `credit`), `failed` (`id`, `error`), `credits` and `creditText`; one undo step. The call blocks until the script is done, like `transcript.generate`. |
+| `speech.synthesizer` | What would speak: `installed` (a host-provided synthesizer), else the `python` and `script` found, `scriptFound`, `out`, and the script's `--probe` report (`torch`, `cuda`, `gpu`, `qwenTts`, `error`), summarised as `ok`. With `engine: "aivisspeech"` / `"voicevox"`: its `url`, `ok`, and `version` or the `error` ("AivisSpeech is not running at … — start the AivisSpeech app"). |
 
 Example (CLI, control channel or MCP):
 
@@ -100,6 +118,12 @@ on a piped stderr, so the script turns them off before importing the libraries.
   the fixed synthesizer, input checks and cancellation, and the external runner against the fake
   script (skipped when no `python` is on the PATH): results, failures, progress, probe, a
   simulated crash, a missing script and a missing interpreter.
+- `crates/speech/src/tts.rs` and `crates/engine/src/speech_route_tests.rs`: the local engines
+  behind the same `Synthesizer` trait (`EngineSynthesizer`) against a fake engine: credits on
+  the items `speech.synthesize` imports, the "not running" error, a script spoken by AivisSpeech
+  (cached on a second run, spoken again after a voice change, kept while the engine is closed),
+  a script mixing Qwen3 and both local engines through `anime.run` with the credits on the
+  anime's items, and the real engines when they are running on their default ports.
 - `crates/engine/src/speech_synth_tests.rs`: lines to WAV files and media items in one undo
   step, `import: false`, odd ids (`../evil/名前 ?` becomes `..evil名前.wav` inside `out`),
   duplicate ids, empty input, every line failing, and the errors when the script or Python is

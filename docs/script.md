@@ -47,7 +47,7 @@ they change nothing in the project and can run again at any time. Relative paths
 
 | Field | Meaning |
 |---|---|
-| `characters.<id>` | `name` (display), `voice` (`refAudio` + `refText`: a reference recording and its transcript, for cloning; or `speaker`: a preset voice such as `Ono_Anna`, with an optional standing `instruct`), `expressions` (pictures by expression name; `openImage` is the open-mouth picture for lip sync), `defaultExpression`. |
+| `characters.<id>` | `name` (display), `voice` (`refAudio` + `refText`: a reference recording and its transcript, for cloning; or `speaker`: a preset voice such as `Ono_Anna`, with an optional standing `instruct`; or `engine: "aivisspeech"` / `"voicevox"` with `speaker: "Speaker/Style"`, a voice of a local app, see below), `expressions` (pictures by expression name; `openImage` is the open-mouth picture for lip sync), `defaultExpression`. |
 | `scenes[]` | `id` (unique), `title`, `pov` (a character id), `when` (story time as text that sorts in time order), `requires` (scenes that must be shown first), `background`, `bgm`, `lines`. |
 | `lines[]` | `id` (unique across the whole script: it names the audio file), `kind` (`dialogue` default, `narration`, `monologue`, `direction`), `speaker`, `text`, `reading`, `expression`, `voiceFile`, `instruct`, `sfx`, `pauseAfter`, `generated`. |
 | `route` | Scene ids in the order they are shown; empty means file order. Scenes missing from it are not shown. |
@@ -66,6 +66,34 @@ Notes:
 - A **direction** has no text and no speaker: sound effects, a cut, a pause.
 - Counts and lengths are capped (500 characters, 10 000 scenes, 200 000 lines, 4 000 characters
   per text, 64 MB per file); everything in the file is treated as hostile.
+
+### Which engine speaks a character
+
+| | Qwen3-TTS (`engine: "qwen3"`, the default) | AivisSpeech / VOICEVOX (`engine: "aivisspeech"` / `"voicevox"`) |
+|---|---|---|
+| Voice | a clone of a reference recording (`refAudio` + `refText`), or a preset `speaker` with an `instruct` direction | an installed voice by name: `speaker` = `"Speaker/Style"` (or a style id); none: Settings ▸ Narration ▸ Default voice, else the engine's first voice |
+| What runs | the helper script in an external Python (`tools/qwen3-tts/`; a GPU helps) | the app's own engine over HTTP on this machine (start the app first) |
+| Address | `python` / `script` params | `url`, else Settings ▸ Narration (`narration.aivisspeechUrl`, `narration.voicevoxUrl`; 127.0.0.1:10101 / :50021) |
+| Languages | ten, Japanese and English among them | Japanese |
+| Credits | none recorded (the model's licence asks for none; a cloned voice needs its speaker's consent) | every item made remembers its voice's credit (`Narration Credit` / `Narration Voice`), so `tts.credits`, `tts.addCreditRoll` and `tts.exportCredits` cover it ([voice-terms.md](voice-terms.md)) |
+| Commands | `speech.synthesize`, `script.synthesize`, `anime.run` | the same with `engine`, plus `tts.synthesize` (narration placed on the timeline with captions, levels and ducking; [narration.md](narration.md)) |
+
+In a script each character's `voice` can name its own `engine`, so one story can mix
+a cloned voice with an AivisSpeech or VOICEVOX character; characters without one (and the
+narrator) use the command's `engine`.
+
+```json
+"characters": {
+  "marina": {"name": "まりな", "voice": {"refAudio": "voice/marina_0007.wav", "refText": "待って、まだ話は終わってない。"}},
+  "zunda":  {"name": "ずんだもん", "voice": {"engine": "aivisspeech", "speaker": "ずんだもん/ノーマル"}}
+}
+```
+
+A missing or unknown `engine` is the command's `engine` (`qwen3` unless the call says otherwise),
+so scripts written before this speak exactly as they did, with their cached lines kept.
+`script.validate` warns about an unknown engine, a local-engine voice without a `speaker` (the
+default voice speaks it) and a `refAudio` on one (local engines do not clone).
+`script.pickVoices {overwrite: true}` turns a local-engine voice it replaces into a cloned one.
 
 ## Branching stories
 
@@ -87,7 +115,7 @@ keep any draft consistent.
 |---|---|
 | `script.validate {path}` | `ok`, `errors`, `warnings`, `problems` (severity, scene, line, message) and `stats` (characters, scenes, lines, spoken, recorded, recordingMissing, toSynthesize). |
 | `script.pickVoices {path, write?, overwrite?}` | For each character without a voice, the best of their lines that have a recording of their own: 2.5–12 s, nearest 6 s, a calm line (few `！？…、`), a plausible speaking rate (2–12 characters per second), and the text known. Returns `picked` (character, line, refAudio, refText, seconds, candidates), `skipped` with reasons, and `unreadable` files. `write: true` stores the picks in the script (the file is re-formatted; fields this build does not know are kept); without it nothing is written. `overwrite` replaces voices already set. |
-| `script.synthesize {path, out?, ids?, force?, all?, language?, model?, device?, python?, script?}` | Speak every spoken line that has no recording (`all` includes recorded ones), in route order, into `<out>/<id>.wav` (default `<data dir>/tts/<script name>-<8 hex of its folder>`, so same-named scripts in different folders do not share audio; ids that differ only in case are refused, since Windows and macOS would write one file). A `manifest.json` there remembers a hash of each line's spoken text, language, model, synthesizer, direction and voice (reference file name and size, or preset speaker), so **a second run speaks nothing**, and after an edit only the changed lines are spoken again. `force` redoes all, `ids` limits the run. Refuses a script with errors. Lines are spoken in chunks of 400 and the manifest is saved after each, so a run that dies loses at most one chunk and the next goes on from there. A voice reference is identified by its name, size and modified time. Returns `synthesized`, `cached`, `recorded`, `failed` and every line's path and seconds. |
+| `script.synthesize {path, engine?, url?, out?, ids?, force?, all?, language?, model?, device?, python?, script?, speed?, pitch?, intonation?}` | Speak every spoken line that has no recording (`all` includes recorded ones), in route order, into `<out>/<id>.wav` (default `<data dir>/tts/<script name>-<8 hex of its folder>`, so same-named scripts in different folders do not share audio; ids that differ only in case are refused, since Windows and macOS would write one file). A `manifest.json` there remembers a hash of each line's spoken text, language, model, synthesizer, direction and voice (reference file name and size, or preset speaker), so **a second run speaks nothing**, and after an edit only the changed lines are spoken again. `force` redoes all, `ids` limits the run. Refuses a script with errors. Lines are spoken in chunks of 400 and the manifest is saved after each, so a run that dies loses at most one chunk and the next goes on from there. A voice reference is identified by its name, size and modified time. Each line goes to its character's `engine`, else the call's (`qwen3` default; `url` is the address of that engine); a local engine's line is also identified by the voice model behind its `speaker` (uuid, style id, model version) and the prosody, so a changed model speaks it again, while a closed engine keeps the cached lines rather than failing. Returns `engine`, `synthesizer`, `synthesizers` (the routes used), `synthesized`, `cached`, `recorded`, `failed`, every line's path, seconds, `engine` and (local engines) `credit`, and the distinct `credits` and `creditText`. The credits are kept in the manifest, and `anime.build` / `anime.run` put them on the voice items they import, so `tts.credits`, `tts.addCreditRoll` and `tts.exportCredits` cover the anime. |
 | `script.lipsync {path, out?, three?, openDb?, halfDb?, minSeconds?}` | Mouth shapes for every spoken line that has audio (its own recording, else the synthesized file), written to `<out>/lipsync.json`. |
 | `lipsync.analyze {path, three?, openDb?, halfDb?, minSeconds?}` | The same for one audio file: `segments` of `{start, end, level, startTick, endTick}`. |
 

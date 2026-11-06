@@ -140,94 +140,10 @@ pub fn next_token() -> u64 {
 
 // ------------------------------------------------------------------------------------- voices
 
-/// A resolved voice.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Voice {
-    pub engine: TtsEngine,
-    pub speaker: String,
-    pub style: String,
-    /// The style id (`speaker` in the engine API).
-    pub id: i64,
-    pub uuid: String,
-}
-
-impl Voice {
-    /// `Speaker/Style`.
-    pub fn label(&self) -> String {
-        format!("{}/{}", self.speaker, self.style)
-    }
-}
-
-fn norm(s: &str) -> String {
-    s.chars().filter(|c| !c.is_whitespace() && !matches!(c, '・' | '_' | '-')).flat_map(char::to_lowercase).collect()
-}
-
-fn voice_of(engine: TtsEngine, sp: &Speaker, st: &tts::Style) -> Voice {
-    Voice { engine, speaker: sp.name.clone(), style: st.name.clone(), id: st.id, uuid: sp.uuid.clone() }
-}
-
-/// Find a speaker by name: exact, then ignoring case / spaces, then the only one containing it.
-fn find_speaker<'a>(speakers: &'a [Speaker], name: &str) -> Option<&'a Speaker> {
-    let n = norm(name);
-    if n.is_empty() {
-        return None;
-    }
-    speakers.iter().find(|s| s.name == name).or_else(|| speakers.iter().find(|s| norm(&s.name) == n)).or_else(|| {
-        let mut it = speakers.iter().filter(|s| norm(&s.name).contains(&n));
-        match (it.next(), it.next()) {
-            (Some(s), None) => Some(s),
-            _ => None,
-        }
-    })
-}
-
-/// A voice reference: a style id (number or digits), `"Speaker/Style"`, `"Speaker"` (its first
-/// style), or `{id}` / `{speaker, style}`.
-pub fn resolve_voice(engine: TtsEngine, speakers: &[Speaker], v: &Value) -> std::result::Result<Voice, String> {
-    let by_id = |id: i64| {
-        speakers
-            .iter()
-            .find_map(|sp| sp.styles.iter().find(|st| st.id == id).map(|st| voice_of(engine, sp, st)))
-            .ok_or_else(|| format!("{} has no voice with style id {id}", engine.name()))
-    };
-    let by_names = |speaker: &str, style: Option<&str>| -> std::result::Result<Voice, String> {
-        let sp = find_speaker(speakers, speaker).ok_or_else(|| format!("{} has no voice named `{speaker}` (tts.voices lists them)", engine.name()))?;
-        let st = match style.map(str::trim).filter(|s| !s.is_empty()) {
-            None => sp.styles.first(),
-            Some(st) => sp.styles.iter().find(|x| x.name == st).or_else(|| sp.styles.iter().find(|x| norm(&x.name) == norm(st))),
-        };
-        let st = st.ok_or_else(|| format!("{}'s voice `{}` has no style `{}`", engine.name(), sp.name, style.unwrap_or_default()))?;
-        Ok(voice_of(engine, sp, st))
-    };
-    match v {
-        Value::Null => speakers
-            .iter()
-            .find_map(|sp| sp.styles.first().map(|st| voice_of(engine, sp, st)))
-            .ok_or_else(|| format!("{} has no voices installed", engine.name())),
-        Value::Number(n) => n.as_i64().ok_or_else(|| format!("bad style id {n}")).and_then(by_id),
-        Value::String(s) => {
-            let s = s.trim();
-            if let Ok(id) = s.parse::<i64>() {
-                return by_id(id);
-            }
-            match s.split_once(['/', '／']) {
-                Some((a, b)) => by_names(a.trim(), Some(b)),
-                None => by_names(s, None),
-            }
-        }
-        Value::Object(m) => {
-            if let Some(id) = m.get("id").or(m.get("styleId")).and_then(Value::as_i64) {
-                return by_id(id);
-            }
-            if let Some(id) = m.get("speaker").and_then(Value::as_i64) {
-                return by_id(id);
-            }
-            let sp = m.get("speaker").or(m.get("name")).and_then(Value::as_str).ok_or("a voice object needs `id` or `speaker`")?;
-            by_names(sp, m.get("style").and_then(Value::as_str))
-        }
-        other => Err(format!("bad voice {other}")),
-    }
-}
+/// A resolved voice (`Speaker/Style`, style id, uuid) and how a reference finds one; shared with
+/// the speech crate's [`filmcraft_speech::EngineSynthesizer`], which speaks script lines through
+/// the same engines.
+pub use filmcraft_speech::tts::{ResolvedVoice as Voice, resolve_voice};
 
 /// `話者: セリフ` / `話者「セリフ」` lines of a script: (speaker, text). Lines without a speaker
 /// have `None`; empty lines and `#` comments are skipped.
@@ -445,49 +361,9 @@ pub fn credits(r: &Rendered) -> Vec<Value> {
             continue;
         }
         seen.push(key);
-        out.push(credit_json(r.engine, v, &r.models));
+        out.push(tts::credit(r.engine, v, &r.models));
     }
     out
-}
-
-fn credit_json(engine: TtsEngine, v: &Voice, models: &[AivmModel]) -> Value {
-    match engine {
-        TtsEngine::Voicevox => json!({
-            "engine": engine.id(),
-            "speaker": v.speaker,
-            "uuid": v.uuid,
-            "credit": format!("VOICEVOX:{}", v.speaker),
-            "required": true,
-            "termsUrl": engine.terms_url(),
-            "note": "VOICEVOX requires this credit wherever the audio is published (video, description). Each character has its own terms: run tts.voiceTerms or see the character's page.",
-            "termsCommand": {"command": "tts.voiceTerms", "params": {"engine": engine.id(), "speaker_uuid": v.uuid}},
-        }),
-        TtsEngine::AivisSpeech => {
-            let model = models.iter().find(|m| !v.uuid.is_empty() && m.speakers.contains(&v.uuid));
-            let license = model.and_then(|m| m.license.clone());
-            let note = match &license {
-                Some(l) => {
-                    format!("Model licence: {}. Check what it requires (credit, commercial use) before publishing.", l.lines().next().unwrap_or_default())
-                }
-                None => "Check the model's licence before publishing (tts.voiceTerms, or the model's page on AivisHub).".to_string(),
-            };
-            json!({
-                "engine": engine.id(),
-                "speaker": v.speaker,
-                "uuid": v.uuid,
-                "credit": format!("AivisSpeech:{}", v.speaker),
-                "required": false,
-                "checkLicense": true,
-                "model": model.map(|m| m.name.clone()),
-                "modelUuid": model.map(|m| m.uuid.clone()),
-                "license": license,
-                "modelUrl": model.map(AivmModel::hub_url),
-                "termsUrl": engine.terms_url(),
-                "note": note,
-                "termsCommand": {"command": "tts.voiceTerms", "params": {"engine": engine.id(), "speaker_uuid": v.uuid}},
-            })
-        }
-    }
 }
 
 // ------------------------------------------------------------------------------------- placing
@@ -996,7 +872,7 @@ fn voice_terms(s: &mut Session, p: &Value) -> Result<Value> {
         id: sp.and_then(|x| x.styles.first()).map_or(0, |x| x.id),
         uuid: uuid.clone(),
     };
-    let credit = credit_json(c.engine, &voice, &models);
+    let credit = tts::credit(c.engine, &voice, &models);
     Ok(json!({
         "engine": c.engine.id(),
         "speaker": voice.speaker,

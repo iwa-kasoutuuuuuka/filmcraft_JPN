@@ -46,10 +46,16 @@ pub enum LineKind {
 }
 
 /// A character's voice: a reference recording and what it says (voice cloning), or, without a
-/// recording, one of the synthesizer's preset `speaker`s (`Ono_Anna`, …).
+/// recording, one of the synthesizer's preset `speaker`s (`Ono_Anna`, …). With `engine` set to a
+/// local app (`aivisspeech`, `voicevox`), `speaker` is that app's `"Speaker/Style"` instead.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct VoiceRef {
+    /// What speaks this voice: `qwen3` (Qwen3-TTS: cloning or a preset speaker), `aivisspeech` or
+    /// `voicevox` (a local app; [`LOCAL_ENGINES`]). Missing or unknown: the engine the command
+    /// is given (`qwen3` unless it says otherwise), so older scripts speak as they did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub ref_audio: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,6 +65,33 @@ pub struct VoiceRef {
     /// A standing direction for a preset speaker (`"落ち着いた声で"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instruct: Option<String>,
+}
+
+/// The local text-to-speech apps a voice's `engine` can name (their parameter ids).
+pub const LOCAL_ENGINES: [&str; 2] = ["aivisspeech", "voicevox"];
+
+/// An engine name folded for comparing: lower case, without spaces, `-` and `_`.
+fn engine_key(s: &str) -> String {
+    s.trim().chars().filter(|c| !matches!(c, ' ' | '-' | '_')).collect::<String>().to_ascii_lowercase()
+}
+
+impl VoiceRef {
+    /// The local app `engine` names (`aivisspeech`, also `aivis` / `AivisSpeech`; `voicevox`),
+    /// if it names one.
+    pub fn local_engine(&self) -> Option<&'static str> {
+        match engine_key(self.engine.as_deref()?).as_str() {
+            "aivisspeech" | "aivis" => Some("aivisspeech"),
+            "voicevox" => Some("voicevox"),
+            _ => None,
+        }
+    }
+
+    /// `engine` when it is set but names nothing this build knows (`qwen3` or a local app).
+    pub fn unknown_engine(&self) -> Option<&str> {
+        let e = self.engine.as_deref().map(str::trim).filter(|e| !e.is_empty())?;
+        let known = self.local_engine().is_some() || matches!(engine_key(e).as_str(), "qwen3" | "qwen" | "qwen3tts");
+        (!known).then_some(e)
+    }
 }
 
 /// One picture of a character: mouth closed, and optionally mouth open (for lip sync).
@@ -297,11 +330,38 @@ impl Script {
             {
                 warn(&mut out, None, None, format!("character {id}: default expression `{d}` has no picture"));
             }
-            if let Some(v) = &c.voice
-                && v.ref_audio.trim().is_empty()
-                && v.speaker.as_deref().is_none_or(|s| s.trim().is_empty())
-            {
-                err(&mut out, None, None, format!("character {id}: a voice needs a refAudio or a speaker"));
+            if let Some(v) = &c.voice {
+                let no_speaker = v.speaker.as_deref().is_none_or(|s| s.trim().is_empty());
+                if let Some(e) = v.unknown_engine() {
+                    warn(
+                        &mut out,
+                        None,
+                        None,
+                        format!("character {id}: unknown engine `{e}` (qwen3, aivisspeech or voicevox): the command's engine speaks it"),
+                    );
+                }
+                match v.local_engine() {
+                    Some(e) => {
+                        if no_speaker {
+                            warn(
+                                &mut out,
+                                None,
+                                None,
+                                format!(
+                                    "character {id}: the {e} voice has no speaker (\"Speaker/Style\"): the default voice of Settings ▸ Narration, else the engine's first voice, speaks it"
+                                ),
+                            );
+                        }
+                        if !v.ref_audio.trim().is_empty() {
+                            warn(&mut out, None, None, format!("character {id}: {e} does not clone voices; refAudio is not used"));
+                        }
+                    }
+                    None => {
+                        if v.ref_audio.trim().is_empty() && no_speaker {
+                            err(&mut out, None, None, format!("character {id}: a voice needs a refAudio or a speaker"));
+                        }
+                    }
+                }
             }
         }
         let mut scene_ids: HashSet<&str> = HashSet::new();
@@ -546,6 +606,36 @@ mod tests {
         let j = s.to_json();
         assert!(j.contains("Ono_Anna") && !j.contains("refAudio"), "{j}");
         assert_eq!(Script::from_json(&j).unwrap(), s);
+    }
+
+    #[test]
+    fn a_local_engine_voice_warns_instead_of_failing() {
+        let warnings = |s: &Script| s.validate().into_iter().filter(|p| p.severity == Severity::Warning).map(|p| p.message).collect::<Vec<_>>();
+        let mut s = script();
+        // no speaker: the engine's default voice speaks; a warning, not an error
+        let v = VoiceRef { engine: Some("AivisSpeech".into()), ..Default::default() };
+        assert_eq!(v.local_engine(), Some("aivisspeech"));
+        s.characters.insert("a".into(), Character { voice: Some(v), ..Default::default() });
+        assert!(errors(&s).is_empty(), "{:?}", s.validate());
+        assert!(warnings(&s).iter().any(|m| m.contains("aivisspeech voice has no speaker")), "{:?}", s.validate());
+        // a speaker: quiet; written and read back with its engine
+        let v = VoiceRef { engine: Some("voicevox".into()), speaker: Some("ずんだもん/ノーマル".into()), ..Default::default() };
+        s.characters.insert("a".into(), Character { voice: Some(v), ..Default::default() });
+        assert!(!warnings(&s).iter().any(|m| m.contains("character a")), "{:?}", s.validate());
+        let j = s.to_json();
+        assert!(j.contains("\"engine\": \"voicevox\""), "{j}");
+        assert_eq!(Script::from_json(&j).unwrap(), s);
+        // an unknown engine is the command's engine: a warning, and today's rules for the voice
+        let v = VoiceRef { engine: Some("mystery".into()), ..Default::default() };
+        assert_eq!((v.local_engine(), v.unknown_engine()), (None, Some("mystery")));
+        s.characters.insert("a".into(), Character { voice: Some(v), ..Default::default() });
+        assert!(warnings(&s).iter().any(|m| m.contains("unknown engine `mystery`")));
+        assert!(errors(&s).iter().any(|m| m.contains("needs a refAudio or a speaker")));
+        // older scripts (no engine) read as before
+        let old: Script = Script::from_json(r#"{"version":1,"characters":{"m":{"voice":{"refAudio":"m.wav"}}}}"#).unwrap();
+        let v = old.characters["m"].voice.clone().unwrap();
+        assert_eq!((v.engine, v.ref_audio.as_str()), (None, "m.wav"));
+        assert_eq!(VoiceRef { engine: Some(" Qwen3-TTS ".into()), ..Default::default() }.unknown_engine(), None);
     }
 
     #[test]

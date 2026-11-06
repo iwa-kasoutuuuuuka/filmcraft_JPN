@@ -15,7 +15,7 @@
 //!   [`ExternalSynthesizer`], which runs the Qwen3-TTS helper script (`tools/qwen3-tts/`, Python)
 //!   as an external process. FilmCraft links no Python.
 //! - [`tts`]: the client for local AivisSpeech / VOICEVOX engines over their localhost HTTP API
-//!   (feature `tts`).
+//!   (feature `tts`); [`tts::EngineSynthesizer`] puts them behind the same [`Synthesizer`] trait.
 //!
 //! See `docs/transcripts.md` for the user-facing behaviour and accuracy numbers.
 
@@ -33,6 +33,7 @@ pub mod whisper;
 use filmcraft_project::Transcript;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
 pub use synth::{ExternalSynthesizer, FixedSynthesizer, Line as SynthLine, Outcome as SynthOutcome, Spoken, Synthesizer, Voice};
+pub use tts::EngineSynthesizer;
 
 /// The sample rate every transcriber takes.
 pub const SAMPLE_RATE: u32 = 16_000;

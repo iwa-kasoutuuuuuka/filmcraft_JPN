@@ -1103,6 +1103,8 @@ mod shortcuts_tests;
 #[cfg(test)]
 mod silence_tests;
 #[cfg(test)]
+mod speech_route_tests;
+#[cfg(test)]
 mod speech_synth_tests;
 #[cfg(test)]
 mod tests;
