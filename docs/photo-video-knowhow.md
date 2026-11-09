@@ -148,6 +148,12 @@ FilmCraft 上で手で直した分は消える。** 直すのは常に storyboar
 
 ## 4. 次回（別の回）に流用する手順
 
+テンプレートにした（`E:/filmcraft_JPN/TMT_テンプレート/`、手順は中の `はじめに.md`）。`python new_episode.py 9 2027.07.10` で回のフォルダができ、
+回ごとに書き換えるのは `tools/episode.py`（番号・日付・概要欄の本文）、`storyboard.py`（カット表）、`mosaic_spec.json`（隠す枠）の 3 つだけ。
+読みの検品と作り直し（`check_readings.py` / `retake.py`）、書き出し（`export_video.py`）、サムネイル、チャプターつきの概要欄も道具にした。
+以下はその流れ。
+
+
 1. 作業フォルダをコピーし、`画像/` を入れ替える。
 2. storyboard.py をシナリオから書き直す（カットごとの写真と文、章見出し、テロップ）。英数字と数字の読みを `READINGS` に足す。
 3. `python mosaic.py` の前に、写真を格子つきで見て `mosaic_spec.json` に顔とナンバーの枠を書き、`--check` で確かめる。
