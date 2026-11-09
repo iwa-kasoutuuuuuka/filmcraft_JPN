@@ -42,6 +42,13 @@ impl ThemeKind {
             _ => None,
         }
     }
+    /// The OS window frame (title bar) theme that matches this UI theme.
+    pub fn window_theme(self) -> egui::SystemTheme {
+        match self {
+            ThemeKind::Dark | ThemeKind::Medium => egui::SystemTheme::Dark,
+            ThemeKind::Light => egui::SystemTheme::Light,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -308,4 +315,16 @@ pub fn apply_visuals(ctx: &egui::Context, t: &Tokens) {
         s.text_styles.insert(TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace));
         s.animation_time = 0.12;
     });
+}
+
+#[cfg(test)]
+mod window_theme_tests {
+    use super::ThemeKind;
+
+    #[test]
+    fn title_bar_follows_the_ui_theme() {
+        assert_eq!(ThemeKind::Dark.window_theme(), egui::SystemTheme::Dark);
+        assert_eq!(ThemeKind::Medium.window_theme(), egui::SystemTheme::Dark);
+        assert_eq!(ThemeKind::Light.window_theme(), egui::SystemTheme::Light);
+    }
 }
