@@ -250,6 +250,10 @@ id で声を決めると話ごとに声が変わる。
 - **録音を壊さない。** 録音のある行は合成しない。参照 WAV は名前・サイズ・更新時刻で同一性を見る。
 - **実行環境。** Python は `-X utf8 -I`（隔離）で動く。そのためユーザーサイトの `pip install --user` は見えない。
   venv かインタプリタに入れる。1 時間何も出力しないスクリプトは止める。
+- **訛り。** Qwen3-TTS の日本語は、読みをルビで直しても方言のような訛りが残ることがある（利用者の指摘、2026-11-09）。
+  標準語の語りが要るなら、アクセントを辞書で付ける Style-Bert-VITS2 の配布モデル（女性は `jvnv-F2-jp`、学習不要、
+  CC BY-SA 4.0 のクレジットが要る）を `script.synthesize` の `script`・`model` で呼ぶ。詳細は
+  [photo-video-knowhow.md](photo-video-knowhow.md) 2.4。
 
 ### 3.4 立ち絵
 
@@ -390,6 +394,7 @@ Gemini 版で補う。小次郎は髪で目が隠れる 3 枚があり、瞬き�
 
 ## 参照した文書
 
+- [photo-video-knowhow.md](photo-video-knowhow.md)（同じ仕組みで作った、写真とナレーションの実録動画の記録）
 - [novel-to-anime.md](novel-to-anime.md)（工程、優先度、自動化の現状）
 - [script.md](script.md)（台本の形式、`script.*` / `anime.*` / `lipsync.*`、口パク、組み立て、検査）
 - [text-to-speech.md](text-to-speech.md)、[tools/qwen3-tts/README.md](../tools/qwen3-tts/README.md)（合成・クローン・声の設計・プロトコル）
