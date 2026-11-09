@@ -425,6 +425,9 @@ impl FilmcraftApp {
         theme::apply_visuals(ctx, &self.tokens);
         self.apply_tooltips(ctx);
         self.ui.dark = k != ThemeKind::Light;
+        // The OS window frame follows the UI: Windows draws a dark title bar for a dark theme
+        // (winit sets DWMWA_USE_IMMERSIVE_DARK_MODE), macOS switches the window appearance.
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(k.window_theme()));
     }
 
     fn apply_tooltips(&self, ctx: &egui::Context) {
