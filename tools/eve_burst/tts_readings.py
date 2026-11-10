@@ -10,7 +10,9 @@ docs/script.md). See docs/eve-burst-tts-quality.md for the measurements behind i
     check   transcribe each synthesized line twice, with a phoneme recogniser (sounds, so 上手 read as
             うわて shows) and Whisper (words), compare both with the expected reading (pyopenjtalk-plus,
             the names dictionary and the overrides), and report the kanji words both disagree on;
-    apply   write `reading` for the lines of a report (names and game-style 茜（あかね） as well);
+    apply   write `reading` for the lines of a report (names and game-style 茜（あかね） as well, and
+            digits with a counter whose reading is not the plain number: ２人 → ふたり, ６日 → むいか,
+            ９時 → くじ, ３つ → みっつ, the month of a date);
     refs    check that every reference clip of voice_refs.json says exactly its refText (a refText
             with words the clip does not say makes every cloned line worse).
 
@@ -83,6 +85,79 @@ def ruby_words(text: str, words: dict[str, str]) -> str:
     pat = re.compile("|".join(re.escape(k) for k in keys))
     return "".join(seg if is_ruby else pat.sub(lambda m: f"｜{m.group(0)}《{words[m.group(0)]}》", seg)
                    for is_ruby, seg in split_ruby(text))
+
+
+ONES = ("", "いち", "に", "さん", "よん", "ご", "ろく", "なな", "はち", "きゅう")
+DAYS = {1: "ついたち", 2: "ふつか", 3: "みっか", 4: "よっか", 5: "いつか", 6: "むいか", 7: "なのか", 8: "ようか", 9: "ここのか", 10: "とおか",
+        14: "じゅうよっか", 17: "じゅうしちにち", 19: "じゅうくにち", 20: "はつか", 24: "にじゅうよっか", 27: "にじゅうしちにち", 29: "にじゅうくにち"}
+MONTHS = {1: "いちがつ", 2: "にがつ", 3: "さんがつ", 4: "しがつ", 5: "ごがつ", 6: "ろくがつ", 7: "しちがつ", 8: "はちがつ", 9: "くがつ",
+          10: "じゅうがつ", 11: "じゅういちがつ", 12: "じゅうにがつ"}
+THINGS = ("", "ひとつ", "ふたつ", "みっつ", "よっつ", "いつつ", "むっつ", "ななつ", "やっつ", "ここのつ")
+D = "0-9０-９"
+# a number that is not part of a longer one or of a decimal, then a counter
+COUNTED = re.compile(
+    rf"(?<![{D}.．,，])(?:(?P<m>[{D}]{{1,2}})月(?P<md>[{D}]{{1,2}})日"
+    rf"|(?P<a>[{D}])[～〜、・,，](?P<b>[{D}])人(?![前称])"
+    rf"|(?P<n>[{D}]{{1,2}})(?P<c>人(?![前称])|日(?![中本])|時|つ))")
+
+
+def number_kana(n: int) -> str:
+    """1..99 in hiragana (じゅう, にじゅういち)."""
+    if not 0 < n < 100:
+        return ""
+    tens, ones = divmod(n, 10)
+    return ("" if tens == 0 else ("じゅう" if tens == 1 else ONES[tens] + "じゅう")) + ONES[ones]
+
+
+def counted_reading(n: int, counter: str, dated: bool = False) -> str:
+    """How a number with its counter is read, or "" to leave it to the synthesizer."""
+    if counter == "人":
+        if n in (1, 2):
+            return ("ひとり", "ふたり")[n - 1]
+        if not 0 < n < 100:
+            return ""
+        return (number_kana(n - n % 10) + {4: "よ", 7: "しち"}.get(n % 10, ONES[n % 10])) + "にん"
+    if counter == "日":
+        if n == 1 and not dated:
+            return ""  # いちにち or ついたち: only a date says which
+        if n in DAYS:
+            return DAYS[n]
+        return number_kana(n) + "にち" if 10 < n <= 31 else ""
+    if counter == "時":
+        if not 0 <= n <= 24 or n % 10 not in (4, 7, 9):
+            return ""
+        return number_kana(n - n % 10) + {4: "よ", 7: "しち", 9: "く"}[n % 10] + "じ"
+    if counter == "つ":
+        return THINGS[n] if 0 < n < 10 else ""
+    return ""
+
+
+def digits_value(s: str) -> int:
+    try:
+        return int(s.translate(str.maketrans("０１２３４５６７８９", "0123456789")))
+    except ValueError:
+        return -1
+
+
+def counter_ruby(text: str) -> str:
+    """Digits with a counter whose reading is not the plain number, as ruby (outside existing ruby):
+    ２人 → ｜２人《ふたり》, １２月６日 → ｜１２月《じゅうにがつ》｜６日《むいか》, ２～３人 → にさんにん.
+    A synthesizer reads these wrong now and then (ににん, ろくにち), and the reading checker names
+    the word in kanji (二人), which is not in the text, so it could never write the ruby itself."""
+    def one(m):
+        if m.group("m"):
+            month, day = digits_value(m.group("m")), digits_value(m.group("md"))
+            mr, dr = MONTHS.get(month, ""), counted_reading(day, "日", dated=True)
+            head = f"｜{m.group('m')}月《{mr}》" if mr else f"{m.group('m')}月"
+            return head + (f"｜{m.group('md')}日《{dr}》" if dr else f"{m.group('md')}日")
+        if m.group("a"):
+            a, b = digits_value(m.group("a")), digits_value(m.group("b"))
+            if 0 < a < b < 10:
+                return f"｜{m.group(0)}《{ONES[a]}{ONES[b]}にん》"
+            return m.group(0)
+        r = counted_reading(digits_value(m.group("n")), m.group("c"))
+        return f"｜{m.group(0)}《{r}》" if r else m.group(0)
+    return "".join(seg if is_ruby else COUNTED.sub(one, seg) for is_ruby, seg in split_ruby(text[:MAX_TEXT])) + text[MAX_TEXT:]
 
 
 def paren_to_ruby(text: str) -> str:
@@ -294,12 +369,16 @@ def apply_report(script: dict, report: dict, names: dict[str, str], form: str = 
     conv = hira2kata if form == "kata" else kata2hira
     names_k = {k: conv(v) for k, v in names.items()}
     lines = report.get("lines") if isinstance(report.get("lines"), dict) else {}
-    n_lines = n_names = n_fixed = 0
+    n_lines = n_names = n_fixed = n_counted = 0
     for l, base in spoken_lines(script):
         n_lines += 1
         new = ruby_words(paren_to_ruby(base), names_k)
         if new != base:
             n_names += 1
+        counted = counter_ruby(new)
+        if counted != new:
+            n_counted += 1
+            new = counted
         r = lines.get(l["id"])
         words = r.get("words") if isinstance(r, dict) and isinstance(r.get("words"), dict) else {}
         fix = {k: conv(v) for k, v in words.items()
@@ -309,7 +388,7 @@ def apply_report(script: dict, report: dict, names: dict[str, str], form: str = 
             n_fixed += 1
         if new != base and len(new) <= MAX_TEXT:
             l["reading"] = new
-    return {"lines": n_lines, "withNames": n_names, "fixed": n_fixed}
+    return {"lines": n_lines, "withNames": n_names, "withCounters": n_counted, "fixed": n_fixed}
 
 
 def load_json(path: str):

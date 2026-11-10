@@ -71,6 +71,50 @@ class Numbers(unittest.TestCase):
         self.assertEqual(tr.number_words("９割", {"九": "きゅう"}, lambda r: "9"), {})
 
 
+class Counters(unittest.TestCase):
+    def test_people(self):
+        self.assertEqual(tr.counter_ruby("１人より２人、２人より３人。"), "｜１人《ひとり》より｜２人《ふたり》、｜２人《ふたり》より｜３人《さんにん》。")
+        self.assertEqual(tr.counter_ruby("4人と7人と14人と20人"), "｜4人《よにん》と｜7人《しちにん》と｜14人《じゅうよにん》と｜20人《にじゅうにん》")
+        self.assertEqual(tr.counter_ruby("彼氏の２～３人くらい"), "彼氏の｜２～３人《にさんにん》くらい")
+        self.assertEqual(tr.counter_ruby("１人前の料理、１人称"), "１人前の料理、１人称")  # いちにんまえ, いちにんしょう
+        self.assertEqual(tr.counter_ruby("１００人と１，２００人"), "１００人と１，２００人")  # a long number is left to the synthesizer
+
+    def test_days_and_dates(self):
+        self.assertEqual(tr.counter_ruby("１２月６日、昼過ぎ。"), "｜１２月《じゅうにがつ》｜６日《むいか》、昼過ぎ。")
+        self.assertEqual(tr.counter_ruby("12月1日と4月20日"), "｜12月《じゅうにがつ》｜1日《ついたち》と｜4月《しがつ》｜20日《はつか》")
+        self.assertEqual(tr.counter_ruby("３日前から１０日間"), "｜３日《みっか》前から｜１０日《とおか》間")
+        self.assertEqual(tr.counter_ruby("１日だけ"), "１日だけ")  # いちにち or ついたち: not decided here
+        self.assertEqual(tr.counter_ruby("１日中、２日中"), "１日中、２日中")
+        self.assertEqual(tr.counter_ruby("１５日と１７日と３１日"), "｜１５日《じゅうごにち》と｜１７日《じゅうしちにち》と｜３１日《さんじゅういちにち》")
+        self.assertEqual(tr.counter_ruby("１６日"), "｜１６日《じゅうろくにち》")  # not ６日 → むいか
+        self.assertEqual(tr.counter_ruby("４０日"), "４０日")
+
+    def test_hours_and_things(self):
+        self.assertEqual(tr.counter_ruby("４時と７時と９時と１４時と３時"), "｜４時《よじ》と｜７時《しちじ》と｜９時《くじ》と｜１４時《じゅうよじ》と３時")
+        self.assertEqual(tr.counter_ruby("１つ、２つ、９つ"), "｜１つ《ひとつ》、｜２つ《ふたつ》、｜９つ《ここのつ》")
+
+    def test_existing_ruby_and_odd_input(self):
+        self.assertEqual(tr.counter_ruby("｜１２月《じゅうにがつ》６日と｜２人《ににん》"), "｜１２月《じゅうにがつ》｜６日《むいか》と｜２人《ににん》")
+        self.assertEqual(tr.counter_ruby(""), "")
+        self.assertEqual(tr.counter_ruby("3.5人、９９月９９日"), "3.5人、９９月９９日")
+        long = "２人" * 3000
+        self.assertEqual(len(tr.counter_ruby(long)) > len(long), True)  # capped, no hang
+        self.assertEqual([tr.number_kana(n) for n in (0, 1, 10, 11, 21, 99, 100)], ["", "いち", "じゅう", "じゅういち", "にじゅういち", "きゅうじゅうきゅう", ""])
+
+    def test_apply_writes_them_before_synthesis(self):
+        script = {"scenes": [{"lines": [{"id": "a", "text": "２人で行こう。"}, {"id": "b", "text": "６日だ。", "voiceFile": "v.wav"},
+                                        {"id": "c", "text": "何もない。"}]}]}
+        counts = tr.apply_report(script, {}, {})
+        ln = script["scenes"][0]["lines"]
+        self.assertEqual(ln[0]["reading"], "｜２人《ふたり》で行こう。")
+        self.assertNotIn("reading", ln[1])  # a recording is not synthesized
+        self.assertNotIn("reading", ln[2])
+        self.assertEqual(counts["withCounters"], 1)
+        again = tr.apply_report(script, {}, {})
+        self.assertEqual(ln[0]["reading"], "｜２人《ふたり》で行こう。")
+        self.assertEqual(again["withCounters"], 0)
+
+
 class Align(unittest.TestCase):
     def test_long_vowels_match_across_word_boundaries(self):
         # くわえて|行く: "te" + "iku" is heard as "teeku" once the boundary is gone
@@ -135,7 +179,7 @@ class Apply(unittest.TestCase):
         self.assertNotIn("reading", lines["d"])
         self.assertNotIn("reading", lines["f"])
         self.assertEqual(lines["a"]["text"], "だが絵画は猫じゃない。")  # the subtitle is unchanged
-        self.assertEqual(counts, {"lines": 4, "withNames": 1, "fixed": 2})
+        self.assertEqual(counts, {"lines": 4, "withNames": 1, "withCounters": 0, "fixed": 2})
 
     def test_katakana_form(self):
         s = script()
@@ -147,7 +191,7 @@ class Apply(unittest.TestCase):
         for bad in ({}, {"lines": []}, {"lines": {"a": "x"}}, {"lines": {"a": {"words": ["x"]}}}):
             tr.apply_report(s, bad, {})
         self.assertNotIn("reading", s["scenes"][0]["lines"][0])
-        self.assertEqual(tr.apply_report({"scenes": "x"}, {}, {}), {"lines": 0, "withNames": 0, "fixed": 0})
+        self.assertEqual(tr.apply_report({"scenes": "x"}, {}, {}), {"lines": 0, "withNames": 0, "withCounters": 0, "fixed": 0})
 
 
 class Cli(unittest.TestCase):
