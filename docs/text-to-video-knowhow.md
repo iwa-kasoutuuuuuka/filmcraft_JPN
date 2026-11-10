@@ -57,6 +57,7 @@
 | ① 台本化（ゲーム） | `eve_to_script.py`（命令列を解釈して 1 本道にする）、汎用の `game2script.py` | `tools/eve_burst/`、`tools/game2script/` | [eve-burst-convert.md](eve-burst-convert.md)、[game-import.md](game-import.md) |
 | ① 台本化（小説） | 未着手。LLM が台本 JSON を直接書く想定 | — | [novel-to-anime.md](novel-to-anime.md) §1.1、§5 |
 | ② 順路・話数 | `when` / `requires` / `route`、`merge_routes.py`、`episode_plan.py` | `tools/eve_burst/` | [eve-burst-convert.md](eve-burst-convert.md) |
+| ②′ 画面の指定 | `eve_to_script.py --screen`（ムービー、小窓、立ち位置、フェード、立ち絵を出さない場面）、作り済みの話へ行 id で写す `screen_fields.py` | 同上 | 同上「The screen」 |
 | ③ 脚色 | `adapt.py`（view / apply）、`check_adaptation.py` | 同上 | 同上「Adapting an episode」 |
 | ④ 検証 | `script.validate` | `crates/engine` | [script.md](script.md) |
 | ⑤ 声の割当 | `script.pickVoices`、`voice_refs.py`、`apply_voices.py`、`extras_voices.py` | `crates/engine`、`tools/eve_burst/` | [eve-burst-voices.md](eve-burst-voices.md) |
@@ -71,7 +72,7 @@
 | 感情ラベル | `emotion_labels.py`（表情番号と文面の記号から `instruct` に `怒り（強）` などを書く） | `tools/eve_burst/` | [eve-burst-tts-quality.md](eve-burst-tts-quality.md) §10.1 |
 | 感情別の参照 | `voice_styles.py pick / apply`（ラベル別の参照クリップを選んで `voice.styles` に書く） | `tools/eve_burst/` | 同 §11.2、[script.md](script.md)「Voice styles」 |
 | TTS の読みの検品 | `tts_readings.py check / apply / refs`（2 つの認識器で聞き返し、誤読語だけルビに） | `tools/eve_burst/` | 3.3 節、同 §5 |
-| TTS の読み（別系統） | `readings.py`（名前辞書＋ Whisper medium。未コミット、上と役割が重なる） | `tools/qwen3-tts/` | 4.2 の N |
+| TTS の読み（別系統、廃止） | `readings.py`（名前辞書＋ Whisper medium）。2026-11-10 に `tts_readings.py` へ一本化し、リポジトリには入れていない | – | 4.2 の N |
 | 1 話の一括実行 | `episode_run.py`（段階ごとの成果物で再開できる） | `tools/eve_burst/` | [eve-burst-episode-run.md](eve-burst-episode-run.md)、3.9 節 |
 
 画像は生成しない。背景・立ち絵・口と瞬きの差分は外から持ち込み、FilmCraft は置くだけ
@@ -134,9 +135,9 @@
 `eve_to_script.py`（変換）、`merge_routes.py`（2 視点を日ごとに交互に並べる）、`episode_plan.py`（話数に切る）、
 `adapt.py` と `check_adaptation.py`（脚色と機械検査）、`assets.py`（素材の名前解決）、`voice_refs.py`
 （声の棚卸しと参照の選定）、`apply_voices.py`、`extras_voices.py`（エキストラの声を役名で固定）、
-`protagonist_sprites.py`、`mouth_cutouts.py`、`sprite_variants.py`、`onomatopoeia.py`、
+`protagonist_sprites.py`、`mouth_cutouts.py`、`sprite_variants.py`、`onomatopoeia.py`、`screen_fields.py`、
 `emotion_labels.py`、`voice_styles.py`、`tts_readings.py`、`episode_run.py`、
-`tools/qwen3-tts/filmcraft_tts.py`、`readings.py`。
+`tools/qwen3-tts/filmcraft_tts.py`。
 
 ## 3. ノウハウ（工程ごと）
 
@@ -678,9 +679,9 @@ PS2 版のサンプルの画面を観てから決める。
 #### N（低）読みの道具が 2 本ある
 
 **現状:** `tools/eve_burst/tts_readings.py`（2 つの認識器、同形異音語が見える、テスト 19 件、全 30 話で使用）と
-`tools/qwen3-tts/readings.py`（Whisper medium のみ、未コミット）の役割が重なり、どちらを残すか決めていない。
-**対策（提案）:** `tts_readings.py` を残す。理由は、検出が深く、全話で使った実績とテストがあるため。`readings.py` にだけある
-機能（名前辞書の扱い）があれば `tts_readings.py` に取り込み、残りは消す。
+`tools/qwen3-tts/readings.py`（Whisper medium のみ、未コミット）の役割が重なっていた。
+**対応（2026-11-10）:** `tts_readings.py` を残した。理由は、検出が深く、全話で使った実績とテストがあるため。名前辞書の扱いは
+`tts_readings.py` にもある（`--names`）ので、取り込むものは無かった。`readings.py` はコミットせず、リポジトリの外に退避した。
 
 #### O（低）作り直しで手直しが消える
 

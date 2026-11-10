@@ -176,8 +176,8 @@ filmcraft-cli exec script.synthesize '{"path": "ep01.read.fcscript.json", "out":
 - 認識器の誤検出で、正しく読めた語にルビを掛けることがある（声優の録音で 1 割の行）。害は小さい（その語がかなで読まれるだけ）。
 - 誤読の検出は「両方の認識器が食い違う」ことに頼るので、両方が同じ誤りを聞き間違えると見逃す。
 - イントネーション（アクセント）は測らない。
-- 既存の未コミットの `tools/qwen3-tts/readings.py`（別セッション作、Whisper medium のみで同形異音語が見えない）と役割が重なる。
-  どちらを残すかは決めていない。
+- 別セッションが作った `readings.py`（Whisper medium のみで同形異音語が見えない）は役割が重なるので、2026-11-10 に
+  この道具（`tts_readings.py`）へ一本化した。`readings.py` はコミットせず、リポジトリの外に退避してある。
 
 ## 6. サンプルの所在（`E:/filmcraft_JPN/eve_out/tts_quality/`）
 
