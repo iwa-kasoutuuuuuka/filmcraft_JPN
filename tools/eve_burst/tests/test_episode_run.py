@@ -164,7 +164,8 @@ class Stages(unittest.TestCase):
     def args(self, d, src):
         return er.main.__globals__["argparse"].Namespace(
             episode=2, script=src, work_dir=f"{d}/ep02", out=d, root=d, python="python.exe", cli="filmcraft-cli.exe", whisper="w", ctc="c",
-            names="n.json", sprites=f"{d}/sprites", expressions="e.json", styles=f"{d}/styles.json", overrides="o.json", force=None, dry_run=False, seed_cache=None)
+            names="n.json", sprites=f"{d}/sprites", expressions="e.json", styles=f"{d}/styles.json", overrides="o.json", force=None, dry_run=False, seed_cache=None,
+            screen_donor=None, siblings=None, no_screen=False, ignore_gpu=True, allow_stale_cli=False)
 
     def test_every_stage_runs_once_then_everything_is_skipped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -191,6 +192,66 @@ class Stages(unittest.TestCase):
             FakeRun(self.args(d, src)).run()
             self.assertEqual(FakeRun.calls, ["tts_readings.py", "voice_styles.py", "script.synthesize", "tts_readings.py", "anime.run"])
 
+    def test_screen_stage_runs_when_a_conversion_with_screen_fields_is_there(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = f"{d}/voiced/eve.ep02.adapted.voiced.fcscript.json"
+            write(src, script())
+            write(f"{d}/styles.json", "{}")
+            write(f"{d}/routes_screen/kojirou.fcscript.json", script())
+            FakeRun.calls = []
+            r = FakeRun(self.args(d, src)).run()
+            self.assertEqual(FakeRun.calls[-3:], ["tts_readings.py", "screen_fields.py", "anime.run"])
+            self.assertTrue(r["script"].endswith("ep02.10-screen.fcscript.json"))
+            self.assertEqual(r["source"], src)
+            self.assertEqual(len(r["sourceSha256"]), 64)
+            self.assertEqual(r["sourceLines"], len(er.line_ids(script())))
+            FakeRun.calls = []
+            FakeRun(self.args(d, src)).run()
+            self.assertEqual(FakeRun.calls, [])
+            # a newer conversion: the screen and the build again, no synthesis
+            time.sleep(0.05)
+            os.utime(f"{d}/routes_screen/kojirou.fcscript.json", None)
+            FakeRun.calls = []
+            FakeRun(self.args(d, src)).run()
+            self.assertEqual(FakeRun.calls, ["screen_fields.py", "anime.run"])
+            # --no-screen: built from the spoken script
+            a = self.args(d, src)
+            a.no_screen = True
+            a.force = ["build"]
+            FakeRun.calls = []
+            r = FakeRun(a).run()
+            self.assertEqual(FakeRun.calls, ["anime.run"])
+            self.assertFalse(r["script"].endswith("10-screen.fcscript.json"))
+
+    def test_a_stale_cli_stops_the_run_before_anything_is_made(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = f"{d}/adapted/eve.ep02.fcscript.json"
+            write(src, script())
+            a = self.args(d, src)
+            a.cli = f"{d}/old-cli.exe"
+            write(a.cli, "x")
+            os.utime(a.cli, (1000, 1000))  # older than any source of the repository
+            FakeRun.calls = []
+            with self.assertRaises(RuntimeError) as e:
+                FakeRun(a).run()
+            self.assertIn("was built", str(e.exception))
+            self.assertEqual(FakeRun.calls, [])
+            self.assertFalse(os.path.exists(f"{d}/ep02"))
+            a.allow_stale_cli = True
+            write(f"{d}/styles.json", "{}")
+            self.assertTrue(FakeRun(a).run()["ok"])
+
+    def test_a_source_with_an_id_twice_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = f"{d}/adapted/eve.ep02.fcscript.json"
+            s2 = script()
+            s2["scenes"][0]["lines"].append(dict(s2["scenes"][0]["lines"][0]))
+            write(src, s2)
+            FakeRun.calls = []
+            with self.assertRaises(ValueError):
+                FakeRun(self.args(d, src)).run()
+            self.assertEqual(FakeRun.calls, [])
+
     def test_unvoiced_speakers_call_extras_voices(self):
         with tempfile.TemporaryDirectory() as d:
             src = f"{d}/adapted/eve.ep02.fcscript.json"
@@ -199,6 +260,64 @@ class Stages(unittest.TestCase):
             FakeRun.calls = []
             FakeRun(self.args(d, src)).run()
             self.assertEqual(FakeRun.calls[0], "extras_voices.py")
+
+
+class RunHelpers(unittest.TestCase):
+    def test_gpu_reason(self):
+        self.assertEqual(er.gpu_reason("0, 1589\n"), "")
+        self.assertIn("97 %", er.gpu_reason("97, 9800\n3, 100\n"))
+        self.assertIn("9000 MiB", er.gpu_reason(" 2 , 9000 "))
+        for text in ("", "N/A, N/A", "garbage", None, "12"):
+            self.assertEqual(er.gpu_reason(text), "")
+
+    def test_duplicate_ids(self):
+        self.assertEqual(er.duplicate_ids(["a", "b", "a", "c", "a", "b"]), ["a", "b"])
+        self.assertEqual(er.duplicate_ids([]), [])
+
+    def test_default_cli_prefers_a_release_build_that_is_not_older(self):
+        with tempfile.TemporaryDirectory() as d:
+            dbg = f"{d}/target/agent-main/debug/filmcraft-cli.exe"
+            rel = f"{d}/target/agent-main/release/filmcraft-cli.exe"
+            self.assertEqual(er.default_cli(d), dbg)  # neither is there: the debug path is named
+            write(rel, "x")
+            self.assertEqual(er.default_cli(d), rel)
+            write(dbg, "x")
+            os.utime(rel, (1, 1))
+            self.assertEqual(er.default_cli(d), dbg)  # a stale release build is not used
+            os.utime(dbg, (1, 1))
+            self.assertEqual(er.default_cli(d), rel)
+
+    def test_rebase_to_another_drive_keeps_the_full_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            write(f"{d}/a/v.wav", "x")
+            real = os.path.relpath
+
+            def other_drive(path, start=None):
+                raise ValueError("path is on mount C:, start on mount F:")
+            os.path.relpath = other_drive
+            try:
+                got = er.rebase({"voiceFile": "v.wav"}, f"{d}/a", f"{d}/b")
+            finally:
+                os.path.relpath = real
+            self.assertEqual(got["voiceFile"], os.path.abspath(f"{d}/a/v.wav").replace(os.sep, "/"))
+
+    def test_a_cli_older_than_the_sources_is_named(self):
+        with tempfile.TemporaryDirectory() as d:
+            cli = f"{d}/cli.exe"
+            write(cli, "x")
+            for rel in er.CLI_SOURCES:
+                write(f"{d}/{rel}", "x")
+                os.utime(f"{d}/{rel}", (1000, 1000))
+            os.utime(cli, (2000, 2000))
+            self.assertEqual(er.stale_cli(cli, d), "")
+            os.utime(f"{d}/{er.CLI_SOURCES[0]}", (3000, 3000))
+            self.assertIn(er.CLI_SOURCES[0], er.stale_cli(cli, d))
+            self.assertNotIn(er.CLI_SOURCES[1], er.stale_cli(cli, d))
+            self.assertEqual(er.stale_cli(f"{d}/none.exe", d), "")  # cannot be told: not refused here
+            self.assertEqual(er.stale_cli(cli, f"{d}/nowhere"), "")
+
+    def test_default_donors(self):
+        self.assertEqual(er.default_donors("X"), ["k=X/routes_screen/kojirou.fcscript.json", "m=X/routes_screen/marina.fcscript.json"])
 
 
 class Cli(unittest.TestCase):

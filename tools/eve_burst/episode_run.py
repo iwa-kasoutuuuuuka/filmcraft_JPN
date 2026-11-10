@@ -17,9 +17,16 @@ so a stopped run goes on where it stopped):
     readings   tts_readings.py apply (names and the game's own readings as ruby)
     styles     voice_styles.py apply (a reference per emotion label, from voices/styles/styles.json)
     speak      script.synthesize, then tts_readings check -> apply -> synthesize, at most 3 rounds
+    screen     screen_fields.py: movies, sub CG insets, sides of a two-shot, fades and scenes without sprites,
+               copied by id from the conversions made with --screen (eve_out/routes_screen/; skipped without them)
     build      anime.run (synthesize from the cache, build, check, export), the project saved
     result     <work>/epNN.result.json: check errors and warnings, misreads left, label lines to review,
-               sprites without mouth or blink pictures, length, mp4 path
+               sprites without mouth or blink pictures, length, mp4 path, the source script and its SHA-256
+
+A filmcraft-cli built before the sources that say what a script means (script.rs, script_tools.rs, anime.rs,
+synth.rs) is refused: it would read the script by old rules (`--allow-stale-cli` runs it anyway).
+Before the first synthesis the GPU is looked at (nvidia-smi): a run stops when something else is using it
+(a miner or a loaded LLM makes synthesis some 30 times slower); `--ignore-gpu` goes on anyway.
 
 Standard library only; every step is an existing tool or filmcraft-cli run as a subprocess. Needs the
 Qwen3-TTS venv for the synthesizer and the recognisers. One GPU job at a time: run episodes one after the other.
@@ -28,6 +35,7 @@ Qwen3-TTS venv for the synthesizer and the recognisers. One GPU job at a time: r
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -40,17 +48,38 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 EVE = "E:/filmcraft_JPN"
+sys.path.insert(0, HERE)
+
+from screen_fields import parse_donor  # noqa: E402
+
+
+def default_cli(repo: str = REPO) -> str:
+    """filmcraft-cli: the release build when there is one that is not older than the debug build (it
+    exports several times faster), else the debug build."""
+    rel = f"{repo}/target/agent-main/release/filmcraft-cli.exe"
+    dbg = f"{repo}/target/agent-main/debug/filmcraft-cli.exe"
+    try:
+        if os.path.isfile(rel) and (not os.path.isfile(dbg) or os.path.getmtime(rel) >= os.path.getmtime(dbg)):
+            return rel
+    except OSError:
+        pass
+    return dbg
+
+
 DEFAULTS = {
     "root": f"{EVE}/PS2_EVE_Bursterror解析データ",
     "out": f"{EVE}/eve_out",
     "python": f"{REPO}/tools/qwen3-tts/.venv/Scripts/python.exe",
-    "cli": f"{REPO}/target/agent-main/debug/filmcraft-cli.exe",
+    "cli": default_cli(),
     "whisper": f"{EVE}/models/kotoba-whisper-v2.0-faster",
     "ctc": f"{EVE}/models/japanese-hubert-base-phoneme-ctc-v4",
 }
-STAGES = ("fetch", "voices", "sprites", "sounds", "variants", "labels", "readings", "styles", "speak", "build", "result")
+STAGES = ("fetch", "voices", "sprites", "sounds", "variants", "labels", "readings", "styles", "speak", "screen", "build", "result")
 PATH_KEYS = {"voiceFile", "refAudio", "image", "openImage", "blink", "background", "bgm", "sfx", "video", "subCg"}
-BUILD = {"spriteAlign": "bottom", "spriteScale": 241, "check": True, "synthesize": True}
+# 241 %: the game's 448 lines on 1080. The insets get the same scale as the sprites and the backgrounds.
+BUILD = {"spriteAlign": "bottom", "spriteScale": 241, "subCgScale": 241, "check": True, "synthesize": True}
+GPU_BUSY_PERCENT = 50
+GPU_BUSY_MIB = 8000
 MAX_ROUNDS = 3
 REVIEW_TEXT = re.compile(r"ほぉ|へぇ|ふーん|ふぅん|ほう、|やれやれ|ったく|なんだと|いい性格|大したもん|結構なこと|ご苦労")
 
@@ -116,8 +145,85 @@ def rebase(node, src_dir: str, dst_dir: str, key: str | None = None):
     if isinstance(node, str) and key in PATH_KEYS | {"vowelImages", "a", "i", "u", "e", "o"} and node and not os.path.isabs(node) and not re.match(r"^[A-Za-z]:", node):
         p = os.path.normpath(os.path.join(src_dir, node))
         if os.path.exists(p):
-            return os.path.relpath(p, dst_dir).replace("\\", "/")
+            try:
+                return os.path.relpath(p, dst_dir).replace("\\", "/")
+            except ValueError:  # the work folder is on another drive: the full path is all there is
+                return os.path.abspath(p).replace("\\", "/")
     return node
+
+
+def duplicate_ids(ids: list[str]) -> list[str]:
+    """The line ids that come more than once (each named once, in order)."""
+    seen, twice = set(), []
+    for i in ids:
+        if i in seen and i not in twice:
+            twice.append(i)
+        seen.add(i)
+    return twice
+
+
+def sha256_of(path: str) -> str | None:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def gpu_reason(text: str, percent: int = GPU_BUSY_PERCENT, mib: int = GPU_BUSY_MIB) -> str:
+    """Why a GPU is not free, from `nvidia-smi --query-gpu=utilization.gpu,memory.used
+    --format=csv,noheader,nounits` (one line a GPU, the first is used); "" when it is free or the
+    text cannot be read."""
+    line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    parts = [x.strip() for x in line.split(",")]
+    try:
+        util, used = int(float(parts[0])), int(float(parts[1]))
+    except (ValueError, IndexError):
+        return ""
+    if util >= percent or used >= mib:
+        return f"the GPU is in use by something else ({util} %, {used} MiB)"
+    return ""
+
+
+def gpu_busy() -> str:
+    try:
+        r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return gpu_reason(r.stdout) if r.returncode == 0 else ""
+
+
+# what a script means is in these files: a filmcraft-cli built before one of them changed reads a script
+# differently (it happened: a build from before `voice.styles` spoke 29 episodes without the styles)
+CLI_SOURCES = ("crates/project/src/script.rs", "crates/engine/src/script_tools.rs", "crates/engine/src/anime.rs", "crates/speech/src/synth.rs")
+
+
+def stale_cli(cli: str, repo: str = REPO) -> str:
+    """Why `cli` is too old to run a script with, or "" (also when it cannot be told)."""
+    try:
+        built = os.path.getmtime(cli)
+    except OSError:
+        return ""
+    newer = []
+    for rel in CLI_SOURCES:
+        try:
+            if os.path.getmtime(os.path.join(repo, rel)) > built:
+                newer.append(rel)
+        except OSError:
+            continue
+    if not newer:
+        return ""
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(built))
+    return f"{cli} was built {when}, before {', '.join(newer)} changed"
+
+
+def default_donors(out: str) -> list[str]:
+    """The conversions made with --screen that screen_fields.py copies from, when they are there."""
+    return [f"{prefix}={out}/routes_screen/{name}.fcscript.json" for prefix, name in (("k", "kojirou"), ("m", "marina"))]
 
 
 def fresh(out: str, inputs: list[str]) -> bool:
@@ -253,8 +359,20 @@ class Run:
             why = check_source(self.ep, src, a.out)
             if why:
                 raise ValueError(why)
+        try:
+            with io.open(src, encoding="utf-8") as f:
+                src_ids = line_ids(json.load(f))
+        except (OSError, ValueError) as e:
+            raise ValueError(f"cannot read {src}: {e}") from e
+        twice = duplicate_ids(src_ids)
+        if twice:
+            raise ValueError(f"{src}: {len(twice)} line ids come more than once ({', '.join(twice[:5])}): two lines would share one audio file")
+        old = "" if (a.allow_stale_cli or a.dry_run) else stale_cli(a.cli)
+        if old:
+            raise RuntimeError(f"{old}: it would read the script by the old rules. Build it again "
+                               "(CARGO_TARGET_DIR=target/agent-main cargo build --release -p filmcraft-cli) or pass --allow-stale-cli")
         os.makedirs(self.work, exist_ok=True)
-        self.log(f"source {src}")
+        self.log(f"source {src} ({len(src_ids)} lines); cli {a.cli}")
 
         def fetch(out):
             with io.open(src, encoding="utf-8") as f:
@@ -304,6 +422,9 @@ class Run:
         if done_for:
             self.log("speak: up to date, skipped")
         else:
+            busy = "" if (a.ignore_gpu or a.dry_run) else gpu_busy()
+            if busy:
+                raise RuntimeError(f"{busy}: synthesis would be many times slower. Stop the other job (ask its owner) or pass --ignore-gpu")
             for rnd in range(MAX_ROUNDS):
                 r = self.cli("script.synthesize", {"path": script, "out": self.tts, "python": a.python}, self.f(f"speak-r{rnd}", "synth.json"))
                 self.log(f"speak round {rnd + 1}: synthesized {len(r.get('synthesized') or []) if isinstance(r.get('synthesized'), list) else r.get('synthesized')}, failed {len(r.get('failed') or []) if isinstance(r.get('failed'), list) else r.get('failed')}")
@@ -318,6 +439,29 @@ class Run:
                 self.py("tts_readings.py", "apply", "--script", script, "--report", chk, "--names", a.names, "--out", nxt)
                 script = nxt
             self.save_state({"final": script, "speakDoneFor": stamp})
+
+        # screen: what the game shows, copied by id from the conversions made with --screen
+        donors = [d for d in (a.screen_donor if a.screen_donor else default_donors(a.out)) if os.path.isfile(parse_donor(d)[1])]
+        if a.no_screen:
+            self.log("screen: --no-screen, skipped")
+        elif not donors:
+            self.log("screen: no conversion made with --screen (eve_out/routes_screen/), skipped")
+        else:
+            spoken = script
+
+            def screen(out):
+                args = ["--script", spoken]
+                for d in donors:
+                    args += ["--donor", d]
+                args += ["--siblings", a.siblings or f"{a.out}/adapted/eve.ep*.fcscript.json", "--out", out, "--report", self.f("screen", "report.json")]
+                try:
+                    self.py("screen_fields.py", *args)
+                except RuntimeError as e:
+                    if "exit 1" not in str(e):
+                        raise
+                    self.log("screen: no line of the script is in the conversions (other ids): built without the screen fields")
+                    shutil.copyfile(spoken, out)
+            script = self.stage("screen", self.f("10-screen"), [spoken] + [parse_donor(d)[1] for d in donors], screen)
 
         # build and export
         mp4 = os.path.join(self.work, f"{self.tag}.mp4")
@@ -335,8 +479,10 @@ class Run:
             with io.open(self.f("labels", "tsv"), encoding="utf-8") as f:
                 rows = [line.rstrip("\n").split("\t") for line in f]
         rep = self.read_json(self.f("variants", "report.json"))
+        scr = self.read_json(self.f("screen", "report.json"))
         result = dict(summarize(build, check, labels_to_review(rows), missing_variants(rep), mp4), episode=self.ep, script=script, tts=self.tts,
-                      stagesRun=self.done)
+                      stagesRun=self.done, source=src, sourceSha256=sha256_of(src), sourceLines=len(src_ids), cli=a.cli,
+                      screen={k: scr.get(k) for k in ("videos", "videosLeftOut", "fades", "hidden", "slots", "freeSide", "insetsOn")} if scr else None)
         if not a.dry_run:
             with io.open(self.f("result", "json"), "w", encoding="utf-8", newline="\n") as f:
                 f.write(json.dumps(result, ensure_ascii=False, indent=1))
@@ -387,6 +533,11 @@ def main(argv=None) -> int:
     ap.add_argument("--expressions")
     ap.add_argument("--styles")
     ap.add_argument("--overrides")
+    ap.add_argument("--screen-donor", action="append", help="a conversion made with eve_to_script.py --screen, PREFIX=path (default: k= and m= under <out>/routes_screen/)")
+    ap.add_argument("--siblings", help="the other episodes of the series, a glob (default: <out>/adapted/eve.ep*.fcscript.json)")
+    ap.add_argument("--no-screen", action="store_true", help="leave the screen stage out")
+    ap.add_argument("--allow-stale-cli", action="store_true", help="run even when filmcraft-cli is older than the sources that define a script")
+    ap.add_argument("--ignore-gpu", action="store_true", help="synthesize even when something else is using the GPU")
     ap.add_argument("--force", action="append", choices=STAGES, help="redo a stage even if its file is up to date")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)

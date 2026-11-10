@@ -12,7 +12,8 @@ Sonnet のセッションがこれを読んで、第 2 話以降を 1 話ずつ�
 | GPU | RTX 5080 1 台。**同時に 1 つの GPU 作業だけ**（話は 1 本ずつ、並行に回さない）。`nvidia-smi` で使用率と VRAM を見る |
 | マイナー | GPU を使う別のプロセス（マイナーなど）が動いていたら、**利用者に止めてもらう**（自分では止めない）。LM Studio がモデルを載せていたら、外してよいか利用者に聞く |
 | Python | Qwen3-TTS の venv: `E:/Zfilmcraft_JPN/tools/qwen3-tts/.venv/Scripts/python.exe`（`episode_run.py` 自体は標準ライブラリだけなので、どの Python でも動く） |
-| FilmCraft | `E:/Zfilmcraft_JPN/target/agent-main/debug/filmcraft-cli.exe`（`voice.styles` に対応したビルド。古ければ `CARGO_TARGET_DIR=target/agent-main cargo build -p filmcraft-cli`） |
+| FilmCraft | `E:/Zfilmcraft_JPN/target/agent-main/release/filmcraft-cli.exe`（release 版。debug 版より新しいか同じ時だけ既定で使われ、古ければ debug 版 `…/debug/filmcraft-cli.exe` になる。どちらを使ったかはログの 1 行目と `result.json` の `cli` に出る。作り直しは `CARGO_TARGET_DIR=target/agent-main cargo build --release -p filmcraft-cli`） |
+| 画面の指定の元 | `E:/filmcraft_JPN/eve_out/routes_screen/{kojirou,marina}.fcscript.json`（`eve_to_script.py --screen` の出力。無ければ screen の段は飛ばす） |
 | 認識器 | `E:/filmcraft_JPN/models/kotoba-whisper-v2.0-faster`、`E:/filmcraft_JPN/models/japanese-hubert-base-phoneme-ctc-v4` |
 | 感情別の参照 | `E:/filmcraft_JPN/eve_out/voices/styles/styles.json`（`voice_styles.py pick` で作成済み、18 人分） |
 | 表情番号の対応 | `E:/filmcraft_JPN/eve_out/tts_quality/eve_expressions.json`（茜: 06 怒り など） |
@@ -28,6 +29,10 @@ nvidia-smi pmon -c 1                                                       # GPU
 
 `pmon` に `python` の C（計算）があり、使用率が高ければ、何のプロセスかを確かめる
 （PowerShell: `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Select CommandLine`）。
+
+`episode_run.py` も合成を始める直前に同じ確認をする: 使用率が 50 % 以上か VRAM の使用が 8 000 MiB 以上なら、
+何もせずに止まる（「the GPU is in use by something else」）。確かめた上でそのまま進めるときだけ `--ignore-gpu` を付ける。
+合成が要らない再実行（キャッシュが揃っていて組み立てと書き出しだけ）ではこの確認は行わない。
 
 - `main.py --solo`（マイナー）や LM Studio（`llama-server.exe`）なら、利用者に止めてもらう。
 - 別の `episode_run.py` / `filmcraft-cli`（前の話がまだ動いている）なら、それが終わるまで待つ。
@@ -68,8 +73,19 @@ python episode_run.py --episode 3                 # 本番。E:/filmcraft_JPN/ev
 | readings | `tts_readings.py apply` | 名前とゲームの読み仮名をルビにする |
 | styles | `voice_styles.py apply` | キャラの声に感情別の参照（`voice.styles`）を入れる |
 | speak | `script.synthesize` ＋ `tts_readings.py check/apply` | 合成 → 誤読の検品 → 誤読語をルビ → 再合成、最大 3 周 |
-| build | `anime.run` | 組み立て・検査・書き出し（`spriteAlign: bottom`, `spriteScale: 241`）。プロジェクトを `epNN.fcproj` に保存 |
+| screen | `screen_fields.py` | ゲームが画面に出すものを、`--screen` 付きの変換結果から行 id で写す: ムービー（`video` の行）、サブ CG の小窓（`subCg`）、2 ショットの立ち位置（`slot`）、フェード（`transition`）、イベント CG の場面で立ち絵を出さない（`hideCharacters`）。音声は変わらない。出力は `epNN.10-screen.fcscript.json`、内訳は `epNN.screen.report.json`。台本の id が変換結果と合わない（別の変換から作った台本）ときは、写さずにそのまま進む |
+| build | `anime.run` | 組み立て・検査・書き出し（`spriteAlign: bottom`, `spriteScale: 241`, `subCgScale: 241`）。プロジェクトを `epNN.fcproj` に保存 |
 | result | – | `epNN.result.json` を書く |
+
+**古い CLI では動かない。** filmcraft-cli が、台本の意味を決めるソース（`crates/project/src/script.rs`、`crates/engine/src/script_tools.rs`、
+`crates/engine/src/anime.rs`、`crates/speech/src/synth.rs`）より古いと、何も作らずに止まる（「was built …, before … changed」）。
+2026-11-09〜10 に第 2〜30 話を回したとき、既定の CLI が `voice.styles` の実装より前（11-06）のビルドのままで、
+感情別の参照が無視され、全行が基本の参照 1 本で合成されていた（エラーは出ない。合成のジョブの `refAudio` が話者ごとに 1 種類しか
+無いことで分かる）。それを繰り返さないための確認。作り直してから実行する。確かめた上で古い CLI を使うときだけ `--allow-stale-cli`。
+
+始める前に、入力の台本に同じ行 id が 2 回出てこないかを確かめる（出てくれば、2 行が 1 つの音声ファイルを取り合うので止まる）。
+`result.json` には入力の台本のパス（`source`）、その SHA-256（`sourceSha256`）、行数（`sourceLines`）を残すので、
+後から「どの台本で作った mp4 か」を突き合わせられる。
 
 ## 4. 結果の見方（`epNN.result.json`）
 
@@ -83,6 +99,9 @@ python episode_run.py --episode 3                 # 本番。E:/filmcraft_JPN/ev
 | `labelsToReview` | 記号だけで付けた感情ラベルのうち、皮肉・からかいの言葉（ほぉ、へぇ、ったく…）がある行 | 十数行 | 下の「Opus に回す例外」 |
 | `spritesWithoutMouth` | 口の差分がない立ち絵（その表情の間、口が動かない） | 既知の欠けだけ（下の一覧） | 一覧にないものは「Opus に回す例外」 |
 | `spritesWithoutBlink` | 瞬きの画像がない立ち絵 | ほぼ全部（瞬きは今どの表情にもない） | 対応不要 |
+| `screen` | screen の段が入れたもの: `videos`（置いたムービー）、`videosLeftOut`（前後の行が削られていて置かなかったもの）、`fades`、`hidden`（立ち絵を出さない場面）、`slots` / `freeSide`（立ち位置）、`insetsOn`（小窓） | 話によって 0 もある | `videosLeftOut` に話の山場のムービーがあれば、台本の該当箇所を見て手で `video` の行を足す |
+| `source` / `sourceSha256` / `sourceLines` | 入力にした台本、その SHA-256、行数 | – | mp4 と台本の突き合わせに使う |
+| `cli` | 使った filmcraft-cli | release 版 | debug 版なら書き出しが数倍遅い（release 版を作り直す） |
 | `stagesRun` | 今回実行した段階 | – | 再実行で空なら、すべて最新 |
 
 ログは `epNN.log`、各道具の出力は `epNN.*.json` / `*.txt`（標準エラーは同名の `.err`）。
