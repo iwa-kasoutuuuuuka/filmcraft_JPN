@@ -60,6 +60,9 @@ OPS_COSMETIC = {
 FINALE = ('ab01', 'c02')  # the scenarios after the two sides join
 # what counts as something new on the path: not the control flow that finds it
 NOVEL_OPS = {0x8035, 0x8043, 0x8007, 0x8008, 0x8046, 0x8020, 0x800B, 0x8039, 0x8047, 0x8036, 0x800D}
+OPS_FADE_OUT = {0x800F, 0x8010}  # to black / to white: the next scene fades in (--screen)
+GAME_W, GAME_H = 640, 448  # the game's frame, in the pixels of its pictures
+EVENT_CG_FOLDER = "イベントCG"  # a background from here already shows the people of the scene
 OPS_ASSETLESS = {0x8008, 0x8046}  # movies: no place in a script (listed in the report)
 DATE_OPS = {0x8014, 0x801A} | OPS_ASSETLESS  # where a date screen or a day movie can be
 ROAD_NOVEL_OPS = {0x8035, 0x8043, 0x8036, 0x8008, 0x8046, 0x800D}  # what a walk is for (and flag sets)
@@ -665,7 +668,9 @@ class Interp:
             elif op == 0x8036:  # sub CG (small window)
                 a = d.get("asset")
                 if isinstance(a, dict) and a.get("name"):
-                    self.emit(("subcg", str(a["name"])))
+                    xy = d.get("args")
+                    ok = isinstance(xy, list) and len(xy) >= 3 and all(isinstance(v, int) and not isinstance(v, bool) for v in xy[1:3])
+                    self.emit(("subcg", str(a["name"]), xy[1] if ok else None, xy[2] if ok else None))
             elif op in OPS_ASSETLESS:  # movies
                 a = d.get("asset")
                 self.emit(("movie", str(a.get("name", "")) if isinstance(a, dict) else "", op))
@@ -723,6 +728,8 @@ class Interp:
             elif op in OPS_COSMETIC:
                 if not dry:
                     self.cosmetic[op] += 1
+                if op in OPS_FADE_OUT:
+                    self.emit(("fade",))
             else:
                 self.note_unknown(op, d, "unknown instruction")
             self.pc = nxt
@@ -1359,7 +1366,8 @@ def parse_terminal(t: str):
 
 
 class Builder:
-    def __init__(self, assets, root: str, out_dir: str, fps: float, terminal: str, subcg: str, title: str, movies: str = "skip"):
+    def __init__(self, assets, root: str, out_dir: str, fps: float, terminal: str, subcg: str, title: str, movies: str = "skip",
+                 screen: bool = False, frame_aspect: float = 16 / 9):
         self.assets = assets
         self.root = root
         self.out_dir = out_dir
@@ -1397,6 +1405,81 @@ class Builder:
         # where the two sides join (ab01 / c02): its first scene requires the last scene before it
         self.last_before_finale: str | None = None
         self.finale_first: str | None = None
+        # the screen (--screen): movies, sub CG insets, sides of a two-shot, fades. None of it changes
+        # the id of a scene or of a line: a movie is a line with its own kind of id (s0001-v01)
+        self.screen = screen
+        self.frame_aspect = frame_aspect if frame_aspect and frame_aspect > 0 else 16 / 9
+        self.pending_videos: list[str] = []
+        self.videos_in_scene = 0
+        self.fade_pending = False
+        self.subcg_now: tuple | None = None  # (path, anchor or None) the game shows
+        self.subcg_shown: tuple | None = None  # what the lines written so far leave on screen
+        self.two_shot = False
+        self.size_cache: dict = {}
+
+    # -- the screen ----------------------------------------------------------------------------------
+    def picture_size(self, rel):
+        """(width, height) of a PNG of the dump, or None."""
+        if rel in self.size_cache:
+            return self.size_cache[rel]
+        size = None
+        try:
+            with open(rel if os.path.isabs(rel) else os.path.join(self.root, rel), "rb") as f:
+                h = f.read(24)
+            if len(h) == 24 and h[1:4] == b"PNG":
+                w, hh = int.from_bytes(h[16:20], "big"), int.from_bytes(h[20:24], "big")
+                if 0 < w <= 16384 and 0 < hh <= 16384:
+                    size = (w, hh)
+        except OSError:
+            size = None
+        self.size_cache[rel] = size
+        return size
+
+    def anchor(self, rel, x, y):
+        """Where the centre of an inset drawn at (x, y) of the game's frame is, as fractions of the
+        video frame (the game's picture fitted inside it, bars at the sides or top), or None."""
+        size = self.picture_size(rel) if rel else None
+        if size is None or x is None or y is None:
+            return None
+        fx = min(1.0, max(0.0, (x + size[0] / 2) / GAME_W))
+        fy = min(1.0, max(0.0, (y + size[1] / 2) / GAME_H))
+        game = GAME_W / GAME_H
+        if game < self.frame_aspect:
+            fx = 0.5 + (fx - 0.5) * game / self.frame_aspect
+        else:
+            fy = 0.5 + (fy - 0.5) * self.frame_aspect / game
+        return [round(fx, 4), round(fy, 4)]
+
+    def place_videos(self, sc: dict) -> None:
+        """The movies that played since the last line: direction lines of their own, before the next line."""
+        videos, self.pending_videos = self.pending_videos, []
+        for v in videos:
+            self.videos_in_scene += 1
+            sc["lines"].append({"id": f"{sc['id']}-v{self.videos_in_scene:02d}", "kind": "direction", "video": v})
+            self.counts["videoLines"] += 1
+            self.subcg_shown = None  # a movie takes the inset and the two-shot off the screen
+            self.two_shot = False
+
+    def screen_fields(self, sc: dict, line: dict) -> None:
+        slot = line.pop("_slot", None)
+        if not self.screen:
+            return
+        if line.get("text"):
+            self.fade_pending = False  # a fade with no change of scene after it is not shown
+        self.place_videos(sc)
+        if self.subcg_now != self.subcg_shown:
+            line["subCg"] = self.subcg_now[0] if self.subcg_now else ""
+            if self.subcg_now and self.subcg_now[1]:
+                line["subCgAnchor"] = self.subcg_now[1]
+            self.subcg_shown = self.subcg_now
+            self.counts["subCgChanges"] += 1
+        if slot in (1, 3):
+            line["slot"] = slot
+            self.two_shot = True
+            self.counts["slots"] += 1
+        elif slot == 2 and self.two_shot:
+            line["slot"] = 2  # back in the centre: without it the speaker would stay at the side
+            self.two_shot = False
 
     # -- asset paths ---------------------------------------------------------------------------------
     def note_missing(self, kind: str, name: str):
@@ -1551,6 +1634,14 @@ class Builder:
             bgm = self.resolve("bgm", self.bgm_name, "bgm")
             if bgm:
                 sc["bgm"] = bgm
+        if self.screen:
+            if self.fade_pending and (bg or self.pending_videos):
+                sc["transition"] = "fade"
+                self.counts["fades"] += 1
+            self.fade_pending = False
+            self.videos_in_scene = 0
+            self.subcg_shown = None  # an inset and a two-shot end with their scene
+            self.two_shot = False
         self.scenes.append(sc)
         self.cur = sc
         self.n_in_scene = 0
@@ -1558,6 +1649,7 @@ class Builder:
 
     def add_line(self, line: dict):
         sc = self.ensure_scene()
+        self.screen_fields(sc, line)
         self.n_in_scene += 1
         line["id"] = f"{sc['id']}-{self.n_in_scene:03d}"
         sc["lines"].append(line)
@@ -1577,6 +1669,8 @@ class Builder:
         for ev in events:
             getattr(self, "on_" + ev[0])(*ev[1:])
         self.flush_sfx()
+        if self.pending_videos and self.cur is not None:  # a movie after the last line (the ending)
+            self.place_videos(self.cur)
 
     def on_scn(self, name):
         self.scenario = name
@@ -1602,8 +1696,12 @@ class Builder:
         self.flush_sfx()
         self.bgm_name = name
 
+    def on_fade(self):
+        self.fade_pending = True
+
     def on_clear(self):
         self.sprites = {}
+        self.subcg_now = None
 
     def on_sprite_clear(self):
         self.sprites = {}
@@ -1622,8 +1720,21 @@ class Builder:
         self.sprites[len(self.sprites) + 100] = name
         self.sprite_unmatched += 1
 
-    def on_subcg(self, name):
+    def on_subcg(self, name, x=None, y=None):
         self.counts["subCg"] += 1
+        if self.screen and self.subcg != "background":
+            rel = None
+            f = getattr(self.assets, "sub_cg", None)
+            if f is not None:
+                try:
+                    rel = f(name)
+                except Exception:  # noqa: BLE001 - a broken lookup is a missing file
+                    rel = None
+            p = self.script_path(rel)
+            if p:
+                self.subcg_now = (p, self.anchor(rel, x, y))
+            else:
+                self.note_missing("subcg", name)
         if self.subcg == "background":
             self.flush_sfx()
             self.bg_name, self.bg_kind = name, "sub"
@@ -1636,7 +1747,12 @@ class Builder:
         self.counts["movies"] += 1
         if len(self.movies) < REPORT_LIMIT:
             self.movies.append({"scenario": self.scenario, "kind": kind, "name": name, "scene": self.cur["id"] if self.cur else None})
-        if self.movies_mode == "direction":
+        if self.screen:
+            p = self.resolve("movie", name, "movie") if name else None
+            if p:
+                self.flush_sfx()  # sounds waiting for a line come before the movie
+                self.pending_videos.append(p)
+        elif self.movies_mode == "direction":
             self.flush_sfx()
             self.add_line({"kind": "direction"})
 
@@ -1723,6 +1839,8 @@ class Builder:
                     expr = sname[3:] or "normal"
                     self.chars[who].setdefault("expressions", {}).setdefault(expr, {"image": p})
                     line["expression"] = expr
+                    if k in (1, 2, 3) and not isinstance(k, bool):
+                        line["_slot"] = k  # where the game drew it (screen_fields writes `slot`)
         # sound effects that were waiting for this line
         if sfx_path:
             self.pending_sfx.append(sfx_path)
@@ -1750,6 +1868,10 @@ class Builder:
             sc = {k: v for k, v in sc.items() if k not in ("_key", "lines")}
             if sc.get("pov") and sc["pov"] not in self.chars:
                 del sc["pov"]
+            # an event picture already shows the people of the scene: no sprites over it, unless the game drew one
+            if self.screen and f"/{EVENT_CG_FOLDER}/" in "/" + str(sc.get("background", "")) and not any("expression" in ln for ln in lines):
+                sc["hideCharacters"] = True
+                self.counts["hiddenScenes"] += 1
             sc["lines"] = lines
             scenes.append(sc)
         return {
@@ -1783,7 +1905,7 @@ def parse_start(start: str):
 
 def convert(root: str, out_path: str, start: str = "kojirou", opts: Options | None = None, assets=None,
             fps: float = 60.0, terminal: str = "narration", subcg: str = "ignore", title: str | None = None,
-            scenario_dir: str | None = None, movies: str = "skip"):
+            scenario_dir: str | None = None, movies: str = "skip", screen: bool = False, frame_aspect: float = 16 / 9):
     """Run the playthrough and build the script. Returns (script dict, report dict)."""
     opts = opts or Options()
     out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
@@ -1796,7 +1918,7 @@ def convert(root: str, out_path: str, start: str = "kojirou", opts: Options | No
     assets = assets if assets is not None else load_assets(root)
     interp = Interp(store, opts)
     interp.run(scn, label)
-    b = Builder(assets, root, out_dir, fps, terminal, subcg, title or f"EVE burst error PLUS ({start})", movies)
+    b = Builder(assets, root, out_dir, fps, terminal, subcg, title or f"EVE burst error PLUS ({start})", movies, screen, frame_aspect)
     b.feed(interp.events or [])
     script = b.script()
     report = make_report(interp, b, script, start, assets, store)
@@ -2024,6 +2146,10 @@ def main(argv=None) -> int:
     ap.add_argument("--terminal", choices=("narration", "skip"), default="narration", help="text printed on hacking terminals")
     ap.add_argument("--subcg", choices=("ignore", "background"), default="ignore", help="small-window CGs: ignore them or show them as the background")
     ap.add_argument("--movies", choices=("skip", "direction"), default="skip", help="event movies: leave them out (they are listed in the report) or put an empty direction line where they play")
+    ap.add_argument("--screen", action="store_true", help="write what the game puts on screen: movies as `video` lines (ids s0001-v01, so no other id changes), "
+                    "sub CGs as insets (`subCg`, `subCgAnchor`), the side of a character in a two-shot (`slot`), `transition: fade` after a fade-out, "
+                    "`hideCharacters` over event pictures")
+    ap.add_argument("--frame-aspect", type=float, default=16 / 9, help="width / height of the video frame the insets are placed in (16:9)")
     ap.add_argument("--scenarios", help="folder of scenario .json files (default: <root>/01_シナリオ)")
     ap.add_argument("--title", default=None)
     ap.add_argument("--episodes", action="store_true", help="also write one script per day of the story: <out stem>.ep01.fcscript.json, ...")
@@ -2051,7 +2177,8 @@ def main(argv=None) -> int:
         raise SystemExit(f"--root {a.root}: not a folder")
     out_dir = os.path.dirname(os.path.abspath(a.out)) or "."
     os.makedirs(out_dir, exist_ok=True)
-    script, report = convert(a.root, a.out, start, opts, fps=a.fps, terminal=a.terminal, subcg=a.subcg, title=a.title, scenario_dir=a.scenarios, movies=a.movies)
+    script, report = convert(a.root, a.out, start, opts, fps=a.fps, terminal=a.terminal, subcg=a.subcg, title=a.title, scenario_dir=a.scenarios, movies=a.movies, screen=a.screen,
+                             frame_aspect=a.frame_aspect if a.frame_aspect and a.frame_aspect > 0 else 16 / 9)
     write_json(a.out, script)
     episodes = []
     if a.episodes and script["scenes"]:

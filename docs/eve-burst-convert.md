@@ -41,6 +41,8 @@ Then check and build it as usual: `script.validate`, `script.pickVoices`, `anime
 | `--terminal narration` / `skip` | Text printed on the hacking terminals: spoken as narration, or left out. |
 | `--subcg ignore` / `background` | The small-window CGs: ignored (listed in the report), or shown as the background. |
 | `--movies skip` / `direction` | Event movies: left out (listed in the report), or an empty direction line where they play. |
+| `--screen` | Write what the game puts on screen: movies, sub CG insets, the sides of a two-shot, fades, scenes without sprites ("The screen" below). No id of a scene or line changes. |
+| `--frame-aspect` | Width / height of the video frame the insets are placed in (16:9). |
 | `--scenarios DIR`, `--title`, `--report FILE` | Scenario folder override, script title, the report. |
 | `--episodes` | Also write one script per story day beside `--out`: `kojirou.ep01.fcscript.json`, `kojirou.ep02…` (below). The whole script is still written. |
 | `--episode-lines N` | Cut a day with more than N lines into several episodes, between scenes (implies `--episodes`). |
@@ -192,6 +194,69 @@ A selection that matches nothing is noted in the report and the policy takes ove
   example each (an instruction not in the table; none for any of the 87 scenarios), the cosmetic
   instructions ignored and how often, `missingAssets` by kind, `movies`, the teleports, the
   scenarios visited, how many of the game's text instructions the path ran, notes, and the menu log.
+
+## The screen (`--screen`)
+
+Without `--screen` a script has one background a scene and the speaker's sprite in the centre.
+With it the converter also writes what else the game shows, in the fields of
+[script.md](script.md) ("Movies, sub CGs, two-shots and fades"):
+
+- **Movies.** An event movie (`0x8008`, `scene01`…`scene10`) or a day movie (`0x8046`, `1202`…`1209`)
+  is a direction line with `video`, placed before the next line (so a day movie opens the first
+  scene of its day, and the ending comes after the last line). Its id is `s0001-v01`: it is not
+  counted with the lines, so **every other id is the same as without `--screen`**. A movie that
+  cannot be found is left out and listed under `missingAssets`.
+- **Sub CGs.** The small window (`0x8036`, drawn at x, y of the 640x448 frame) is the `subCg` of the
+  next line, with `subCgAnchor`: the centre of the picture as fractions of the video frame, the
+  game's picture fitted inside it (`--frame-aspect`). It stays until the game clears the screen
+  (`0x8012`), where the next line gets `"subCg": ""`, or until its scene ends. With a build at
+  `subCgScale` equal to `spriteScale` the inset is where and as large as the game shows it.
+- **Two-shots.** A speaker whose sprite the game drew at the left (slot 1) or right (slot 3) gets
+  `slot`; one who comes back to the centre after that gets `slot: 2`.
+- **Fades.** A scene that starts after a fade-out (`0x800F` to black, `0x8010` to white) gets
+  `transition: "fade"`. A fade with no change of scene after it is not shown.
+- **Event pictures.** A scene whose background is from `02_画像/イベントCG` and in which the game
+  draws no sprite gets `hideCharacters`: the picture already shows the people, and a sprite over
+  it (the speaker's default one) would show them twice.
+
+On the two full routes: Kojirou 12 movies, 131 inset changes, 178 lines at a side, 131 fades, 506
+scenes without sprites; Marina 11, 39, 0, 132, 266. Both pass `script.validate` with no error.
+
+### An episode that was already made: `screen_fields.py`
+
+An episode that was cut, adapted, voiced and corrected from an earlier conversion has none of
+these fields, and converting again would lose that work. The ids are the same, so
+`tools/eve_burst/screen_fields.py` copies the fields from a conversion made with `--screen` (the
+donor) into the episode by id:
+
+```bash
+python tools/eve_burst/screen_fields.py --script ep02.fcscript.json \
+    --donor k=routes_screen/kojirou.fcscript.json --donor m=routes_screen/marina.fcscript.json \
+    --siblings "adapted/eve.ep*.fcscript.json" --out ep02.screen.fcscript.json --report ep02.screen.json
+```
+
+`k=` / `m=` are the prefixes `merge_routes.py` put before the ids. What it does that a plain copy
+would not:
+
+- An inset that came up on a line that was cut still shows on the lines kept after it; a line the
+  adaptation added keeps the screen of the line before it.
+- A scene fades in when the donor fades into it **or into a scene that was cut before it**, when
+  the side changes (Kojirou to Marina), and at the start of the episode.
+- While one side of a two-shot is taken, a pictured speaker without a side takes the free one: the
+  hero (never drawn by the game, given sprites by `protagonist_sprites.py`) stands opposite the
+  person he talks to, instead of each replacing the other in the centre.
+- A movie goes before the first line kept after it, and before the lines the adaptation added in
+  front of that line (so a day movie comes before the narration that names the day). It is placed
+  only when that line is within 40 donor lines (`--max-gap`), or when the movie opens a story day
+  and the line is of that day; a movie whose surroundings were cut is left out and listed. With
+  `--siblings` (the other episodes) a movie between two episodes goes to the one that has the next
+  line. A file is placed once in an episode.
+
+It replaces the screen fields already in the script, so it can be run again, and writes nothing
+(exit code 1) when no line of the script is in the donors. The donor must come from the same
+converter version as the episode: the route scripts of the 30 episodes were made on 2026-11-06,
+before the teleports were removed, and a conversion of today has other ids. `episode_run.py` runs
+this as its `screen` stage.
 
 ## Story time, prerequisites and episodes
 
@@ -408,9 +473,10 @@ speaker has no voice", which `script.pickVoices` then answers from the game's ow
   Kojirou path and 21 700 on Marina's (many of the rest are the other half of a branch). The order
   of scenes follows the policy, not a human player, and the map position instruction `0x804C` is
   ignored.
-- **Pictures:** one background per scene (no fades, no black screens), no positions, one character at a
-  time (the speaker's sprite; a speaker who is not on screen shows their first expression),
-  sub-CGs and movies are not placed by default.
+- **Pictures:** one background per scene, and without `--screen` no fades, no positions, no
+  sub-CGs and no movies. With it: a fade only into a new scene (a black screen with text keeps
+  the picture before it), two sides and a centre but never three people at once, and a speaker
+  the game does not draw still shows their default sprite (except over an event picture).
 - **Sound:** a line with two voice files (28 on the Kojirou path) uses the first; the voice-stop
   and "wait for the sound" instructions are ignored; the BGM start/stop is all that is kept of music.
 - **Interactive parts:** the choice itself is gone (the video just shows what was chosen), the
@@ -448,6 +514,12 @@ speaker has no voice", which `script.pickVoices` then answers from the game's ow
   reference (harmless, but ignore it).
 
 ## Tests
+
+`tools/eve_burst/tests/test_screen.py`: `--screen` (movies with ids of their own and every other id
+unchanged, a missing movie, the inset's place and its end, sides, fades, event pictures) and
+`screen_fields.py` (scene fields and fades over cut scenes, sides and the free side, insets over cut
+and added lines, movies near and far, between episodes, twice, a second run, strange input, the
+command line).
 
 `tools/eve_burst/tests/test_eve_to_script.py` (`python -m unittest discover -s tools/eve_burst/tests`):
 hand-made scenarios in a temp directory with a fake asset resolver (speakers and voices, scene
