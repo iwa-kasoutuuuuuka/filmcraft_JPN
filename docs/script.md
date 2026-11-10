@@ -47,7 +47,7 @@ they change nothing in the project and can run again at any time. Relative paths
 
 | Field | Meaning |
 |---|---|
-| `characters.<id>` | `name` (display), `voice` (`refAudio` + `refText`: a reference recording and its transcript, for cloning; or `speaker`: a preset voice such as `Ono_Anna`, with an optional standing `instruct`), `expressions` (pictures by expression name; `openImage` is the open-mouth picture for lip sync, `vowelImages` one per vowel, `blink` the same picture with the eyes closed), `defaultExpression`. |
+| `characters.<id>` | `name` (display), `voice` (`refAudio` + `refText`: a reference recording and its transcript, for cloning; or `speaker`: a preset voice such as `Ono_Anna`, with an optional standing `instruct`; `styles`: more voices of the character by label, see below), `expressions` (pictures by expression name; `openImage` is the open-mouth picture for lip sync, `vowelImages` one per vowel, `blink` the same picture with the eyes closed), `defaultExpression`. |
 | `scenes[]` | `id` (unique), `title`, `pov` (a character id), `when` (story time as text that sorts in time order), `requires` (scenes that must be shown first), `background`, `bgm`, `transition` (`"cut"`, the default, or `"fade"`: in from black), `hideCharacters` (`true`: no character pictures in this scene, as over an event picture or a flashback), `lines`. |
 | `lines[]` | `id` (unique across the whole script: it names the audio file), `kind` (`dialogue` default, `narration`, `monologue`, `direction`), `speaker`, `text`, `reading`, `expression`, `voiceFile`, `instruct`, `sfx`, `pauseAfter`, `generated`, `spoken` (`false`: subtitled, not voiced), `video` (a movie, on a direction line), `subCg` (an inset picture; `""` takes it away), `subCgAnchor` (`[x, y]`, fractions of the frame), `slot` (1 left, 2 centre, 3 right). |
 | `route` | Scene ids in the order they are shown; empty means file order. Scenes missing from it are not shown. |
@@ -59,6 +59,24 @@ Notes:
 - `reading` replaces `text` when speaking (names and odd readings). Put kana there.
 - `instruct` directs a preset speaker for one line (`"ささやき声で"`, `"怒って"`) and wins over the
   character's standing one; a cloned voice follows its recording instead.
+- **Voice styles.** A cloned voice follows the mood of its recording, so one calm reference makes every
+  line calm. `voice.styles` gives a character more references by label, and a line whose `instruct`
+  **starts with** a label is cloned from that reference:
+
+  ```json
+  "voice": {"refAudio": "voice/koj_calm.wav", "refText": "危ないな、…",
+            "styles": {"怒り": {"refAudio": "voice/koj0332.wav", "refText": "おい法条、…"},
+                       "静か": {"refAudio": "voice/koj0380.wav", "refText": "ああ‥‥しかも見ろよ、…"}}}
+  ```
+
+  `"instruct": "怒り（強）"`, `"怒り"` or `"怒り: 低く"` pick 怒り; the label must be followed by
+  nothing or by a bracket, space, colon or comma (`"怒りっぽく"` does not pick 怒り); the longest
+  matching label wins. A line with no matching label uses the plain `voice`, and its cache entry is
+  unchanged by adding styles. Each style is a voice of its own (`refAudio` + `refText`, or a
+  `speaker`); styles of a style are ignored (`script.validate` warns), at most 64. The synthesis cache
+  keys on the reference actually used, so a new take of one style's recording redoes only its lines.
+  `tools/eve_burst/emotion_labels.py` writes such labels (`怒り（強）`, `静か（弱）`, …) from a
+  character's expression and the punctuation of the line.
 - `voiceFile` is an existing recording of the line (a game's own voice file). Lines that have
   one are never synthesized; lines that do not are spoken in their character's voice.
 - `spoken: false` marks a **sound word** (`ガタッ。`, `プルルルル‥‥`, `ぐぅ～。`): a noise the source

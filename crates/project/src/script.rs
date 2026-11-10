@@ -59,6 +59,45 @@ pub struct VoiceRef {
     /// A standing direction for a preset speaker (`"落ち着いた声で"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instruct: Option<String>,
+    /// Other voices of the same character by label (`"怒り"`, `"静か"`): a line whose `instruct`
+    /// starts with a label (`怒り（強）`, `怒り: 低く`, or just `怒り`) is spoken from that voice
+    /// instead, so an angry line is cloned from an angry recording. One level only: a style's own
+    /// `styles` are ignored (and reported by [`Script::validate`]).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub styles: BTreeMap<String, VoiceRef>,
+}
+
+/// Most styles one voice may have.
+pub const MAX_STYLES: usize = 64;
+
+/// Characters that may follow a style label at the start of an `instruct`.
+const LABEL_ENDS: &[char] = &['（', '(', '［', '[', '【', ' ', '\u{3000}', ':', '：', '、', ',', '，', '・', '/', '／'];
+
+impl VoiceRef {
+    /// True when this voice can speak: a reference recording or a preset speaker.
+    pub fn is_usable(&self) -> bool {
+        !self.ref_audio.trim().is_empty() || self.speaker.as_deref().is_some_and(|s| !s.trim().is_empty())
+    }
+
+    /// The label of the style `instruct` asks for, if this voice has it: the longest label that the
+    /// instruct starts with, followed by nothing or by a bracket, space, colon or comma (so `怒り`
+    /// does not match `怒りっぽく`). A style that cannot speak is not chosen.
+    pub fn style_label(&self, instruct: Option<&str>) -> Option<&str> {
+        let ins = instruct?.trim_start();
+        self.styles
+            .iter()
+            .filter(|(k, v)| {
+                let k = k.trim();
+                !k.is_empty() && v.is_usable() && ins.strip_prefix(k).is_some_and(|rest| rest.is_empty() || rest.starts_with(LABEL_ENDS))
+            })
+            .max_by_key(|(k, _)| k.trim().chars().count())
+            .map(|(k, _)| k.as_str())
+    }
+
+    /// The voice a line with this `instruct` is spoken from: its style, else this voice.
+    pub fn for_instruct(&self, instruct: Option<&str>) -> &VoiceRef {
+        self.style_label(instruct).and_then(|k| self.styles.get(k)).unwrap_or(self)
+    }
 }
 
 /// One picture of a character: mouth closed, and optionally mouth open (for lip sync).
@@ -345,11 +384,24 @@ impl Script {
             {
                 warn(&mut out, None, None, format!("character {id}: default expression `{d}` has no picture"));
             }
-            if let Some(v) = &c.voice
-                && v.ref_audio.trim().is_empty()
-                && v.speaker.as_deref().is_none_or(|s| s.trim().is_empty())
-            {
-                err(&mut out, None, None, format!("character {id}: a voice needs a refAudio or a speaker"));
+            if let Some(v) = &c.voice {
+                if !v.is_usable() {
+                    err(&mut out, None, None, format!("character {id}: a voice needs a refAudio or a speaker"));
+                }
+                if v.styles.len() > MAX_STYLES {
+                    err(&mut out, None, None, format!("character {id}: more than {MAX_STYLES} voice styles"));
+                }
+                for (label, st) in v.styles.iter().take(MAX_STYLES) {
+                    let n = label.trim().chars().count();
+                    if n == 0 || n > MAX_ID_CHARS {
+                        err(&mut out, None, None, format!("character {id}: voice style label `{label}` is empty or longer than {MAX_ID_CHARS} characters"));
+                    } else if !st.is_usable() {
+                        err(&mut out, None, None, format!("character {id}: voice style `{label}` needs a refAudio or a speaker"));
+                    }
+                    if !st.styles.is_empty() {
+                        warn(&mut out, None, None, format!("character {id}: voice style `{label}` has styles of its own, which are ignored"));
+                    }
+                }
             }
         }
         let mut scene_ids: HashSet<&str> = HashSet::new();
@@ -623,6 +675,66 @@ mod tests {
         let j = s.to_json();
         assert!(j.contains("Ono_Anna") && !j.contains("refAudio"), "{j}");
         assert_eq!(Script::from_json(&j).unwrap(), s);
+    }
+
+    fn styled() -> VoiceRef {
+        let r = |a: &str| VoiceRef { ref_audio: a.into(), ref_text: Some(format!("{a} の文")), ..Default::default() };
+        let mut v = r("calm.wav");
+        v.styles.insert("怒り".into(), r("angry.wav"));
+        v.styles.insert("怒りっぽい".into(), r("grumpy.wav"));
+        v.styles.insert("静か".into(), r("quiet.wav"));
+        v.styles.insert("無音".into(), VoiceRef::default()); // cannot speak: never chosen
+        v
+    }
+
+    #[test]
+    fn a_line_label_picks_the_voice_style() {
+        let v = styled();
+        for (ins, want) in [
+            (Some("怒り（強）"), "angry.wav"),
+            (Some("怒り"), "angry.wav"),
+            (Some("  怒り: 低く"), "angry.wav"),
+            (Some("怒りっぽい（中）"), "grumpy.wav"), // the longest label wins
+            (Some("怒りっぽく"), "calm.wav"),         // not a label followed by a break
+            (Some("静か（弱）"), "quiet.wav"),
+            (Some("ささやき声で"), "calm.wav"),
+            (Some("無音"), "calm.wav"),
+            (Some(""), "calm.wav"),
+            (None, "calm.wav"),
+        ] {
+            assert_eq!(v.for_instruct(ins).ref_audio, want, "{ins:?}");
+        }
+        assert_eq!(v.style_label(Some("静か（弱）")), Some("静か"));
+        assert_eq!(VoiceRef::default().for_instruct(Some("怒り")), &VoiceRef::default());
+    }
+
+    #[test]
+    fn voice_styles_round_trip_and_are_checked() {
+        let mut s = script();
+        let mut v = styled();
+        v.styles.remove("無音");
+        s.characters.insert("a".into(), Character { voice: Some(v.clone()), ..Default::default() });
+        assert!(errors(&s).is_empty(), "{:?}", s.validate());
+        let j = s.to_json();
+        assert!(j.contains("\"styles\"") && j.contains("angry.wav"), "{j}");
+        assert_eq!(Script::from_json(&j).unwrap(), s);
+        // a voice without styles writes no `styles` key (older readers see the same file)
+        assert!(!script().to_json().contains("styles"));
+        // a style that cannot speak, an empty label, too many styles, nested styles
+        v.styles.insert("無音".into(), VoiceRef::default());
+        v.styles.insert(" ".into(), VoiceRef { speaker: Some("x".into()), ..Default::default() });
+        s.characters.insert("a".into(), Character { voice: Some(v.clone()), ..Default::default() });
+        let e = errors(&s);
+        assert!(e.iter().any(|m| m.contains("style `無音` needs a refAudio")), "{e:?}");
+        assert!(e.iter().any(|m| m.contains("label ` ` is empty")), "{e:?}");
+        let mut many = VoiceRef { speaker: Some("x".into()), ..Default::default() };
+        for k in 0..=MAX_STYLES {
+            many.styles.insert(format!("s{k}"), VoiceRef { speaker: Some("x".into()), ..Default::default() });
+        }
+        many.styles.get_mut("s0").map(|st| st.styles.insert("deeper".into(), VoiceRef::default()));
+        s.characters.insert("a".into(), Character { voice: Some(many), ..Default::default() });
+        assert!(errors(&s).iter().any(|m| m.contains("more than 64 voice styles")));
+        assert!(s.validate().iter().any(|p| p.severity == Severity::Warning && p.message.contains("styles of its own")));
     }
 
     #[test]

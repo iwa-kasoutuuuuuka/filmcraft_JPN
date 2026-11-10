@@ -318,7 +318,10 @@ pub(crate) struct LineKey {
 /// The voice and hash of `line`. The reference is identified by its file name, size and modified
 /// time, not by its path, so how the script's path was written does not matter.
 pub(crate) fn line_key(l: &Loaded, line: &ScriptLine, language: &str, model: &str, synth_id: &str) -> LineKey {
-    let voice = line.speaker.as_deref().and_then(|sp| l.script.characters.get(sp)).and_then(|c| c.voice.as_ref());
+    // a line whose instruct starts with one of the voice's style labels (`怒り（強）`) is spoken
+    // from that style's reference; the hash then names that reference, so the line is redone
+    let voice =
+        line.speaker.as_deref().and_then(|sp| l.script.characters.get(sp)).and_then(|c| c.voice.as_ref()).map(|v| v.for_instruct(line.instruct.as_deref()));
     let ref_audio = voice.filter(|v| !v.ref_audio.trim().is_empty()).map(|v| l.resolve(&v.ref_audio));
     // a re-recorded reference of the same length is another voice: size and modified time
     let ref_size = ref_audio

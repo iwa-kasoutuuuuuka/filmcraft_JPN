@@ -59,7 +59,11 @@ Cloning uses the Base model (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`), presets the Custo
 batch that mixes them costs one model load each (about 3.4 GB each on disk).
 
 Emotion follows the reference: a calm reference gives calm lines. For a scene with shouting or
-crying, pick a reference line in that register.
+crying, pick a reference line in that register. A script can do this per line: a character's
+`voice.styles` holds a reference per label (`怒り`, `静か`, …) and a line whose `instruct` starts with
+a label is cloned from that reference ([script.md](script.md), "Voice styles"). Measured on 20 lines
+of the EVE trial, per-label references made angry and quiet lines differ 1.5–2 times more in pitch and
+loudness than one calm reference, with no loss in reading accuracy ([eve-burst-tts-quality.md](eve-burst-tts-quality.md) §10).
 
 Cloning reproduces a real person's voice. Use reference audio only with the consent of the
 speaker and the rights holder of the recording, and keep what you make within what that consent

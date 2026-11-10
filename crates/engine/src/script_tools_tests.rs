@@ -461,3 +461,50 @@ fn a_manifest_from_before_the_path_free_key_is_still_a_cache() {
     assert_eq!((r["synthesized"].clone(), r["cached"].clone()), (json!(0), json!(2)), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_labelled_line_is_spoken_from_the_voice_style_of_its_label() {
+    use crate::script_tools::{line_key, load};
+    use filmcraft_speech::synth::Synthesizer;
+    let dir = temp("styles");
+    write_wav16(&dir.join("calm.wav"), &tone(&[(3.0, 0.5)]), RATE).unwrap();
+    write_wav16(&dir.join("angry.wav"), &tone(&[(2.0, 0.9)]), RATE).unwrap();
+    let mut script = json!({
+        "title": "styles",
+        "characters": {"koj": {"name": "小次郎", "voice": {"refAudio": "calm.wav", "refText": "落ち着いた文。"}}},
+        "scenes": [{"id": "a", "lines": [
+            {"id": "a1", "speaker": "koj", "text": "このウジ虫野郎！", "instruct": "怒り（強）"},
+            {"id": "a2", "speaker": "koj", "text": "ふむ。"},
+            {"id": "a3", "speaker": "koj", "text": "おい。", "instruct": "怒りっぽく"}
+        ]}]
+    });
+    let path = dir.join("story.fcscript.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&script).unwrap()).unwrap();
+    let mut s = Session { synthesizer: Some(Arc::new(FixedSynthesizer::default())), ..Default::default() };
+    let synth_id = FixedSynthesizer::default().id();
+    // the hashes before the voice had styles
+    let l = load(&s, &json!({"path": path}), "test").unwrap();
+    let before: Vec<String> = l.script.lines_in_route().map(|(_, line)| line_key(&l, line, "Japanese", "", &synth_id).hash).collect();
+    let out = dir.join("tts");
+    let r = run(&mut s, "script.synthesize", json!({"path": path, "out": out}));
+    assert_eq!(r["synthesized"], json!(3), "{r}");
+    // add an angry style: only the line labelled 怒り changes voice (and is spoken again)
+    script["characters"]["koj"]["voice"]["styles"] = json!({"怒り": {"refAudio": "angry.wav", "refText": "怒った文！"}});
+    std::fs::write(&path, serde_json::to_string_pretty(&script).unwrap()).unwrap();
+    let l = load(&s, &json!({"path": path}), "test").unwrap();
+    let keys: Vec<_> = l.script.lines_in_route().map(|(_, line)| line_key(&l, line, "Japanese", "", &synth_id)).collect();
+    let name = |k: &crate::script_tools::LineKey| k.voice.ref_audio.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string());
+    assert_eq!(name(&keys[0]).as_deref(), Some("angry.wav"));
+    assert_eq!(keys[0].voice.ref_text.as_deref(), Some("怒った文！"));
+    assert_eq!(name(&keys[1]).as_deref(), Some("calm.wav"));
+    assert_eq!(name(&keys[2]).as_deref(), Some("calm.wav"), "怒りっぽく is not the label 怒り");
+    assert_ne!(keys[0].hash, before[0]);
+    assert_eq!((keys[1].hash.clone(), keys[2].hash.clone()), (before[1].clone(), before[2].clone()), "unlabelled lines keep their cache");
+    let r = run(&mut s, "script.synthesize", json!({"path": path, "out": out}));
+    assert_eq!((r["synthesized"].clone(), r["cached"].clone()), (json!(1), json!(2)), "{r}");
+    // a new take of the angry reference redoes only the angry line
+    write_wav16(&dir.join("angry.wav"), &tone(&[(2.5, 0.9)]), RATE).unwrap();
+    let r = run(&mut s, "script.synthesize", json!({"path": path, "out": out}));
+    assert_eq!((r["synthesized"].clone(), r["cached"].clone()), (json!(1), json!(2)), "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
