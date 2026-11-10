@@ -214,7 +214,8 @@ ends a two-shot that the scene before it left on screen.
   lasts `directionSeconds` (or its `sfx`) as a direction without one would. When the movie has
   sound, the line's `sfx` is not played (one sound at a time on A3), with a warning. A movie ends
   the sub CG and the two-shot on screen; characters are never shown over it (a direction shows
-  none), and the music goes on under it.
+  none), and the music goes on under it. A scene whose first line is a movie starts with it: there is
+  no `sceneGap` beat of the background before it, and a `fade` fades the movie in.
 - **Sub CGs.** A line's `subCg` (an inset, such as a 272x247 picture over the scene) is placed on
   the top track at its own pixel size (`scaleToFrame` off, Scale 100 %, or `subCgScale` for all of
   them), centred in the frame or at `subCgAnchor` (`[0.25, 0.25]`: a quarter across, a quarter
@@ -249,7 +250,7 @@ loudnessToleranceLu=6, effectMarginLu=6}` reports `ok`, `errors`, `warnings`, `s
 | `offline` | error | A clip's media is missing |
 | `gap` | error | The background track has a hole, or ends before the rest |
 | `overlap` | error | Two voices at once |
-| `silence` | warning | More than `maxSilenceSeconds` without a voice |
+| `silence` | warning | More than `maxSilenceSeconds` without a voice and without anything on the effects track (a sound effect or a movie's own sound fills a pause; music does not) |
 | `loudness` | warning | A voice is more than `loudnessToleranceLu` from the median voice (integrated LUFS, BS.1770) |
 | `effect-loud` | warning | A sound effect (A3, not a movie's sound; a click shorter than 0.4 s measured as one 400 ms block) is less than `effectMarginLu` under the median voice. `stats` gives `effects` (how many were measured), `medianEffectLufs` and `loudestEffectLufs` beside `medianVoiceLufs` |
 | `caption-long` / `caption-fast` / `caption-short` | warning | A subtitle is over twice `captionChars`, runs over `maxCharsPerSecond`, or shows under 0.4 s |

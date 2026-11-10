@@ -467,7 +467,11 @@ pub fn plan(script: &Script, rate: FrameRate, o: &Opts, env: &mut dyn PlanEnv) -
         // the sub CG on screen (the last of `pl.sub_cgs` while it lasts)
         let mut cg_open = false;
         let start = t;
-        t = snap(add(t, secs(o.scene_gap)));
+        // a scene that opens with a movie starts with it: no beat of the background before it
+        let opens_with_movie = scene.lines.first().is_some_and(|l| l.kind == LineKind::Direction && l.video.as_deref().is_some_and(|v| !v.trim().is_empty()));
+        if !opens_with_movie {
+            t = snap(add(t, secs(o.scene_gap)));
+        }
         let background = scene.background.as_deref().map(|b| env.resolve(b)).and_then(|p| {
             if env.image(&p) {
                 Some(p)
@@ -1611,6 +1615,25 @@ fn problem(severity: Severity, kind: &'static str, at: Option<Tick>, message: St
     Problem { severity, kind, seconds: at.map(Tick::seconds), message }
 }
 
+/// The longest stretch of `from..to` during which none of `items` plays: where it starts and how
+/// long it is (zero when the items cover all of it).
+fn longest_uncovered(from: Tick, to: Tick, items: &[TrackItem]) -> (Tick, Tick) {
+    let mut spans: Vec<(Tick, Tick)> = items.iter().map(|i| (i.start.max(from), i.end().min(to))).filter(|(a, b)| b > a).collect();
+    spans.sort();
+    let (mut best_at, mut best) = (from, Tick::default());
+    let mut at = from;
+    for (a, b) in spans {
+        if a > at && a - at > best {
+            (best_at, best) = (at, a - at);
+        }
+        at = at.max(b);
+    }
+    if to > at && to - at > best {
+        (best_at, best) = (at, to - at);
+    }
+    (best_at, best)
+}
+
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "anime.check";
     let max_silence = num(p, "maxSilenceSeconds", 0.5, 600.0, cmd)?.unwrap_or(5.0);
@@ -1674,7 +1697,12 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
                         format!("{} starts {:.2} s before the previous voice ends", it.name, (prev_end - it.start).seconds()),
                     ));
                 } else if (it.start - prev_end).seconds() > max_silence {
-                    out.push(problem(Severity::Warning, "silence", Some(prev_end), format!("{:.1} s without a voice", (it.start - prev_end).seconds())));
+                    // a sound effect or a movie's own sound (A3) fills a pause: only a stretch with neither is silent
+                    let effects = q.audio_tracks.get(2).map_or(&[][..], |t| t.items.as_slice());
+                    let (from, quiet) = longest_uncovered(prev_end, it.start, effects);
+                    if quiet.seconds() > max_silence {
+                        out.push(problem(Severity::Warning, "silence", Some(from), format!("{:.1} s without a voice or a sound effect", quiet.seconds())));
+                    }
                 }
             }
             at = Some(at.map_or(it.end(), |a| a.max(it.end())));

@@ -440,6 +440,72 @@ fn a_voice_far_quieter_than_the_rest_is_flagged() {
 }
 
 #[test]
+fn a_scene_that_opens_with_a_movie_starts_with_it() {
+    let dir = temp("opens");
+    bmp(&dir.join("bg.bmp"), 32, 18, [10, 20, 200]);
+    crate::media_test_util::make_movie(&dir.join("mv.mp4"), filmcraft_media::DemoScene::Aurora, 64, 36, 48);
+    write_wav16(&dir.join("v.wav"), &tone(&[(1.0, 0.5)]), RATE).unwrap();
+    let voice = |id: &str| json!({"id": id, "kind": "narration", "text": "声", "voiceFile": "v.wav"});
+    let movie = |id: &str, file: &str| json!({"id": id, "kind": "direction", "video": file});
+    let script = json!({"scenes": [
+        {"id": "s1", "background": "bg.bmp", "transition": "fade", "lines": [movie("m1", "mv.mp4"), voice("a")]},
+        {"id": "s2", "background": "bg.bmp", "lines": [movie("m2", "mv.mp4"), voice("b")]},
+        {"id": "s3", "background": "bg.bmp", "lines": [movie("m3", "gone.mp4"), voice("c")]},
+        {"id": "s4", "background": "bg.bmp", "lines": [voice("d"), movie("m4", "mv.mp4")]}]});
+    let path = dir.join("o.fcscript.json");
+    std::fs::write(&path, script.to_string()).unwrap();
+    let mut s = session();
+    let r = run(&mut s, "anime.build", json!({"path": path, "out": dir.join("tts"), "width": 320, "height": 180, "fps": 24}));
+    assert_eq!((r["clips"]["videos"].clone(), r["clips"]["fades"].clone()), (json!(3), json!(1)), "{r}");
+    let q = s.active_sequence().unwrap().clone();
+    let v1 = &q.video_tracks[0].items;
+    let name = |ti: &filmcraft_project::TrackItem| s.project.item(ti.item).unwrap().name.clone();
+    assert!(v1.windows(2).all(|w| w[0].end() == w[1].start), "V1 has no holes");
+    // no beat of the background before the first movie: the sequence (and its fade) starts on it
+    assert_eq!((name(&v1[0]), v1[0].start), ("mv.mp4".to_string(), Tick::ZERO));
+    // the second scene: its movie follows the first scene directly
+    let voices = &q.audio_tracks[0].items;
+    let second = v1.iter().filter(|ti| name(ti) == "mv.mp4").nth(1).unwrap();
+    assert!(second.start >= voices[0].end() && second.start - voices[0].end() < Tick::from_seconds_f64(0.5), "{:?} {:?}", second.start, voices[0].end());
+    let before = v1.iter().position(|ti| ti.id == second.id).unwrap();
+    assert_eq!(name(&v1[before - 1]), "bg.bmp", "what is left of the first scene, not a beat of the second");
+    // a scene whose first line is a voice keeps its beat of background
+    assert!(voices[3].start - voices[2].end() >= Tick::from_seconds_f64(0.6));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_pause_filled_by_a_sound_effect_is_not_a_silence() {
+    let dir = temp("quiet");
+    bmp(&dir.join("bg.bmp"), 32, 18, [1, 2, 3]);
+    write_wav16(&dir.join("v.wav"), &tone(&[(1.0, 0.5)]), RATE).unwrap();
+    write_wav16(&dir.join("long.wav"), &tone(&[(7.0, 0.2)]), RATE).unwrap();
+    write_wav16(&dir.join("short.wav"), &tone(&[(1.0, 0.2)]), RATE).unwrap();
+    let silences = |name: &str, middle: Value| -> Vec<(f64, String)> {
+        let voice = |id: &str| json!({"id": id, "kind": "narration", "text": "声", "voiceFile": "v.wav"});
+        let path = dir.join(format!("{name}.fcscript.json"));
+        let script = json!({"scenes": [{"id": "s", "background": "bg.bmp", "lines": [voice("a"), middle, voice("b")]}]});
+        std::fs::write(&path, serde_json::to_string(&script).unwrap()).unwrap();
+        let mut s = session();
+        let b = run(&mut s, "anime.build", json!({"path": path, "out": dir.join(name)}));
+        let r = run(&mut s, "anime.check", json!({"sequence": b["sequence"]}));
+        let found = r["problems"].as_array().unwrap().iter().filter(|p| p["kind"] == "silence");
+        found.map(|p| (p["seconds"].as_f64().unwrap(), p["message"].as_str().unwrap().to_string())).collect()
+    };
+    // seven seconds of a door, a storm, a movie's sound: something is heard all the way
+    assert_eq!(silences("effect", json!({"id": "d", "kind": "direction", "sfx": "long.wav"})), vec![]);
+    // the same seven seconds with nothing in them
+    let quiet = silences("pause", json!({"id": "d", "kind": "direction", "pauseAfter": 7.0}));
+    assert_eq!(quiet.len(), 1, "{quiet:?}");
+    assert!(quiet[0].1.contains("without a voice or a sound effect"), "{quiet:?}");
+    // a short effect, then a long pause: the silence is what comes after the effect, and starts there
+    let after = silences("both", json!({"id": "d", "kind": "direction", "sfx": "short.wav", "pauseAfter": 7.0}));
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert!(after[0].0 > quiet[0].0 + 0.9, "{after:?} {quiet:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn one_call_runs_every_step_and_a_second_call_speaks_nothing() {
     let pr = project("run", "");
     let mut s = session();
