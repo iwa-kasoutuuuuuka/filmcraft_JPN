@@ -9,7 +9,7 @@ Sonnet のセッションがこれを読んで、第 2 話以降を 1 話ずつ�
 
 | 項目 | 値・確かめ方 |
 |---|---|
-| GPU | RTX 5080 1 台。**同時に 1 つの GPU 作業だけ**（話は 1 本ずつ、並行に回さない）。`nvidia-smi` で使用率と VRAM を見る |
+| GPU | RTX 5080 1 台（16 GB）。話は 1 本ずつが基本。急ぐときは**合成を 2 本まで**同時にできる（§7、どちらも `--ignore-gpu`）。3 本は VRAM に入らない。`nvidia-smi` で使用率と VRAM を見る |
 | マイナー | GPU を使う別のプロセス（マイナーなど）が動いていたら、**利用者に止めてもらう**（自分では止めない）。LM Studio がモデルを載せていたら、外してよいか利用者に聞く |
 | Python | Qwen3-TTS の venv: `E:/Zfilmcraft_JPN/tools/qwen3-tts/.venv/Scripts/python.exe`（`episode_run.py` 自体は標準ライブラリだけなので、どの Python でも動く） |
 | FilmCraft | `E:/Zfilmcraft_JPN/target/agent-main/release/filmcraft-cli.exe`（release 版。debug 版より新しいか同じ時だけ既定で使われ、古ければ debug 版 `…/debug/filmcraft-cli.exe` になる。どちらを使ったかはログの 1 行目と `result.json` の `cli` に出る。作り直しは `CARGO_TARGET_DIR=target/agent-main cargo build --release -p filmcraft-cli`） |
@@ -131,3 +131,11 @@ python episode_run.py --episode 3                 # 本番。E:/filmcraft_JPN/ev
 
 1 話の合成は約 280 行で、1 行 6 秒前後 → 約 30 分。検品 1 周 3 分、組み立てと書き出し約 15 分。合わせて 1 話 45〜60 分。
 感情ラベルの付いた行は参照ごとに準備が要るが、キャラ×ラベルごとに 1 回だけ。
+
+全 30 話の作り直し（2026-11-10〜11、release 版の CLI）で測った値: 1 話 26〜41 分（合成 17〜22 分、検品と読み直し 6〜20 分、
+組み立てと書き出し 15 分）。ほかの作業が CPU を使っていると 57〜77 分に延びた。
+
+**2 本同時に回すとき。** 合成 1 本は VRAM 約 5.3 GB、GPU 使用率 25 % 前後なので、2 本は入る（合わせて約 11 GB、使用率 45〜75 %）。
+3 本は 16 GB を超える。書き出しは 1 本で CPU の全スレッドを使うので、書き出し同士を並べても合計の時間は変わらない。
+得をするのは「片方が書き出している間に、もう片方が合成する」重なりだけで、残り 4 話で約 1 時間縮んだ。2 本目からは GPU の
+空き確認に掛かるので `--ignore-gpu` を付け、同じ話を 2 つのプロセスが同時に回さないようにする（作業フォルダが同じになる）。
