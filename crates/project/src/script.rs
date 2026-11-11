@@ -183,7 +183,8 @@ pub struct ScriptLine {
     pub generated: bool,
     /// `false`: the line is subtitled but not voiced, as a sound word (`ガタッ`, `プルルルル`)
     /// that is a noise and not speech. Its sound, if any, is the line's `sfx`; nothing is
-    /// synthesized and a `voiceFile` is not played. Unset or `true`: spoken as usual.
+    /// synthesized and a `voiceFile` is not played. Unset or `true`: spoken as usual (a line
+    /// of punctuation only, with no `voiceFile`, has nothing to say and is only subtitled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spoken: Option<bool>,
 }
@@ -194,8 +195,21 @@ fn is_false(b: &bool) -> bool {
 
 impl ScriptLine {
     /// Whether the line is to be spoken (and so needs a recording or a synthesized voice).
+    /// A line with no recording and nothing a voice can say (`！！！`, `‥‥。`) is not: a
+    /// synthesizer makes half a second of silence of it, so it is only subtitled.
     pub fn is_spoken(&self) -> bool {
-        self.shows_text() && self.spoken != Some(false)
+        self.shows_text() && self.spoken != Some(false) && (self.has_recording() || self.has_words())
+    }
+
+    /// Whether the line names a recording of its own.
+    fn has_recording(&self) -> bool {
+        self.voice_file.as_deref().is_some_and(|v| !v.trim().is_empty())
+    }
+
+    /// Whether what is said (the `reading`, else the text) has a letter or a digit in it.
+    fn has_words(&self) -> bool {
+        let said = self.reading.as_deref().filter(|r| !r.trim().is_empty()).unwrap_or(&self.text);
+        said.chars().any(char::is_alphanumeric)
     }
 
     /// Whether the line's text is subtitled: every line but a direction, spoken or not.
@@ -820,6 +834,27 @@ mod tests {
         // an unspoken line still needs its text (or it is a direction)
         assert!(errors(&s).iter().any(|m| m.contains("empty text")), "{:?}", s.validate());
         assert!(Script::from_json(r#"{"scenes": [{"id": "s", "lines": [{"id": "l", "text": "x", "spoken": "no"}]}]}"#).is_err());
+    }
+
+    #[test]
+    fn a_line_of_punctuation_only_is_subtitled_and_not_spoken() {
+        let s = Script::from_json(
+            r#"{"characters": {"m": {"name": "m", "voice": {"refAudio": "m.wav"}}}, "scenes": [{"id": "s", "lines": [
+                {"id": "a", "speaker": "m", "text": "！！！！！！！！"},
+                {"id": "b", "speaker": "m", "kind": "monologue", "text": "（‥‥！？）"},
+                {"id": "c", "speaker": "m", "text": "‥‥‥‥。", "voiceFile": "v/gasp.wav"},
+                {"id": "d", "speaker": "m", "text": "‥‥え？"},
+                {"id": "e", "speaker": "m", "text": "７！"},
+                {"id": "f", "speaker": "m", "text": "！？", "reading": "なに"},
+                {"id": "g", "speaker": "m", "text": "――！？", "voiceFile": " "}]}]}"#,
+        )
+        .unwrap();
+        let spoken: Vec<bool> = s.scenes[0].lines.iter().map(ScriptLine::is_spoken).collect();
+        // nothing to say and no recording: a caption only; a recorded gasp is still played
+        assert_eq!(spoken, [false, false, true, true, true, true, false]);
+        assert!(s.scenes[0].lines.iter().all(ScriptLine::shows_text));
+        // not a problem of the script: nothing asks for a voice of such a line
+        assert!(errors(&s).is_empty(), "{:?}", s.validate());
     }
 
     #[test]

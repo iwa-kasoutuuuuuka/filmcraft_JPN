@@ -86,6 +86,10 @@ Notes:
   reading it takes (`charsPerSecond`, 0.8 s at the least), then the usual `pause`. Without an
   `sfx` it is a silent beat with its subtitle. A game's sound words are found and marked by
   `tools/eve_burst/onomatopoeia.py`. A sound with no text to show is a direction instead.
+- A line with **nothing to say** (`！！！！`, `‥‥。`: no letter and no digit in its `reading`, else
+  its text) and no `voiceFile` is treated the same way without being marked: it is subtitled for
+  its reading time and nothing is synthesized (a synthesizer makes half a second of silence of
+  it). With a `voiceFile` (a recorded gasp) it is played as usual.
 - `generated: true` marks a line a tool wrote to bridge scenes (not in the source story), so a
   later run may rewrite it freely.
 - A **direction** has no text and no speaker: sound effects, a cut, a pause, a movie (`video`).

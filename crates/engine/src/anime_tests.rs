@@ -1465,6 +1465,36 @@ fn a_sound_word_is_subtitled_for_its_sound_and_never_waits_for_a_voice() {
 }
 
 #[test]
+fn a_line_with_nothing_to_say_is_a_caption_and_takes_no_voice() {
+    let s = Script::from_json(
+        r#"{"characters": {"m": {"name": "m", "expressions": {"normal": {"image": "m.png", "openImage": "mo.png"}}}},
+        "scenes": [{"id": "s", "background": "bg.png", "lines": [
+            {"id": "bang", "speaker": "m", "text": "！！！！！！！！"},
+            {"id": "gasp", "speaker": "m", "text": "‥‥‥‥。", "voiceFile": "gasp.wav"},
+            {"id": "a1", "speaker": "m", "text": "待って。"}]}]}"#,
+    )
+    .unwrap();
+    let rate = FrameRate::from_f64(24.0);
+    let o = Opts::default();
+    let mut f = fake();
+    // a file synthesized for the line before (half a second of silence) is not played either
+    for (k, v) in [("bang", 0.5), ("gasp", 1.5)] {
+        f.audio.insert(k.into(), v);
+    }
+    let pl = plan(&s, rate, &o, &mut f);
+    let cue = |id: &str| pl.cues.iter().find(|c| c.line == id).unwrap();
+    let len = |id: &str| (cue(id).end - cue(id).start).seconds();
+    // the time to read it (8 characters at 7 a second) and the pause after a line
+    assert!((len("bang") - (8.0 / 7.0 + 0.35)).abs() < 0.05, "{}", len("bang"));
+    let c = cue("bang");
+    assert!(c.voice.is_none() && c.mouth.is_empty() && !c.estimated && !c.captions.is_empty(), "{c:?}");
+    assert!(c.sprite.is_some(), "the speaker still stands there");
+    assert!(!pl.warnings.iter().any(|w| w.contains("line bang:")), "{:?}", pl.warnings);
+    // a recorded gasp with the same kind of text is played, and a line with words is spoken
+    assert!(cue("gasp").voice.is_some() && cue("a1").voice.is_some());
+}
+
+#[test]
 fn sound_effects_sit_under_the_voices_and_the_check_measures_them() {
     let dir = temp("words");
     bmp(&dir.join("bg.bmp"), 32, 18, [1, 2, 3]);
